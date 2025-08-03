@@ -1,0 +1,69 @@
+use std::{
+	collections::HashMap,
+	net::{IpAddr, Ipv4Addr}
+};
+
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use serde_json::Value;
+
+/// The IP addresses Tebex will always send webhook payloads from.
+///
+/// It is recommended that you ignore any requests not from these IPs.
+pub const WEBHOOK_REMOTE_IPS: &[IpAddr] = &[
+	// https://docs.tebex.io/developers/webhooks/overview#ip-address
+	IpAddr::V4(Ipv4Addr::new(18, 209, 80, 3)),
+	IpAddr::V4(Ipv4Addr::new(54, 87, 231, 232))
+];
+
+#[derive(Debug, Deserialize)]
+pub struct TebexWebhookPayload {
+	/// The unique ID of this webhook payload
+	pub id: String,
+	/// The timestamp this webhook payload was generated
+	pub date: DateTime<Utc>,
+	/// The actual data being sent in this webhook call
+	#[serde(flatten)]
+	pub subject: WebhookSubject
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", content = "subject")]
+pub enum WebhookSubject {
+	/// A webhook attempting to validate if the endpoint is a valid and
+	/// functional Tebex webhook handler.
+	///
+	/// In order to pass this validation process, the handler must respond 200
+	/// OK with a JSON object containing only the ID of this webhook call.
+	#[serde(rename = "validation.webhook")]
+	WebhookValidation {},
+
+	/// A catch-all for unhandled webhook types.
+	#[serde(untagged)]
+	Unknown {
+		#[serde(rename = "type")]
+		webhook_type: String,
+		payload: HashMap<String, Value>
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_parsing() {
+		for test in crate::webhooks::tests::TEST_PAYLOADS {
+			let Ok(parsed) = serde_json::from_str::<TebexWebhookPayload>(test) else {
+				panic!("Unable to parse payload:\n\n{test}")
+			};
+
+			dbg!(&parsed);
+
+			assert!(
+				!matches!(parsed.subject, WebhookSubject::Unknown { .. }),
+				"Parsed test subject should not deserialize to WebhookPayload::Unknown"
+			)
+		}
+	}
+}
