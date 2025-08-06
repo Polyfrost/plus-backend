@@ -26,3 +26,4 @@ bpaf = { version = "0.9.20", features = ["bright-color", "derive"] }
 diesel = { version = "2.2.12", features = ["postgres"] }
 thiserror.workspace = true
 serde_json.workspace = true
+tebex = { path = "./crates/tebex", features = ["axum"]}
