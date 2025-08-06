@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, str::FromStr};
 
 use bpaf::Bpaf;
 
@@ -20,6 +20,15 @@ pub(crate) struct ServeArgs {
 	/// The socket addresses to bind the HTTP server to, comma seperated.
 	/// If specified on the command line, multiple flags can be provided instead
 	/// of passing a comma-delimited value.
-	#[bpaf(long("bind-addr"), long("bind-address"), env("BIND_ADDR"))]
-	pub(crate) bind_addr: SocketAddr
+	#[bpaf(
+		long("bind-addr"),
+		long("bind-address"),
+		env("BIND_ADDR"),
+		fallback(SocketAddr::from_str("[::]:8080").unwrap())
+	)]
+	pub(crate) bind_addr: SocketAddr,
+	/// The Tebex webhook secret to validate all webhook endpoint signatures
+	/// with
+	#[bpaf(long("tebex-webhook-secret"), env("TEBEX_WEBHOOK_SECRET"))]
+	pub(crate) tebex_webhook_secret: String
 }

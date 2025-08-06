@@ -1,3 +1,5 @@
+#[cfg(feature = "axum")]
+pub mod axum;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -21,6 +23,7 @@ pub enum WebhookValidationError {
 
 impl TebexWebhookPayload {
 	/// Validates and parses a webhook payload from Tebex
+	#[tracing::instrument(level = "debug", skip(s))]
 	pub fn validate_str(
 		s: &str,
 		signature: &str,
@@ -28,13 +31,16 @@ impl TebexWebhookPayload {
 	) -> Result<Self, WebhookValidationError> {
 		// Validate signature with HMAC
 		let webhook_hash = Sha256::digest(s);
+		let mut webhook_hash_hex = [0u8; SHA256_BYTES * 2];
+		base16ct::lower::encode(&webhook_hash, &mut webhook_hash_hex)
+			.expect("infailible: correct size buffer is provided for base16 (bytes * 2)");
 
 		let mut decoded_signature = [0u8; SHA256_BYTES];
 		base16ct::lower::decode(signature, &mut decoded_signature)?;
 
 		let mut hmac = HmacSha256::new_from_slice(secret.as_bytes())
 			.expect("infailible: HMAC takes any key length");
-		hmac.update(&webhook_hash);
+		hmac.update(&webhook_hash_hex);
 
 		hmac.verify_slice(&decoded_signature)?;
 

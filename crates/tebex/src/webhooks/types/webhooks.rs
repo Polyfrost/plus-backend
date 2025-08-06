@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::webhooks::TebexPaymentSubject;
+
 /// The IP addresses Tebex will always send webhook payloads from.
 ///
 /// It is recommended that you ignore any requests not from these IPs.
@@ -24,12 +26,12 @@ pub struct TebexWebhookPayload {
 	pub date: DateTime<Utc>,
 	/// The actual data being sent in this webhook call
 	#[serde(flatten)]
-	pub subject: WebhookSubject
+	pub webhook_type: WebhookType
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "subject")]
-pub enum WebhookSubject {
+pub enum WebhookType {
 	/// A webhook attempting to validate if the endpoint is a valid and
 	/// functional Tebex webhook handler.
 	///
@@ -38,12 +40,19 @@ pub enum WebhookSubject {
 	#[serde(rename = "validation.webhook")]
 	WebhookValidation {},
 
+	#[serde(rename = "payment.completed")]
+	PaymentCompleted {
+		#[serde(flatten)]
+		payment: Box<TebexPaymentSubject>
+	},
+
 	/// A catch-all for unhandled webhook types.
 	#[serde(untagged)]
 	Unknown {
 		#[serde(rename = "type")]
-		webhook_type: String,
-		payload: HashMap<String, Value>
+		unknown_type: String,
+		#[serde(rename = "subject")]
+		content: HashMap<String, Value>
 	}
 }
 
@@ -61,7 +70,7 @@ mod tests {
 			dbg!(&parsed);
 
 			assert!(
-				!matches!(parsed.subject, WebhookSubject::Unknown { .. }),
+				!matches!(parsed.webhook_type, WebhookType::Unknown { .. }),
 				"Parsed test subject should not deserialize to WebhookPayload::Unknown"
 			)
 		}

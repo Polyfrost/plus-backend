@@ -1,47 +1,63 @@
+mod payments;
+mod state;
+
 use aide::{
-	axum::{ApiRouter, routing::post},
-	openapi::{Info, OpenApi},
-	scalar::Scalar
+	axum::ApiRouter,
+	openapi::{Contact, License, OpenApi, Server},
+	scalar::Scalar,
+	transform::TransformOpenApi
 };
 use axum::{Extension, http::header, routing::get as axum_get};
 use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
 
-use crate::commands::ServeArgs;
+use crate::{api::state::ApiState, commands::ServeArgs};
+
+fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
+	spec.version("1.0.0")
+		.title("Poly+ API")
+		.summary("An API used as the backend of the Poly+ mod")
+		.description(
+			"This API provides all the backend services necessary for enabling the \
+			 functionalities of the Poly+ mod, such as storing and serving cosmetic \
+			 information."
+		)
+		.license(License {
+			name: "PolyForm Shield License 1.0.0".to_string(),
+			url: Some("https://polyformproject.org/licenses/shield/1.0.0/".to_string()),
+			..Default::default()
+		})
+		.tos("https://polyfrost.org/legal/terms/")
+		.contact(Contact {
+			url: Some("https://polyfrost.org/contact/".to_string()),
+			email: Some("ty@polyfrost.org".to_string()),
+			..Default::default()
+		})
+		.server(Server {
+			url: "https://plus.polyfrost.org".to_string(),
+			description: Some("The production Poly+ backend".to_string()),
+			..Default::default()
+		})
+		.server(Server {
+			url: "http://localhost:8080".to_string(),
+			description: Some("A development backend server".to_string()),
+			..Default::default()
+		})
+}
 
 #[derive(Clone, Copy)]
 struct OpenApiSpec(&'static str);
 
 pub(crate) async fn start(args: ServeArgs) {
-	let app = ApiRouter::new().api_route(
-		"/tebex-webhook-test",
-		post(async |body: String| {
-			let parsed = serde_json::from_str::<serde_json::Value>(&body).unwrap();
-			println!("{}", serde_json::to_string_pretty(&parsed).unwrap());
+	let state = ApiState::new(&args).await;
 
-			format!(
-				r#"{{"id":"{}"}}"#,
-				parsed
-					.as_object()
-					.unwrap()
-					.get("id")
-					.unwrap()
-					.as_str()
-					.unwrap()
-			)
-		})
-	);
-
-	// TODO: Fill this out
-	let mut openapi = OpenApi {
-		info: Info {
-			description: Some("an example API".to_string()),
-			..Info::default()
-		},
-		..OpenApi::default()
-	};
+	let app = ApiRouter::new()
+		.nest("/payments", payments::setup_router().await)
+		.with_state(state);
 
 	// Convert OpenAPI router to normal actix router, and render the doc as JSON
-	let app = app.finish_api(&mut openapi);
+	let mut openapi = OpenApi::default();
+	let app = app.finish_api_with(&mut openapi, init_openapi_spec);
 	let openapi_rendered = Box::leak(
 		serde_json::to_string(&openapi)
 			.expect("Unable to render OpenAPI documentation as JSON")
@@ -58,7 +74,8 @@ pub(crate) async fn start(args: ServeArgs) {
 				}
 			)
 		)
-		.layer(Extension(OpenApiSpec(openapi_rendered)));
+		.layer(Extension(OpenApiSpec(openapi_rendered)))
+		.layer(TraceLayer::new_for_http());
 
 	// Setup the listener and start the web server
 	let listener = TcpListener::bind(args.bind_addr)
@@ -67,5 +84,5 @@ pub(crate) async fn start(args: ServeArgs) {
 
 	axum::serve(listener, app.into_make_service())
 		.await
-		.unwrap()
+		.expect("infailable: axum::serve never returns")
 }
