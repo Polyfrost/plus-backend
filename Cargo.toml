@@ -24,7 +24,6 @@ tower = "0.5.2"
 axum = { version = "0.8.4", features = ["http2", "macros", "ws"] }
 aide = { version = "0.15.0", features = ["scalar", "macros", "axum", "axum-json"] }
 bpaf = { version = "0.9.20", features = ["bright-color", "derive"] }
-diesel = { version = "2.2.12", features = ["postgres"] }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

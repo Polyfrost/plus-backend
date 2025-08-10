@@ -1,4 +1,3 @@
-#![feature(macro_metavar_expr_concat)]
 use tracing_subscriber::{
 	EnvFilter,
 	fmt,

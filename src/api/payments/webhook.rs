@@ -1,7 +1,7 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use tebex::webhooks::{TebexWebhookPayload, WebhookType};
-use tracing::{debug, span, trace, warn, Level};
+use tracing::{Level, debug, span, trace, warn};
 
 use crate::api::ApiState;
 
@@ -33,7 +33,8 @@ pub(super) async fn tebex_webhook(
 			unknown_type,
 			content
 		} => {
-			let _span = span!(Level::WARN, "unknown_tebex_webhook_type", id = payload.id).entered();
+			let _span = span!(Level::WARN, "unknown_tebex_webhook_type", id = payload.id)
+				.entered();
 
 			// Ensure the webhook type is logged for debugging
 			warn!("Unknown Tebex webhook type: {unknown_type}");

@@ -4,7 +4,7 @@ use axum_core::{
 };
 use http::StatusCode;
 
-use crate::webhooks::{types::TebexWebhookPayload, WebhookValidationError};
+use crate::webhooks::{WebhookValidationError, types::TebexWebhookPayload};
 
 impl IntoResponse for WebhookValidationError {
 	fn into_response(self) -> Response {
@@ -32,11 +32,7 @@ where
 {
 	type Rejection = Response;
 
-	#[tracing::instrument(
-		name = "parse_tebex_webhook_req",
-		level = "debug",
-		skip_all
-	)]
+	#[tracing::instrument(name = "parse_tebex_webhook_req", level = "debug", skip_all)]
 	async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
 		let (parts, body) = req.into_parts();
 
