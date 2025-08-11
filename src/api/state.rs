@@ -4,12 +4,15 @@ use axum::extract::FromRef;
 use migrations::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tebex::webhooks::axum::TebexWebhookState;
+use tracing::info;
 
 use crate::commands::ServeArgs;
 
 impl ApiState {
+	#[tracing::instrument(skip_all, name = "initialize_state", level = "debug")]
 	pub(super) async fn new(args: &ServeArgs) -> Self {
 		// Setup database
+		info!("Attempting to create database connection");
 		let database = Database::connect({
 			let mut opts = ConnectOptions::new(&args.database_url);
 
@@ -21,9 +24,11 @@ impl ApiState {
 		.await
 		.expect("Unable to connect to database");
 
+		info!("Database connected, applying migrations");
 		Migrator::up(&database, None)
 			.await
 			.expect("Failure migrating database");
+		info!("Database successfully initialized");
 
 		// Return final state
 		ApiState {
