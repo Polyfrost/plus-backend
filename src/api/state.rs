@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::extract::FromRef;
 use migrations::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
@@ -11,6 +13,7 @@ impl ApiState {
 		let database = Database::connect({
 			let mut opts = ConnectOptions::new(&args.database_url);
 
+			opts.acquire_timeout(Duration::new(3, 0)); // Shorten connection timeout
 			opts.sqlx_logging(false); // SeaORM has its own logging, disable SQLx's
 
 			opts

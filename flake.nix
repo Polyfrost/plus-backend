@@ -40,12 +40,12 @@
                     src = craneLib.cleanCargoSource ./.;
                     strictDeps = true;
 
-                    buildInputs = with pkgs; [
-                        libpq
-                        openssl
-                    ];
+                    # buildInputs = with pkgs; [
+                    #     libpq
+                    #     openssl
+                    # ];
 
-                    nativeBuildInputs = with pkgs; [ pkg-config ];
+                    # nativeBuildInputs = with pkgs; [ pkg-config ];
 
                     # Use mold linker for faster builds on ELF platforms
                     stdenv = stdenvSelector;
