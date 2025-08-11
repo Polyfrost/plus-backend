@@ -30,5 +30,8 @@ pub(crate) struct ServeArgs {
 	/// The Tebex webhook secret to validate all webhook endpoint signatures
 	/// with
 	#[bpaf(long("tebex-webhook-secret"), env("TEBEX_WEBHOOK_SECRET"))]
-	pub(crate) tebex_webhook_secret: String
+	pub(crate) tebex_webhook_secret: String,
+	/// The URL to use for connecting to the database
+	#[bpaf(long("database-url"), env("DATABASE_URL"))]
+	pub(crate) database_url: String
 }

@@ -27,7 +27,10 @@
         global.excludes = [ ".jj" ];
         settings.formatter.mdformat.excludes = [ "README.md" ];
         formatter = {
-            rustfmt.command = lib.getExe' rust' "rustfmt";
+            rustfmt = {
+                command = lib.getExe' rust' "rustfmt";
+                excludes = [ "database/entities/src/entities" ];
+            };
             nixfmt.options = [
                 "--indent"
                 "4"

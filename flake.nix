@@ -66,6 +66,17 @@
                 # Setup treefmt-nix
                 treefmtModule = import ./treefmt.nix { inherit rust'; };
                 treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtModule;
+                # Utilities for testing locally
+                start-dev-env = pkgs.writeShellApplication {
+                    name = "start-dev-env";
+                    text = builtins.readFile ./scripts/start-dev-env.sh;
+                    runtimeInputs = with pkgs; [
+                        rclone
+                        curl
+                        jq
+                        postgresql
+                    ];
+                };
             in
             {
                 packages = {
@@ -80,9 +91,13 @@
                             packages =
                                 cranePackage.buildInputs
                                 ++ cranePackage.nativeBuildInputs
+                                ++ [
+                                    # Conveinience scripts for testing
+                                    start-dev-env
+                                ]
                                 ++ (with pkgs; [
                                     # External rust dev utilities
-                                    diesel-cli
+                                    sea-orm-cli
                                     cargo-deny
                                     cargo-udeps
                                     cargo-nextest
@@ -93,6 +108,10 @@
                                     # Add treefmt wrapper to the PATH for ease of use
                                     self.formatter.${system}
                                 ]);
+
+                            env = {
+                                MIGRATION_DIR = "./database/migrations";
+                            };
                         };
             }
         );
