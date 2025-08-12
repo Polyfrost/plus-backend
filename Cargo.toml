@@ -3,6 +3,7 @@ members = [".", "database/*", "crates/*"]
 
 [workspace.package]
 edition = "2024"
+repository = "https://github.com/Polyfrost/plus-backend"
 
 [workspace.dependencies]
 serde = { version = "1.0.219", features = ["derive"] }
@@ -28,14 +29,24 @@ features = [
 name = "plus-backend"
 version = "0.1.0"
 edition.workspace = true
+repository.workspace = true
 license-file = "LICENSE.md"
 publish = false
 
 [dependencies]
+# Workspace dependencies
+tebex = { path = "./crates/tebex", features = ["axum"]}
+migrations = { path = "./database/migrations" }
+entities = { path = "./database/entities" }
+# Normal dependencies
 tokio.workspace = true
 tower = "0.5.2"
 axum = { version = "0.8.4", features = ["http2", "macros", "ws"] }
-aide = { version = "0.15.0", features = ["scalar", "macros", "axum", "axum-json"] }
+aide = { version = "0.15.0", features = [
+    "scalar", "macros",
+    "axum", "axum-json", "axum-query"
+] }
+schemars = { version = "0.9.0", features = ["derive", "uuid1"] } # Locked to aide's version
 bpaf = { version = "0.9.20", features = ["bright-color", "derive"] }
 thiserror.workspace = true
 serde.workspace = true
@@ -44,8 +55,4 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tower-http = { version = "0.6.6", features = ["trace"] }
 sea-orm.workspace = true
-
-# Workspace dependencies
-tebex = { path = "./crates/tebex", features = ["axum"]}
-migrations = { path = "./database/migrations" }
-entities = { path = "./database/entities" }
+reqwest.workspace = true

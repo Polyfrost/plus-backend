@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::extract::FromRef;
 use migrations::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
-use tebex::webhooks::axum::TebexWebhookState;
+use tebex::{apis::plugin::TebexPluginApiClient, webhooks::axum::TebexWebhookState};
 use tracing::info;
 
 use crate::commands::ServeArgs;
@@ -33,7 +33,9 @@ impl ApiState {
 		// Return final state
 		ApiState {
 			tebex: TebexApiState {
-				webhook_secret: args.tebex_webhook_secret.clone()
+				webhook_secret: args.tebex_webhook_secret.clone(),
+				plugin_client: TebexPluginApiClient::new(&args.tebex_game_server_secret)
+					.expect("Unable to construct Tebex plugin API client")
 			},
 			database
 		}
@@ -42,13 +44,14 @@ impl ApiState {
 
 #[derive(Debug, Clone)]
 pub(super) struct ApiState {
-	tebex: TebexApiState,
+	pub(super) tebex: TebexApiState,
 	pub(super) database: DatabaseConnection
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct TebexApiState {
-	webhook_secret: String
+	webhook_secret: String,
+	pub(super) plugin_client: TebexPluginApiClient
 }
 
 impl FromRef<ApiState> for TebexWebhookState {

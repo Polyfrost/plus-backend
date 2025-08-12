@@ -31,6 +31,9 @@ pub(crate) struct ServeArgs {
 	/// with
 	#[bpaf(long("tebex-webhook-secret"), env("TEBEX_WEBHOOK_SECRET"))]
 	pub(crate) tebex_webhook_secret: String,
+	/// The Tebex game server secret to use for interacting with the Plugin API
+	#[bpaf(long("tebex-game-server-secret"), env("TEBEX_GAME_SERVER_SECRET"))]
+	pub(crate) tebex_game_server_secret: String,
 	/// The URL to use for connecting to the database
 	#[bpaf(long("database-url"), env("DATABASE_URL"))]
 	pub(crate) database_url: String

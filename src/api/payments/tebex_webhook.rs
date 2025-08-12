@@ -37,9 +37,8 @@ struct SuccessfulWebhookResponse {
 
 // TODO: Proper instrumentation for this with webhook type
 /// The actual webhook handler
-#[axum::debug_handler]
 #[tracing::instrument(level = "debug", skip_all)]
-pub(super) async fn tebex_webhook_endpoint(
+pub(super) async fn endpoint(
 	State(state): State<ApiState>,
 	payload: TebexWebhookPayload
 ) -> Result<impl IntoResponse, TebexWebhokError> {

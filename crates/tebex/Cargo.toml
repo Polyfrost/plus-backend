@@ -2,6 +2,7 @@
 name = "tebex"
 version = "0.1.0"
 edition.workspace = true
+repository.workspace = true
 
 [dependencies]
 chrono = { version = "0.4.41", features = ["serde"] }
