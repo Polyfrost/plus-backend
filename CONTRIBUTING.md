@@ -9,7 +9,7 @@ required.
 Because the backend requires a PostgreSQL database and s3 bucket (even for development),
 [`./scripts/start-dev-env.sh`](scripts/start-dev-env.sh) is provided to start a temporary PostgreSQL
 server and S3-compatible API locally. The data for these services is stored in `./.local`, so to
-reset the stored datam this directory can just be deleted. The S3 API is hosted at `127.0.0.1:8081`
+reset the stored data this directory can just be deleted. The S3 API is hosted at `127.0.0.1:8081`
 (with a bucket `local`), and postgres is run on the default port `5432` with a database named
 `local`.
 
