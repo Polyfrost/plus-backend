@@ -9,13 +9,19 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-		// Create players table
+		// Create users table
 		manager
 			.create_table(
 				Table::create()
-					.table(Player::Table)
+					.table(User::Table)
 					.if_not_exists()
-					.col(ColumnDef::new(Player::MinecraftUuid).uuid().primary_key())
+					.col(ColumnDef::new(User::Id).uuid().primary_key())
+					.col(
+						ColumnDef::new(User::MinecraftUuid)
+							.uuid()
+							.unique_key()
+							.not_null()
+					)
 					.to_owned()
 			)
 			.await?;
@@ -47,39 +53,35 @@ impl MigrationTrait for Migration {
 			)
 			.await?;
 
-		// Create PlayerCosmetic table (for many-to-many relations)
+		// Create UserCosmetic join table (for many-to-many relations)
 		manager
 			.create_table(
 				Table::create()
-					.table(PlayerCosmetic::Table)
+					.table(UserCosmetic::Table)
 					.if_not_exists()
-					.col(ColumnDef::new(PlayerCosmetic::Player).uuid().not_null())
+					.col(ColumnDef::new(UserCosmetic::User).uuid().not_null())
+					.col(ColumnDef::new(UserCosmetic::Cosmetic).integer().not_null())
 					.col(
-						ColumnDef::new(PlayerCosmetic::Cosmetic)
-							.integer()
-							.not_null()
-					)
-					.col(
-						ColumnDef::new(PlayerCosmetic::TransactionId)
+						ColumnDef::new(UserCosmetic::TransactionId)
 							.string_len(25)
 							.not_null()
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.name(PlayerCosmeticForeignKey::Player.to_string())
-							.from_col(PlayerCosmetic::Player)
-							.to(Player::Table, Player::MinecraftUuid)
+							.name(UserCosmeticForeignKey::User.to_string())
+							.from_col(UserCosmetic::User)
+							.to(User::Table, User::Id)
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.name(PlayerCosmeticForeignKey::Cosmetic.to_string())
-							.from_col(PlayerCosmetic::Cosmetic)
+							.name(UserCosmeticForeignKey::Cosmetic.to_string())
+							.from_col(UserCosmetic::Cosmetic)
 							.to(Cosmetic::Table, Cosmetic::Id)
 					)
 					.primary_key(
 						Index::create()
-							.col(PlayerCosmetic::Player)
-							.col(PlayerCosmetic::Cosmetic)
+							.col(UserCosmetic::User)
+							.col(UserCosmetic::Cosmetic)
 					)
 					.to_owned()
 			)
@@ -91,10 +93,10 @@ impl MigrationTrait for Migration {
 	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
 		// Drop all tables
 		manager
-			.drop_table(Table::drop().table(PlayerCosmetic::Table).to_owned())
+			.drop_table(Table::drop().table(UserCosmetic::Table).to_owned())
 			.await?;
 		manager
-			.drop_table(Table::drop().table(Player::Table).to_owned())
+			.drop_table(Table::drop().table(User::Table).to_owned())
 			.await?;
 		manager
 			.drop_table(Table::drop().table(Cosmetic::Table).to_owned())
@@ -109,8 +111,9 @@ impl MigrationTrait for Migration {
 }
 
 #[derive(DeriveIden)]
-enum Player {
+enum User {
 	Table,
+	Id,
 	MinecraftUuid
 }
 
@@ -131,17 +134,17 @@ pub enum CosmeticTypeVariants {
 }
 
 #[derive(DeriveIden)]
-enum PlayerCosmetic {
+enum UserCosmetic {
 	Table,
-	Player,
+	User,
 	Cosmetic,
 	TransactionId
 }
 
 #[derive(DeriveIden)]
-enum PlayerCosmeticForeignKey {
-	#[sea_orm(iden = "FK_PlayerCosmetic_Player")]
-	Player,
-	#[sea_orm(iden = "FK_PlayerCosmetic_Cosmetic")]
+enum UserCosmeticForeignKey {
+	#[sea_orm(iden = "FK_UserCosmetic_User")]
+	User,
+	#[sea_orm(iden = "FK_UserCosmetic_Cosmetic")]
 	Cosmetic
 }

@@ -18,9 +18,10 @@ bucket="$root/.local/s3/local"
 if [ ! -d "$bucket" ]; then
     mkdir "$bucket"
     # Add some example files
-    uuid="424ef6d047744f8c8bef8f62ebdac9c0"
-    cosmetics="$(curl --silent "https://api.cosmetica.cc/v2/get/info?uuid=$uuid")"
-    jq -r .cape.image <<< "$cosmetics" | cut -d ',' -f 2 | base64 -d > "$bucket/cape.png"
+    # uuid="424ef6d047744f8c8bef8f62ebdac9c0"
+    # cosmetics="$(curl --silent "https://api.cosmetica.cc/v2/get/info?uuid=$uuid")"
+    # jq -r .cape.image <<< "$cosmetics" | cut -d ',' -f 2 | base64 -d > "$bucket/cape.png"
+    curl --output "$bucket/cape.png" http://s.optifine.net/capes/AwesomeTy79.png
 fi
 
 rclone serve s3 --addr 127.0.0.1:8081 --auth-key local,local "$root"/.local/s3 &

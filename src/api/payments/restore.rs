@@ -1,10 +1,6 @@
 use aide::{
 	OperationIo,
-	axum::{
-		ApiRouter,
-		IntoApiResponse,
-		routing::{post, post_with}
-	},
+	axum::{ApiRouter, routing::post_with},
 	transform::TransformOperation
 };
 use axum::{
@@ -13,12 +9,14 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse
 };
+use entities::prelude::*;
 use schemars::JsonSchema;
-use sea_orm::prelude::Uuid;
+use sea_orm::{TransactionTrait, prelude::*};
 use serde::{Deserialize, Serialize};
 use tebex::apis::plugin::customer_purchases::ActivePackagesRequest;
+use uuid::Uuid;
 
-use crate::api::ApiState;
+use crate::{api::ApiState, database::DatabaseUserExt};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum RestoreError {
@@ -102,24 +100,23 @@ async fn endpoint(
 		.await
 		.map_err(RestoreError::ActivePackagesFetch)?; // TODO handle 404 "invalid ID" from tebex
 
-	// Fetch all stored cosmetics for the player
-	let cosmetics = {
-		use entities::prelude::*;
-		use sea_orm::prelude::*;
+	let mut response = RestoreResponse::default();
 
-		dbg!(
-			Player::find_by_id(query.player)
-				.left_join(PlayerCosmetic)
-				.all(&state.database)
-				.await?
-		)
-	};
+	if active_packages.is_empty() {
+		return Ok(Json(response));
+	}
+
+	let txn = state.database.begin().await?;
+
+	let user = User::get_or_create(&txn, query.player).await?;
+
+	// Fetch all stored cosmetics for the player
+	let cosmetics = user.find_related(UserCosmetic).all(&state.database).await?;
 
 	// TODO!: tebex only returns the package ID, so we also need to fetch the
 	// package to get the custom data that contains cosmetic info
 	//
 	// also verify my left join is actually correct because idk how that works
-	let mut response = RestoreResponse::default();
 	for info in active_packages {
 		// if info.package
 	}

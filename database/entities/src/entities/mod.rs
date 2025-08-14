@@ -3,6 +3,6 @@
 pub mod prelude ;
 
 pub mod cosmetic ;
-pub mod player ;
-pub mod player_cosmetic ;
+pub mod user ;
+pub mod user_cosmetic ;
 pub mod sea_orm_active_enums ;

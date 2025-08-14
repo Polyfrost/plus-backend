@@ -1,7 +1,7 @@
 mod restore;
 mod tebex_webhook;
 
-use aide::axum::{ApiRouter, routing::post};
+use aide::axum::ApiRouter;
 
 use crate::api::ApiState;
 

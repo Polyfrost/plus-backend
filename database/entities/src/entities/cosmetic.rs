@@ -6,10 +6,10 @@ use sea_orm :: entity :: prelude :: * ; use super :: sea_orm_active_enums :: Cos
 
 # [derive (Clone , Debug , PartialEq , DeriveEntityModel , Eq)] # [sea_orm (table_name = "cosmetic")] pub struct Model { # [sea_orm (primary_key)] pub id : i32 , pub r#type : Option < CosmeticType > , pub path : String , }
 
-# [derive (Copy , Clone , Debug , EnumIter , DeriveRelation)] pub enum Relation { # [sea_orm (has_many = "super::player_cosmetic::Entity")] PlayerCosmetic , }
+# [derive (Copy , Clone , Debug , EnumIter , DeriveRelation)] pub enum Relation { # [sea_orm (has_many = "super::user_cosmetic::Entity")] UserCosmetic , }
 
-impl Related < super :: player_cosmetic :: Entity > for Entity { fn to () -> RelationDef { Relation :: PlayerCosmetic . def () } }
+impl Related < super :: user_cosmetic :: Entity > for Entity { fn to () -> RelationDef { Relation :: UserCosmetic . def () } }
 
-impl Related < super :: player :: Entity > for Entity { fn to () -> RelationDef { super :: player_cosmetic :: Relation :: Player . def () } fn via () -> Option < RelationDef > { Some (super :: player_cosmetic :: Relation :: Cosmetic . def () . rev ()) } }
+impl Related < super :: user :: Entity > for Entity { fn to () -> RelationDef { super :: user_cosmetic :: Relation :: User . def () } fn via () -> Option < RelationDef > { Some (super :: user_cosmetic :: Relation :: Cosmetic . def () . rev ()) } }
 
 impl ActiveModelBehavior for ActiveModel { }

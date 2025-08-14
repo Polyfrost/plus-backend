@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use sea_orm::{ActiveValue, TransactionError, TransactionTrait, prelude::Uuid};
+use sea_orm::{ActiveValue, TransactionError, TransactionTrait};
 use serde::Serialize;
 use tebex::webhooks::{TebexWebhookPayload, WebhookType};
 use tracing::{Instrument, Level, debug, span, trace, warn};
+use uuid::Uuid;
 
-use crate::api::ApiState;
+use crate::{api::ApiState, database::DatabaseUserExt};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TebexWebhokError {
@@ -70,24 +71,19 @@ pub(super) async fn endpoint(
 			state
 				.database
 				.transaction::<_, (), TebexWebhokError>(|txn| {
-					use entities::{player, player_cosmetic, prelude::*};
+					use entities::{prelude::*, user_cosmetic};
 					use sea_orm::prelude::*;
 
 					Box::pin(
 						async move {
 							for (uuid, cosmetics) in cosmetics.into_iter() {
-								// Ensure player exists
-								Player::insert(player::ActiveModel {
-									minecraft_uuid: ActiveValue::Set(uuid)
-								})
-								.on_conflict_do_nothing()
-								.exec(txn)
-								.await?;
+								// Ensure user exists
+								let user = User::get_or_create(txn, uuid).await?;
 
-								// Create PlayerCosmetic(s)
-								PlayerCosmetic::insert_many(cosmetics.into_iter().map(
-									|(id, txn_id)| player_cosmetic::ActiveModel {
-										player: ActiveValue::Set(uuid),
+								// Create UserCosmetic(s)
+								UserCosmetic::insert_many(cosmetics.into_iter().map(
+									|(id, txn_id)| user_cosmetic::ActiveModel {
+										user: ActiveValue::Set(user.id),
 										cosmetic: ActiveValue::Set(id),
 										transaction_id: ActiveValue::Set(txn_id)
 									}
