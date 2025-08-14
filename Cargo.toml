@@ -11,6 +11,14 @@ serde_json = "1.0.142"
 thiserror = "2.0.12"
 tracing = "0.1.41"
 tokio = { version = "1.47.1", features = ["full"] }
+# Axum
+aide = { version = "0.15.0", features = [
+    "scalar", "macros",
+    "axum", "axum-json", "axum-query"
+] }
+axum = { version = "0.8.4", features = ["http2", "macros", "ws"] }
+axum-core = { version = "0.5.2" }
+axum-client-ip = { version = "1.1.3", features = ["forwarded-header"] }
 # SeaORM
 sea-orm = { version = "1.1.14", features = ["sqlx-postgres", "runtime-tokio-rustls", "debug-print"] }
 sea-orm-migration = { version = "1.1.14", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
@@ -35,17 +43,15 @@ publish = false
 
 [dependencies]
 # Workspace dependencies
-tebex = { path = "./crates/tebex", features = ["axum"]}
+tebex = { path = "./crates/tebex", features = ["axum", "validate-source-ip"]}
 migrations = { path = "./database/migrations" }
 entities = { path = "./database/entities" }
 # Normal dependencies
 tokio.workspace = true
 tower = "0.5.2"
-axum = { version = "0.8.4", features = ["http2", "macros", "ws"] }
-aide = { version = "0.15.0", features = [
-    "scalar", "macros",
-    "axum", "axum-json", "axum-query"
-] }
+axum.workspace = true
+axum-client-ip.workspace = true
+aide.workspace = true
 schemars = { version = "0.9.0", features = ["derive", "uuid1"] } # Locked to aide's version
 bpaf = { version = "0.9.20", features = ["bright-color", "derive"] }
 thiserror.workspace = true

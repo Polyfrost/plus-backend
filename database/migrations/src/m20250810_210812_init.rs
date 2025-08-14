@@ -59,6 +59,11 @@ impl MigrationTrait for Migration {
 							.integer()
 							.not_null()
 					)
+					.col(
+						ColumnDef::new(PlayerCosmetic::TransactionId)
+							.string_len(25)
+							.not_null()
+					)
 					.foreign_key(
 						ForeignKey::create()
 							.name(PlayerCosmeticForeignKey::Player.to_string())
@@ -129,7 +134,8 @@ pub enum CosmeticTypeVariants {
 enum PlayerCosmetic {
 	Table,
 	Player,
-	Cosmetic
+	Cosmetic,
+	TransactionId
 }
 
 #[derive(DeriveIden)]

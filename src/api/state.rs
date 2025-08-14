@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 use axum::extract::FromRef;
 use migrations::{Migrator, MigratorTrait};
@@ -33,7 +33,9 @@ impl ApiState {
 		// Return final state
 		ApiState {
 			tebex: TebexApiState {
-				webhook_secret: args.tebex_webhook_secret.clone(),
+				webhook_secret: Box::leak(
+					args.tebex_webhook_secret.clone().into_boxed_str()
+				),
 				plugin_client: TebexPluginApiClient::new(&args.tebex_game_server_secret)
 					.expect("Unable to construct Tebex plugin API client")
 			},
@@ -50,14 +52,14 @@ pub(super) struct ApiState {
 
 #[derive(Debug, Clone)]
 pub(super) struct TebexApiState {
-	webhook_secret: String,
+	webhook_secret: &'static str,
 	pub(super) plugin_client: TebexPluginApiClient
 }
 
 impl FromRef<ApiState> for TebexWebhookState {
 	fn from_ref(input: &ApiState) -> Self {
 		Self {
-			secret: input.tebex.webhook_secret.clone()
+			secret: Cow::Borrowed(input.tebex.webhook_secret)
 		}
 	}
 }

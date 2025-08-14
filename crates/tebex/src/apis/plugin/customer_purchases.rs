@@ -5,7 +5,9 @@ use crate::apis::plugin::PluginApiRequest;
 
 /// GET https://plugin.tebex.io/player/:id/packages?package=<package>
 ///
-/// Fetches all active packages for a given player ID
+/// Fetches all active packages for a given player ID. This will return 200 on
+/// any VALID player ID (i.e. any real Minecraft player UUID), but will return
+/// 404 if an invalid ID is passed.
 pub struct ActivePackagesRequest<'a> {
 	/// The ID of the user to fetch active packages for
 	pub id: &'a str,
@@ -30,6 +32,9 @@ pub struct ActivePackageInfo {
 	pub name: String
 }
 
+// TODO: use thiserror enums for returning errors. probably an API-wide enum
+// with Reqwest::error & 403 invalid secret error, and then more specific enums
+// per-request
 impl PluginApiRequest for ActivePackagesRequest<'_> {
 	type Response = Result<Vec<ActivePackage>, reqwest::Error>;
 

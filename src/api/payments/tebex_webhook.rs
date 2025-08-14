@@ -58,7 +58,9 @@ pub(super) async fn endpoint(
 						.and_then(|id| id.parse().ok())
 						&& let Ok(uuid) = Uuid::try_parse(&product.username.id)
 					{
-						acc.entry(uuid).or_default().push(id);
+						acc.entry(uuid)
+							.or_default()
+							.push((id, payment.transaction_id.clone()));
 					};
 
 					acc
@@ -84,9 +86,10 @@ pub(super) async fn endpoint(
 
 								// Create PlayerCosmetic(s)
 								PlayerCosmetic::insert_many(cosmetics.into_iter().map(
-									|id| player_cosmetic::ActiveModel {
+									|(id, txn_id)| player_cosmetic::ActiveModel {
 										player: ActiveValue::Set(uuid),
-										cosmetic: ActiveValue::Set(id)
+										cosmetic: ActiveValue::Set(id),
+										transaction_id: ActiveValue::Set(txn_id)
 									}
 								))
 								.on_conflict_do_nothing()
