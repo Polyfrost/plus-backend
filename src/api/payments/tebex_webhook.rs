@@ -1,11 +1,8 @@
-use std::collections::HashMap;
-
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use sea_orm::{ActiveValue, TransactionError, TransactionTrait};
+use sea_orm::{ActiveValue, QuerySelect, TransactionError, TransactionTrait};
 use serde::Serialize;
 use tebex::webhooks::{TebexWebhookPayload, WebhookType};
 use tracing::{Instrument, Level, debug, span, trace, warn};
-use uuid::Uuid;
 
 use crate::{api::ApiState, database::DatabaseUserExt};
 
@@ -50,44 +47,37 @@ pub(super) async fn endpoint(
 		// Validation should be a no-op & just return success
 		WebhookType::WebhookValidation {} => (),
 		WebhookType::PaymentCompleted { payment } => {
-			let cosmetics = payment.products.into_iter().fold(
-				HashMap::<Uuid, Vec<_>>::new(),
-				|mut acc, product| {
-					if let Some(id) = product
-						.custom
-						.strip_prefix("plus:cosmetic:")
-						.and_then(|id| id.parse().ok())
-						&& let Ok(uuid) = Uuid::try_parse(&product.username.id)
-					{
-						acc.entry(uuid)
-							.or_default()
-							.push((id, payment.transaction_id.clone()));
-					};
-
-					acc
-				}
-			);
-
 			state
 				.database
 				.transaction::<_, (), TebexWebhokError>(|txn| {
-					use entities::{prelude::*, user_cosmetic};
+					use entities::{cosmetic_package, prelude::*, user_cosmetic};
 					use sea_orm::prelude::*;
 
 					Box::pin(
 						async move {
-							for (uuid, cosmetics) in cosmetics.into_iter() {
-								// Ensure user exists
-								let user = User::get_or_create(txn, uuid).await?;
+							let products = payment.products.iter().filter_map(|p| {
+								Some((Uuid::try_parse(&p.username.id).ok()?, p.id))
+							});
 
-								// Create UserCosmetic(s)
-								UserCosmetic::insert_many(cosmetics.into_iter().map(
-									|(id, txn_id)| user_cosmetic::ActiveModel {
+							for (uuid, product_id) in products {
+								let user = User::get_or_create(txn, uuid).await?;
+								let cosmetics = CosmeticPackage::find()
+									.filter(
+										cosmetic_package::Column::PackageId
+											.eq(product_id)
+									)
+									.all(txn)
+									.await?;
+
+								UserCosmetic::insert_many(cosmetics.iter().map(|c| {
+									user_cosmetic::ActiveModel {
 										user: ActiveValue::Set(user.id),
-										cosmetic: ActiveValue::Set(id),
-										transaction_id: ActiveValue::Set(txn_id)
+										cosmetic: ActiveValue::Set(c.cosmetic_id),
+										transaction_id: ActiveValue::Set(
+											payment.transaction_id.clone()
+										)
 									}
-								))
+								}))
 								.on_conflict_do_nothing()
 								.exec(txn)
 								.await?;

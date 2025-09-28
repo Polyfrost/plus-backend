@@ -1872,6 +1872,8 @@ name = "plus-backend"
 version = "0.1.0"
 dependencies = [
  "aide",
+ "axum",
+ "axum-client-ip",
  "bpaf",
  "entities",
  "migrations",
@@ -1887,6 +1889,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -3145,7 +3148,6 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 name = "tebex"
 version = "0.1.0"
 dependencies = [
- "axum",
  "axum-client-ip",
  "axum-core",
  "base16ct",
@@ -3568,6 +3570,7 @@ version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f33196643e165781c20a5ead5582283a7dacbb87855d867fbc2df3f81eddc1be"
 dependencies = [
+ "getrandom 0.3.3",
  "js-sys",
  "serde",
  "wasm-bindgen",

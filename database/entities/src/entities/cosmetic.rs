@@ -4,9 +4,11 @@
 
 use sea_orm :: entity :: prelude :: * ; use super :: sea_orm_active_enums :: CosmeticType ;
 
-# [derive (Clone , Debug , PartialEq , DeriveEntityModel , Eq)] # [sea_orm (table_name = "cosmetic")] pub struct Model { # [sea_orm (primary_key)] pub id : i32 , pub r#type : Option < CosmeticType > , pub path : String , }
+# [derive (Clone , Debug , PartialEq , DeriveEntityModel , Eq)] # [sea_orm (table_name = "cosmetic")] pub struct Model { # [sea_orm (primary_key)] pub id : i32 , pub r#type : CosmeticType , pub path : String , }
 
-# [derive (Copy , Clone , Debug , EnumIter , DeriveRelation)] pub enum Relation { # [sea_orm (has_many = "super::user_cosmetic::Entity")] UserCosmetic , }
+# [derive (Copy , Clone , Debug , EnumIter , DeriveRelation)] pub enum Relation { # [sea_orm (has_many = "super::cosmetic_package::Entity")] CosmeticPackage , # [sea_orm (has_many = "super::user_cosmetic::Entity")] UserCosmetic , }
+
+impl Related < super :: cosmetic_package :: Entity > for Entity { fn to () -> RelationDef { Relation :: CosmeticPackage . def () } }
 
 impl Related < super :: user_cosmetic :: Entity > for Entity { fn to () -> RelationDef { Relation :: UserCosmetic . def () } }
 

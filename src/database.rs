@@ -1,5 +1,5 @@
 use entities::{prelude::*, user};
-use sea_orm::{DbErr, EntityTrait, IntoActiveModel, QueryFilter, prelude::*};
+use sea_orm::{ActiveValue, DbErr, EntityTrait, QueryFilter, prelude::*};
 use uuid::Uuid;
 
 pub(crate) trait DatabaseUserExt {
@@ -24,13 +24,10 @@ impl DatabaseUserExt for User {
 		Ok(match existing {
 			Some(model) => model,
 			None =>
-				User::insert(
-					user::Model {
-						id: Uuid::now_v7(),
-						minecraft_uuid
-					}
-					.into_active_model()
-				)
+				User::insert(user::ActiveModel {
+					minecraft_uuid: ActiveValue::Set(minecraft_uuid),
+					..Default::default()
+				})
 				.exec_with_returning(db)
 				.await?,
 		})

@@ -1,41 +1,43 @@
 use sea_orm_migration::{prelude::*, schema::*};
 
+#[derive(DeriveIden)]
+pub enum User {
+	Table,
+	Id,
+	MinecraftUuid
+}
+
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-		// Replace the sample below with your own migration scripts
-		todo!();
-
 		manager
 			.create_table(
 				Table::create()
-					.table(Post::Table)
+					.table(User::Table)
 					.if_not_exists()
-					.col(pk_auto(Post::Id))
-					.col(string(Post::Title))
-					.col(string(Post::Text))
+					.col(
+						ColumnDef::new(User::Id)
+							.integer()
+							.auto_increment()
+							.primary_key()
+					)
+					.col(
+						ColumnDef::new(User::MinecraftUuid)
+							.uuid()
+							.unique_key()
+							.not_null()
+					)
 					.to_owned()
 			)
 			.await
 	}
 
 	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-		// Replace the sample below with your own migration scripts
-		todo!();
-
 		manager
-			.drop_table(Table::drop().table(Post::Table).to_owned())
+			.drop_table(Table::drop().table(User::Table).to_owned())
 			.await
 	}
-}
-
-#[derive(DeriveIden)]
-enum Post {
-	Table,
-	Id,
-	Title,
-	Text
 }
