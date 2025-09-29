@@ -9,6 +9,7 @@ use crate::commands::backend_args;
 
 mod api;
 mod commands;
+mod database;
 
 #[tokio::main]
 async fn main() {

@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, str::FromStr};
 
+use axum_client_ip::ClientIpSource;
 use bpaf::Bpaf;
 
 #[derive(Clone, Debug, Bpaf)]
@@ -31,7 +32,22 @@ pub(crate) struct ServeArgs {
 	/// with
 	#[bpaf(long("tebex-webhook-secret"), env("TEBEX_WEBHOOK_SECRET"))]
 	pub(crate) tebex_webhook_secret: String,
+	/// The Tebex game server secret to use for interacting with the Plugin API
+	#[bpaf(long("tebex-game-server-secret"), env("TEBEX_GAME_SERVER_SECRET"))]
+	pub(crate) tebex_game_server_secret: String,
 	/// The URL to use for connecting to the database
 	#[bpaf(long("database-url"), env("DATABASE_URL"))]
-	pub(crate) database_url: String
+	pub(crate) database_url: String,
+	/// Where to source client IPs from. By default, parsed IPs will simply be
+	/// the connecting remote IP address. However, other options like
+	/// RightmostXForwardedFor can be passed to change this behavior. When set
+	/// to anything except ConnectInfo, make sure that the API is run behind a
+	/// TRUSTED reverse proxy, and is not exposed to the internet otherwise.
+	/// See https://docs.rs/axum-client-ip/latest/axum_client_ip/enum.ClientIpSource.html for availible choices.
+	#[bpaf(
+		long("client-ip-source"),
+		env("CLIENT_IP_SOURCE"),
+		fallback(ClientIpSource::ConnectInfo)
+	)]
+	pub(crate) client_ip_source: ClientIpSource
 }

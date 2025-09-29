@@ -75,6 +75,7 @@ pub(crate) async fn start(args: ServeArgs) {
 			)
 		)
 		.layer(Extension(OpenApiSpec(openapi_rendered)))
+		.layer(Extension(args.client_ip_source))
 		.layer(TraceLayer::new_for_http());
 
 	// Setup the listener and start the web server

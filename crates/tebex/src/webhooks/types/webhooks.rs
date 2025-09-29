@@ -1,22 +1,10 @@
-use std::{
-	collections::HashMap,
-	net::{IpAddr, Ipv4Addr}
-};
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::webhooks::TebexPaymentSubject;
-
-/// The IP addresses Tebex will always send webhook payloads from.
-///
-/// It is recommended that you ignore any requests not from these IPs.
-pub const WEBHOOK_REMOTE_IPS: &[IpAddr] = &[
-	// https://docs.tebex.io/developers/webhooks/overview#ip-address
-	IpAddr::V4(Ipv4Addr::new(18, 209, 80, 3)),
-	IpAddr::V4(Ipv4Addr::new(54, 87, 231, 232))
-];
 
 #[derive(Debug, Deserialize)]
 pub struct TebexWebhookPayload {

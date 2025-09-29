@@ -4,9 +4,20 @@ pub mod axum;
 mod tests;
 mod types;
 
+use std::net::{IpAddr, Ipv4Addr};
+
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 pub use types::*;
+
+/// The IP addresses Tebex will always send webhook payloads from.
+///
+/// It is recommended that you ignore any requests not from these IPs.
+pub const WEBHOOK_SOURCE_IPS: &[IpAddr] = &[
+	// https://docs.tebex.io/developers/webhooks/overview#ip-address
+	IpAddr::V4(Ipv4Addr::new(18, 209, 80, 3)),
+	IpAddr::V4(Ipv4Addr::new(54, 87, 231, 232))
+];
 
 const SHA256_BYTES: usize = 256 / 8;
 type HmacSha256 = Hmac<Sha256>;

@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use sea_orm::{ActiveValue, TransactionError, TransactionTrait, prelude::Uuid};
+use sea_orm::{ActiveValue, QuerySelect, TransactionError, TransactionTrait};
 use serde::Serialize;
 use tebex::webhooks::{TebexWebhookPayload, WebhookType};
 use tracing::{Instrument, Level, debug, span, trace, warn};
 
-use crate::api::ApiState;
+use crate::{api::ApiState, database::DatabaseUserExt};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TebexWebhokError {
@@ -37,9 +35,8 @@ struct SuccessfulWebhookResponse {
 
 // TODO: Proper instrumentation for this with webhook type
 /// The actual webhook handler
-#[axum::debug_handler]
 #[tracing::instrument(level = "debug", skip_all)]
-pub(super) async fn tebex_webhook_endpoint(
+pub(super) async fn endpoint(
 	State(state): State<ApiState>,
 	payload: TebexWebhookPayload
 ) -> Result<impl IntoResponse, TebexWebhokError> {
@@ -50,46 +47,37 @@ pub(super) async fn tebex_webhook_endpoint(
 		// Validation should be a no-op & just return success
 		WebhookType::WebhookValidation {} => (),
 		WebhookType::PaymentCompleted { payment } => {
-			let cosmetics = payment.products.into_iter().fold(
-				HashMap::<Uuid, Vec<_>>::new(),
-				|mut acc, product| {
-					if let Some(id) = product
-						.custom
-						.strip_prefix("plus:cosmetic:")
-						.and_then(|id| id.parse().ok())
-						&& let Ok(uuid) = Uuid::try_parse(&product.username.id)
-					{
-						acc.entry(uuid).or_default().push(id);
-					};
-
-					acc
-				}
-			);
-
 			state
 				.database
 				.transaction::<_, (), TebexWebhokError>(|txn| {
-					use entities::{player, player_cosmetic, prelude::*};
+					use entities::{cosmetic_package, prelude::*, user_cosmetic};
 					use sea_orm::prelude::*;
 
 					Box::pin(
 						async move {
-							for (uuid, cosmetics) in cosmetics.into_iter() {
-								// Ensure player exists
-								Player::insert(player::ActiveModel {
-									minecraft_uuid: ActiveValue::Set(uuid)
-								})
-								.on_conflict_do_nothing()
-								.exec(txn)
-								.await?;
+							let products = payment.products.iter().filter_map(|p| {
+								Some((Uuid::try_parse(&p.username.id).ok()?, p.id))
+							});
 
-								// Create PlayerCosmetic(s)
-								PlayerCosmetic::insert_many(cosmetics.into_iter().map(
-									|id| player_cosmetic::ActiveModel {
-										player: ActiveValue::Set(uuid),
-										cosmetic: ActiveValue::Set(id)
+							for (uuid, product_id) in products {
+								let user = User::get_or_create(txn, uuid).await?;
+								let cosmetics = CosmeticPackage::find()
+									.filter(
+										cosmetic_package::Column::PackageId
+											.eq(product_id)
+									)
+									.all(txn)
+									.await?;
+
+								UserCosmetic::insert_many(cosmetics.iter().map(|c| {
+									user_cosmetic::ActiveModel {
+										user: ActiveValue::Set(user.id),
+										cosmetic: ActiveValue::Set(c.cosmetic_id),
+										transaction_id: ActiveValue::Set(
+											payment.transaction_id.clone()
+										)
 									}
-								))
+								}))
 								.on_conflict_do_nothing()
 								.exec(txn)
 								.await?;
