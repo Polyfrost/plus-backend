@@ -3,7 +3,8 @@
 INSERT INTO cosmetic (id, type, path)
 VALUES
     (1, 'cape', 'cape.png'),
-    (2, 'cape', 'cape2.png');
+    (2, 'cape', 'cape2.png'),
+    (3, 'emote', NULL);
 
 INSERT INTO cosmetic_package (package_id, cosmetic_id)
 VALUES

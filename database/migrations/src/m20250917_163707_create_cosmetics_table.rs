@@ -4,11 +4,12 @@ use sea_orm_migration::{
 };
 
 #[derive(DeriveIden)]
-struct CosmeticType;
+pub struct CosmeticType;
 
 #[derive(DeriveIden, EnumIter)]
 pub enum CosmeticVariants {
-	Cape
+	Cape,
+	Emote
 }
 
 #[derive(DeriveIden)]
@@ -50,7 +51,7 @@ impl MigrationTrait for Migration {
 							.custom(CosmeticType)
 							.not_null()
 					)
-					.col(ColumnDef::new(Cosmetic::Path).string().not_null())
+					.col(ColumnDef::new(Cosmetic::Path).string().null())
 					.to_owned()
 			)
 			.await?;
