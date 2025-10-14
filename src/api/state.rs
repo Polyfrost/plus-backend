@@ -2,6 +2,11 @@ use std::{borrow::Cow, time::Duration};
 
 use axum::extract::FromRef;
 use migrations::{Migrator, MigratorTrait};
+use pasetors::{
+	keys::{Generate, SymmetricKey},
+	version4::V4
+};
+use reqwest::{Client, ClientBuilder};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tebex::{apis::plugin::TebexPluginApiClient, webhooks::axum::TebexWebhookState};
 use tracing::info;
@@ -39,7 +44,14 @@ impl ApiState {
 				plugin_client: TebexPluginApiClient::new(&args.tebex_game_server_secret)
 					.expect("Unable to construct Tebex plugin API client")
 			},
-			database
+			database,
+			client: ClientBuilder::new()
+				.https_only(true)
+				.user_agent("PolyPlus Backend")
+				.build()
+				.expect("Unable to build reqwest HTTPS client"),
+			paseto_key: SymmetricKey::generate()
+				.expect("Unable to generate paseto signing key")
 		}
 	}
 }
@@ -47,7 +59,9 @@ impl ApiState {
 #[derive(Debug, Clone)]
 pub(super) struct ApiState {
 	pub(super) tebex: TebexApiState,
-	pub(super) database: DatabaseConnection
+	pub(super) database: DatabaseConnection,
+	pub(super) client: Client,
+	pub(super) paseto_key: SymmetricKey<V4>
 }
 
 #[derive(Debug, Clone)]

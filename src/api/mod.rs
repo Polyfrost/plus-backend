@@ -1,17 +1,43 @@
+mod account;
 mod payments;
 mod state;
 
+use std::net::IpAddr;
+
 use aide::{
+	OperationIo,
 	axum::ApiRouter,
-	openapi::{Contact, License, OpenApi, Server},
+	openapi::{Contact, License, OpenApi, SecurityScheme, Server},
 	scalar::Scalar,
 	transform::TransformOpenApi
 };
-use axum::{Extension, http::header, routing::get as axum_get};
+use axum::{
+	Extension,
+	extract::FromRequestParts,
+	http::{header, request::Parts},
+	routing::get as axum_get
+};
+use axum_client_ip::ClientIp;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 
 use crate::{api::state::ApiState, commands::ServeArgs};
+
+#[derive(OperationIo)]
+pub struct ClientIpExtractor(pub IpAddr);
+
+impl<S: Sync> FromRequestParts<S> for ClientIpExtractor {
+	type Rejection = <ClientIp as FromRequestParts<S>>::Rejection;
+
+	async fn from_request_parts(
+		parts: &mut Parts,
+		state: &S
+	) -> Result<Self, Self::Rejection> {
+		ClientIp::from_request_parts(parts, state)
+			.await
+			.map(|ClientIp(ip)| Self(ip))
+	}
+}
 
 fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 	spec.version("1.0.0")
@@ -43,6 +69,12 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 			description: Some("A development backend server".to_string()),
 			..Default::default()
 		})
+		.security_scheme(account::OPENAPI_SECURITY_NAME, SecurityScheme::Http {
+			scheme: "bearer".to_string(),
+			bearer_format: Some("paseto".to_string()),
+			description: None,
+			extensions: Default::default()
+		})
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +85,7 @@ pub(crate) async fn start(args: ServeArgs) {
 
 	let app = ApiRouter::new()
 		.nest("/payments", payments::setup_router().await)
+		.nest("/account", account::setup_router().await)
 		.with_state(state);
 
 	// Convert OpenAPI router to normal actix router, and render the doc as JSON

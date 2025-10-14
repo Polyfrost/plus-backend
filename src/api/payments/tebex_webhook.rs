@@ -1,5 +1,5 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use sea_orm::{ActiveValue, QuerySelect, TransactionError, TransactionTrait};
+use sea_orm::{ActiveValue, TransactionError, TransactionTrait};
 use serde::Serialize;
 use tebex::webhooks::{TebexWebhookPayload, WebhookType};
 use tracing::{Instrument, Level, debug, span, trace, warn};
