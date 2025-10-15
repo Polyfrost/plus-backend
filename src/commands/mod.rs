@@ -49,5 +49,14 @@ pub(crate) struct ServeArgs {
 		env("CLIENT_IP_SOURCE"),
 		fallback(ClientIpSource::ConnectInfo)
 	)]
-	pub(crate) client_ip_source: ClientIpSource
+	pub(crate) client_ip_source: ClientIpSource,
+	/// The name of the s3 bucket to use
+	#[bpaf(long("s3-bucket-name"), env("S3_BUCKET_NAME"))]
+	pub(crate) s3_bucket_name: String,
+	/// The region of the s3 bucket to use
+	#[bpaf(long("s3-bucket-region"), env("S3_BUCKET_REGION"))]
+	pub(crate) s3_bucket_region: String,
+	/// The endpoint of the s3 bucket to use
+	#[bpaf(long("s3-bucket-endpoint"), env("S3_BUCKET_ENDPOINT"))]
+	pub(crate) s3_bucket_endpoint: String
 }

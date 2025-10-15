@@ -6,3 +6,5 @@ publish = false
 
 [dependencies]
 sea-orm.workspace = true
+schemars.workspace = true
+serde.workspace = true

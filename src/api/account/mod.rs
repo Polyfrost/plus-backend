@@ -23,6 +23,7 @@ pub const OPENAPI_SECURITY_NAME: &str = "Bearer Token";
 pub const PASETO_IMPLICIT_ASSERT: Option<&[u8]> = Some(b"plus-backend");
 
 pub struct AuthenticationExtractor(pub Uuid);
+pub struct OptionalAuthenticationExtractor(pub Option<Uuid>);
 
 impl OperationInput for AuthenticationExtractor {
 	fn operation_input(
@@ -33,6 +34,18 @@ impl OperationInput for AuthenticationExtractor {
 			OPENAPI_SECURITY_NAME.to_string(),
 			Vec::new()
 		)]));
+	}
+}
+
+impl OperationInput for OptionalAuthenticationExtractor {
+	fn operation_input(
+		_ctx: &mut aide::generate::GenContext,
+		operation: &mut aide::openapi::Operation
+	) {
+		operation.security.extend([
+			SecurityRequirement::default(),
+			SecurityRequirement::from([(OPENAPI_SECURITY_NAME.to_string(), Vec::new())])
+		]);
 	}
 }
 
@@ -82,6 +95,27 @@ impl FromRequestParts<ApiState> for AuthenticationExtractor {
 		Uuid::parse_str(sub)
 			.map(Self)
 			.map_err(|_| MISSING_AUTHORIZATION_ERR.into_response())
+	}
+}
+
+impl FromRequestParts<ApiState> for OptionalAuthenticationExtractor {
+	type Rejection = <AuthenticationExtractor as FromRequestParts<ApiState>>::Rejection;
+
+	async fn from_request_parts(
+		parts: &mut Parts,
+		state: &ApiState
+	) -> Result<Self, Self::Rejection> {
+		Ok(Self(
+			if parts.headers.contains_key(AUTHORIZATION) {
+				Some(
+					AuthenticationExtractor::from_request_parts(parts, state)
+						.await?
+						.0
+				)
+			} else {
+				None
+			}
+		))
 	}
 }
 

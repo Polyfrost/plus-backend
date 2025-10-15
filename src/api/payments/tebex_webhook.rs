@@ -75,7 +75,8 @@ pub(super) async fn endpoint(
 										cosmetic: ActiveValue::Set(c.cosmetic_id),
 										transaction_id: ActiveValue::Set(
 											payment.transaction_id.clone()
-										)
+										),
+										..Default::default()
 									}
 								}))
 								.on_conflict_do_nothing()

@@ -1,4 +1,5 @@
 mod account;
+mod cosmetics;
 mod payments;
 mod state;
 
@@ -86,6 +87,7 @@ pub(crate) async fn start(args: ServeArgs) {
 	let app = ApiRouter::new()
 		.nest("/payments", payments::setup_router().await)
 		.nest("/account", account::setup_router().await)
+		.nest("/cosmetics", cosmetics::setup_router().await)
 		.with_state(state);
 
 	// Convert OpenAPI router to normal actix router, and render the doc as JSON

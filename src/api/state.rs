@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use axum::extract::FromRef;
 use migrations::{Migrator, MigratorTrait};
@@ -7,6 +7,7 @@ use pasetors::{
 	version4::V4
 };
 use reqwest::{Client, ClientBuilder};
+use s3::{Bucket, creds::Credentials};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use tebex::{apis::plugin::TebexPluginApiClient, webhooks::axum::TebexWebhookState};
 use tracing::info;
@@ -51,7 +52,20 @@ impl ApiState {
 				.build()
 				.expect("Unable to build reqwest HTTPS client"),
 			paseto_key: SymmetricKey::generate()
-				.expect("Unable to generate paseto signing key")
+				.expect("Unable to generate paseto signing key"),
+			s3_bucket: Bucket::new(
+				&args.s3_bucket_name,
+				s3::Region::Custom {
+					region: args.s3_bucket_region.clone(),
+					endpoint: args.s3_bucket_endpoint.clone()
+				},
+				Credentials::default().expect(
+					"Unable to read s3 credentials (https://lib.rs/crates/aws-creds)"
+				)
+			)
+			.expect("Unable to connect to s3 bucket")
+			.with_path_style()
+			.into()
 		}
 	}
 }
@@ -61,7 +75,8 @@ pub(super) struct ApiState {
 	pub(super) tebex: TebexApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
-	pub(super) paseto_key: SymmetricKey<V4>
+	pub(super) paseto_key: SymmetricKey<V4>,
+	pub(super) s3_bucket: Arc<Bucket>
 }
 
 #[derive(Debug, Clone)]

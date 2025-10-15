@@ -149,7 +149,8 @@ async fn endpoint(
 					.try_into()
 					.expect("package_id should not be negative")]
 					.to_string()
-			)
+			),
+			..Default::default()
 		}
 	}))
 	.on_conflict(OnConflict::new().do_nothing().to_owned())

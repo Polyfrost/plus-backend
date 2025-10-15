@@ -2,4 +2,4 @@
 
 use sea_orm :: entity :: prelude :: * ;
 
-# [derive (Debug , Clone , PartialEq , Eq , EnumIter , DeriveActiveEnum)] # [sea_orm (rs_type = "String" , db_type = "Enum" , enum_name = "cosmetic_type")] pub enum CosmeticType { # [sea_orm (string_value = "cape")] Cape , }
+# [derive (Debug , Clone , PartialEq , Eq , EnumIter , DeriveActiveEnum , schemars :: JsonSchema , serde :: Serialize , Hash)] # [sea_orm (rs_type = "String" , db_type = "Enum" , enum_name = "cosmetic_type")] # [serde (rename_all = "snake_case")] pub enum CosmeticType { # [sea_orm (string_value = "cape")] Cape , # [sea_orm (string_value = "emote")] Emote , }
