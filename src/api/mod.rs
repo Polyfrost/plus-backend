@@ -4,38 +4,37 @@ mod payments;
 mod state;
 mod websocket;
 
-use std::net::IpAddr;
-
 use aide::{
-	axum::ApiRouter, openapi::{Contact, License, OpenApi, SecurityScheme, Server}, redoc::Redoc, scalar::Scalar, swagger::Swagger, transform::TransformOpenApi, OperationIo
+	axum::ApiRouter,
+	openapi::{
+		Contact,
+		License,
+		OpenApi,
+		SchemaObject,
+		SecurityScheme,
+		Server
+	},
+	redoc::Redoc,
+	scalar::Scalar,
+	swagger::Swagger,
+	transform::TransformOpenApi
 };
 use axum::{
 	Extension,
-	extract::FromRequestParts,
-	http::{header, request::Parts},
+	http::header,
 	routing::get as axum_get
 };
-use axum_client_ip::ClientIp;
+use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 
-use crate::{api::state::ApiState, commands::ServeArgs};
-
-#[derive(OperationIo)]
-pub struct ClientIpExtractor(pub IpAddr);
-
-impl<S: Sync> FromRequestParts<S> for ClientIpExtractor {
-	type Rejection = <ClientIp as FromRequestParts<S>>::Rejection;
-
-	async fn from_request_parts(
-		parts: &mut Parts,
-		state: &S
-	) -> Result<Self, Self::Rejection> {
-		ClientIp::from_request_parts(parts, state)
-			.await
-			.map(|ClientIp(ip)| Self(ip))
-	}
-}
+use crate::{
+	api::{
+		state::ApiState,
+		websocket::structs::{ClientBoundPacket, ServerBoundPacket}
+	},
+	commands::ServeArgs
+};
 
 fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 	spec.version("1.0.0")
@@ -60,6 +59,11 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 		.server(Server {
 			url: "https://plus.polyfrost.org".to_string(),
 			description: Some("The production Poly+ backend".to_string()),
+			..Default::default()
+		})
+		.server(Server {
+			url: "https://plus-staging.polyfrost.org".to_string(),
+			description: Some("The staging Poly+ backend".to_string()),
 			..Default::default()
 		})
 		.server(Server {
@@ -91,6 +95,24 @@ pub(crate) async fn start(args: ServeArgs) {
 	// Convert OpenAPI router to normal actix router, and render the doc as JSON
 	let mut openapi = OpenApi::default();
 	let app = app.finish_api_with(&mut openapi, init_openapi_spec);
+	if let Some(components) = openapi.components.as_mut() {
+		components.schemas.insert(
+			ClientBoundPacket::schema_name().into_owned(),
+			SchemaObject {
+				json_schema: schema_for!(ClientBoundPacket),
+				example: None,
+				external_docs: None
+			}
+		);
+		components.schemas.insert(
+			ServerBoundPacket::schema_name().into_owned(),
+			SchemaObject {
+				json_schema: schema_for!(ServerBoundPacket),
+				example: None,
+				external_docs: None
+			}
+		);
+	}
 	let openapi_rendered = Box::leak(
 		serde_json::to_string(&openapi)
 			.expect("Unable to render OpenAPI documentation as JSON")
@@ -98,7 +120,10 @@ pub(crate) async fn start(args: ServeArgs) {
 	);
 	let app = app
 		.route("/scalar", Scalar::new("/openapi.json").axum_route().into())
-		.route("/swagger", Swagger::new("/openapi.json").axum_route().into())
+		.route(
+			"/swagger",
+			Swagger::new("/openapi.json").axum_route().into()
+		)
 		.route("/redoc", Redoc::new("/openapi.json").axum_route().into())
 		.route(
 			"/openapi.json",
