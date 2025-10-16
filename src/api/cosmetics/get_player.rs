@@ -41,7 +41,7 @@ pub enum ResponseError {
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listCosmetics")
-		.summary("Lists a player's cosmetic status")
+		.summary("List a player's cosmetic status")
 		.description(
 			"Lists all cosmetics owned by a player, along with all active cosmetics"
 		)
@@ -101,7 +101,7 @@ async fn endpoint(
 	Query(query): Query<QueryParams>
 ) -> Result<Json<Response>, ResponseError> {
 	let mut response = Response::default();
-	let Some(player) = player.or(query.player) else {
+	let Some(player) = query.player.or(player) else {
 		return Err(ResponseError::PlayerRequired);
 	};
 

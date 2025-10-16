@@ -2,15 +2,12 @@ mod account;
 mod cosmetics;
 mod payments;
 mod state;
+mod websocket;
 
 use std::net::IpAddr;
 
 use aide::{
-	OperationIo,
-	axum::ApiRouter,
-	openapi::{Contact, License, OpenApi, SecurityScheme, Server},
-	scalar::Scalar,
-	transform::TransformOpenApi
+	axum::ApiRouter, openapi::{Contact, License, OpenApi, SecurityScheme, Server}, redoc::Redoc, scalar::Scalar, swagger::Swagger, transform::TransformOpenApi, OperationIo
 };
 use axum::{
 	Extension,
@@ -88,6 +85,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.nest("/payments", payments::setup_router().await)
 		.nest("/account", account::setup_router().await)
 		.nest("/cosmetics", cosmetics::setup_router().await)
+		.merge(websocket::setup_router().await)
 		.with_state(state);
 
 	// Convert OpenAPI router to normal actix router, and render the doc as JSON
@@ -99,8 +97,9 @@ pub(crate) async fn start(args: ServeArgs) {
 			.into_boxed_str()
 	);
 	let app = app
-		// TODO: Do we want scalar? or just swagger? redoc even?
 		.route("/scalar", Scalar::new("/openapi.json").axum_route().into())
+		.route("/swagger", Swagger::new("/openapi.json").axum_route().into())
+		.route("/redoc", Redoc::new("/openapi.json").axum_route().into())
 		.route(
 			"/openapi.json",
 			axum_get(

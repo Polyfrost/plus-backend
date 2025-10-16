@@ -13,7 +13,7 @@ tracing = "0.1.41"
 tokio = { version = "1.47.1", features = ["full"] }
 # Axum
 aide = { version = "0.15.0", features = [
-    "scalar", "macros",
+    "scalar", "swagger", "redoc", "macros",
     "axum", "axum-json", "axum-query"
 ] }
 schemars = { version = "0.9.0", features = ["derive", "uuid1"] } # Locked to aide's version

@@ -25,7 +25,7 @@ pub(crate) struct ServeArgs {
 		long("bind-addr"),
 		long("bind-address"),
 		env("BIND_ADDR"),
-		fallback(SocketAddr::from_str("[::]:8080").unwrap())
+		fallback(SocketAddr::from_str("[::]:8080").expect("This str is always a valid SocketAddr"))
 	)]
 	pub(crate) bind_addr: SocketAddr,
 	/// The Tebex webhook secret to validate all webhook endpoint signatures

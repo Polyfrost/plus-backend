@@ -43,7 +43,7 @@ pub enum ResponseError {
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("putCosmetics")
-		.summary("Sets the player's active cosmetics")
+		.summary("Set a player's active cosmetics")
 		.description("Sets the authorized player's active cosmetics")
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {

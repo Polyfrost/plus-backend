@@ -37,7 +37,7 @@ pub enum LoginError {
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("login")
-		.summary("Logs in as a minecraft player")
+		.summary("Log in as a minecraft player")
 		.description("Logs in using mojang sessionserver authentication")
 		.tag("account")
 		.response_with::<{ StatusCode::INTERNAL_SERVER_ERROR.as_u16() }, String, _>(

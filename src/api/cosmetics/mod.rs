@@ -48,6 +48,10 @@ macro_rules! gen_active_cosmetics_structs {
 			),+
 		}
 
+		impl ActiveCosmetics {
+			pub const NAMES: [&str; { [$(stringify!($name)),+].len() }] = [$(stringify!($name)),+];
+		}
+
 		/// An object of partially-set active cosmetics.
 		///
 		/// Omitting a key keeps it the same, using `null` unsets it, and passing a value sets that as the active.
@@ -70,7 +74,7 @@ macro_rules! gen_active_cosmetics_structs {
 		impl IntoIterator for &PartialActiveCosmetics {
 			type Item = (&'static str, Option<i32>);
 			type IntoIter = std::iter::Flatten<
-				std::array::IntoIter<Option<(&'static str, Option<i32>)>, { [$(stringify!($name)),+].len() }>
+				std::array::IntoIter<Option<(&'static str, Option<i32>)>, { ActiveCosmetics::NAMES.len() }>
 			>;
 
 			fn into_iter(self) -> Self::IntoIter {
@@ -80,7 +84,7 @@ macro_rules! gen_active_cosmetics_structs {
 	};
 }
 
-gen_active_cosmetics_structs!(cape, emote);
+gen_active_cosmetics_structs!(cape);
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
