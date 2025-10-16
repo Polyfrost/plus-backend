@@ -6,24 +6,13 @@ mod websocket;
 
 use aide::{
 	axum::ApiRouter,
-	openapi::{
-		Contact,
-		License,
-		OpenApi,
-		SchemaObject,
-		SecurityScheme,
-		Server
-	},
+	openapi::{Contact, License, OpenApi, SchemaObject, SecurityScheme, Server},
 	redoc::Redoc,
 	scalar::Scalar,
 	swagger::Swagger,
 	transform::TransformOpenApi
 };
-use axum::{
-	Extension,
-	http::header,
-	routing::get as axum_get
-};
+use axum::{Extension, http::header, routing::get as axum_get};
 use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
@@ -88,7 +77,7 @@ pub(crate) async fn start(args: ServeArgs) {
 	let app = ApiRouter::new()
 		.nest("/payments", payments::setup_router().await)
 		.nest("/account", account::setup_router().await)
-		.nest("/cosmetics", cosmetics::setup_router().await)
+		.merge(cosmetics::setup_router().await)
 		.merge(websocket::setup_router().await)
 		.with_state(state);
 

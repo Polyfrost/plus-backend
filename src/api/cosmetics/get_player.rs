@@ -40,8 +40,8 @@ pub enum ResponseError {
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
-	op.id("listCosmetics")
-		.summary("List a player's cosmetic status")
+	op.id("getPlayerCosmetics")
+		.summary("Get a player's cosmetic status")
 		.description(
 			"Lists all cosmetics owned by a player, along with all active cosmetics"
 		)

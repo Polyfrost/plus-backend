@@ -1,4 +1,5 @@
 mod get_player;
+mod list;
 mod put_player;
 
 use aide::axum::ApiRouter;
@@ -23,13 +24,13 @@ struct CosmeticInfo {
 impl CosmeticInfo {
 	async fn from_db(
 		model: entities::cosmetic::Model,
-		bucket: &s3::Bucket
+		bucket: impl AsRef<s3::Bucket>
 	) -> Result<Self, S3Error> {
 		Ok(Self {
 			id: model.id,
 			r#type: model.r#type.clone(),
 			url: match &model.path {
-				Some(p) => Some(bucket.presign_get(p, 604800, None).await?),
+				Some(p) => Some(bucket.as_ref().presign_get(p, 604800, None).await?),
 				_ => None
 			}
 		})
@@ -88,6 +89,11 @@ gen_active_cosmetics_structs!(cape);
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.merge(get_player::router())
-		.merge(put_player::router())
+		.nest(
+			"/cosmetics",
+			ApiRouter::new()
+				.merge(get_player::router())
+				.merge(put_player::router())
+		)
+		.merge(list::router())
 }
