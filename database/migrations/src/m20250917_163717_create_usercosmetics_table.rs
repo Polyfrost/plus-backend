@@ -21,7 +21,8 @@ impl MigrationTrait for Migration {
 					.col(
 						ColumnDef::new(UserCosmetic::TransactionId)
 							.string_len(25)
-							.not_null()
+							.null()
+							.default(Keyword::Null)
 					)
 					.foreign_key(
 						ForeignKey::create()

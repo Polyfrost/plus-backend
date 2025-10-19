@@ -74,7 +74,7 @@ pub(super) async fn endpoint(
 										user: ActiveValue::Set(user.id),
 										cosmetic: ActiveValue::Set(c.cosmetic_id),
 										transaction_id: ActiveValue::Set(
-											payment.transaction_id.clone()
+											Some(payment.transaction_id.clone())
 										),
 										..Default::default()
 									}

@@ -4,7 +4,7 @@
 
 use sea_orm :: entity :: prelude :: * ;
 
-# [derive (Clone , Debug , PartialEq , DeriveEntityModel , Eq)] # [sea_orm (table_name = "user_cosmetic")] pub struct Model { # [sea_orm (primary_key , auto_increment = false)] pub user : i32 , # [sea_orm (primary_key , auto_increment = false)] pub cosmetic : i32 , pub transaction_id : String , pub active : bool , }
+# [derive (Clone , Debug , PartialEq , DeriveEntityModel , Eq)] # [sea_orm (table_name = "user_cosmetic")] pub struct Model { # [sea_orm (primary_key , auto_increment = false)] pub user : i32 , # [sea_orm (primary_key , auto_increment = false)] pub cosmetic : i32 , pub transaction_id : Option < String > , pub active : bool , }
 
 # [derive (Copy , Clone , Debug , EnumIter , DeriveRelation)] pub enum Relation { # [sea_orm (belongs_to = "super::cosmetic::Entity" , from = "Column::Cosmetic" , to = "super::cosmetic::Column::Id" , on_update = "NoAction" , on_delete = "NoAction" ,)] Cosmetic , # [sea_orm (belongs_to = "super::user::Entity" , from = "Column::User" , to = "super::user::Column::Id" , on_update = "NoAction" , on_delete = "NoAction" ,)] User , }
 

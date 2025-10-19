@@ -142,13 +142,13 @@ async fn endpoint(
 			user: ActiveValue::Set(user.id),
 			cosmetic: ActiveValue::Set(c.id),
 			transaction_id: ActiveValue::Set(
-				transactions[&cp
+				Some(transactions[&cp
 					.first()
 					.expect("should be at least one CosmeticPackage")
 					.package_id
 					.try_into()
 					.expect("package_id should not be negative")]
-					.to_string()
+					.to_string())
 			),
 			..Default::default()
 		}
@@ -161,8 +161,8 @@ async fn endpoint(
 	txn.commit().await?;
 
 	if let TryInsertResult::Inserted(inserted) = inserted {
-		for model in inserted {
-			response.restored_ids.insert(model.transaction_id);
+		for txn_id in inserted.into_iter().filter_map(|m| m.transaction_id) {
+			response.restored_ids.insert(txn_id);
 		}
 	}
 
