@@ -141,15 +141,15 @@ async fn endpoint(
 		user_cosmetic::ActiveModel {
 			user: ActiveValue::Set(user.id),
 			cosmetic: ActiveValue::Set(c.id),
-			transaction_id: ActiveValue::Set(
-				Some(transactions[&cp
+			transaction_id: ActiveValue::Set(Some(
+				transactions[&cp
 					.first()
 					.expect("should be at least one CosmeticPackage")
 					.package_id
 					.try_into()
 					.expect("package_id should not be negative")]
-					.to_string())
-			),
+					.to_string()
+			)),
 			..Default::default()
 		}
 	}))

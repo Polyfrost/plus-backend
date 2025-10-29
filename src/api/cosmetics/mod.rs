@@ -2,15 +2,18 @@ mod get_player;
 mod list;
 mod put_player;
 
+use std::sync::Arc;
+
 use aide::axum::ApiRouter;
 use entities::sea_orm_active_enums::CosmeticType;
-use s3::error::S3Error;
+use moka::future::Cache;
+use s3::{Bucket, error::S3Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::api::ApiState;
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 struct CosmeticInfo {
 	/// The unique ID of this cosmetic
 	id: i32,
@@ -18,20 +21,75 @@ struct CosmeticInfo {
 	r#type: CosmeticType,
 	/// The media url for this cosmetic
 	#[serde(skip_serializing_if = "Option::is_none")]
-	url: Option<String>
+	url: Option<String>,
+	#[serde(flatten)]
+	cached_info: CachedCosmeticInfo
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct CachedCosmeticInfo {
+	/// The hash of this cosmetic. A different hash indicates
+	/// the cosmetic has changed and should be redownlowded.
+	/// The hash format is unspecified
+	hash: String
 }
 
 impl CosmeticInfo {
-	async fn from_db(
-		model: entities::cosmetic::Model,
-		bucket: impl AsRef<s3::Bucket>
+	#[tracing::instrument(
+		name = "convert_db_cosmetic_info",
+		level = "debug",
+		skip(cache, s3_bucket)
+	)]
+	pub async fn from_db_model(
+		value: &entities::cosmetic::Model,
+		cache: Cache<i32, CachedCosmeticInfo>,
+		s3_bucket: Arc<Bucket>
 	) -> Result<Self, S3Error> {
 		Ok(Self {
-			id: model.id,
-			r#type: model.r#type.clone(),
-			url: match &model.path {
-				Some(p) => Some(bucket.as_ref().presign_get(p, 604800, None).await?),
+			id: value.id,
+			r#type: value.r#type.clone(),
+			url: match &value.path {
+				Some(p) => Some(s3_bucket.as_ref().presign_get(p, 604800, None).await?),
 				_ => None
+			},
+			cached_info: if let Some(info) = cache.get(&value.id).await {
+				info
+			} else {
+				CachedCosmeticInfo::from_db_model(value, s3_bucket).await?
+			}
+		})
+	}
+}
+
+impl CachedCosmeticInfo {
+	// sha256("null")
+	const DEFAULT_HASH: &str = "37a6259cc0c1dae299a7866489dff0bd";
+
+	#[tracing::instrument(
+		name = "fetch_cached_cosmetic_info",
+		level = "debug",
+		skip(s3_bucket)
+	)]
+	pub async fn from_db_model(
+		value: &entities::cosmetic::Model,
+		s3_bucket: Arc<Bucket>
+	) -> Result<Self, S3Error> {
+		Ok(Self {
+			hash: match &value.path {
+				Some(path) => {
+					let (headers, _) = s3_bucket.head_object(path).await?;
+					match headers.e_tag {
+						None => Self::DEFAULT_HASH.to_string(),
+						Some(ref etag) => {
+							let etag = etag.strip_prefix("W/").unwrap_or(etag);
+							let etag = etag.strip_prefix('"').unwrap_or(etag);
+							let etag = etag.strip_suffix('"').unwrap_or(etag);
+
+							etag.to_string()
+						}
+					}
+				}
+				None => Self::DEFAULT_HASH.to_string()
 			}
 		})
 	}

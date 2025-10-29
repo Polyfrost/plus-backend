@@ -137,8 +137,11 @@ async fn endpoint(
 				}
 			}
 
-			let bucket = state.s3_bucket.clone();
-			tasks.spawn(async move { CosmeticInfo::from_db(cosmetic, &bucket).await });
+			let cosmetic_cache = state.cosmetic_cache.clone();
+			let s3_bucket = state.s3_bucket.clone();
+			tasks.spawn(async move {
+				CosmeticInfo::from_db_model(&cosmetic, cosmetic_cache, s3_bucket).await
+			});
 		}
 		response.cosmetics.extend(
 			tasks

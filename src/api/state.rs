@@ -1,18 +1,20 @@
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use axum::extract::FromRef;
+use entities::prelude::*;
 use migrations::{Migrator, MigratorTrait};
+use moka::future::Cache;
 use pasetors::{
 	keys::{Generate, SymmetricKey},
 	version4::V4
 };
 use reqwest::{Client, ClientBuilder};
 use s3::{Bucket, creds::Credentials};
-use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+use sea_orm::{ConnectOptions, Database, DatabaseConnection, EntityTrait};
 use tebex::{apis::plugin::TebexPluginApiClient, webhooks::axum::TebexWebhookState};
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::commands::ServeArgs;
+use crate::{api::cosmetics::CachedCosmeticInfo, commands::ServeArgs};
 
 impl ApiState {
 	#[tracing::instrument(skip_all, name = "initialize_state", level = "debug")]
@@ -36,6 +38,43 @@ impl ApiState {
 			.expect("Failure migrating database");
 		info!("Database successfully initialized");
 
+		// Setup s3 bucket
+		let s3_bucket: Arc<Bucket> = Bucket::new(
+			&args.s3_bucket_name,
+			s3::Region::Custom {
+				region: args.s3_bucket_region.clone(),
+				endpoint: args.s3_bucket_endpoint.clone()
+			},
+			Credentials::default().expect(
+				"Unable to read s3 credentials (https://lib.rs/crates/aws-creds)"
+			)
+		)
+		.expect("Unable to connect to s3 bucket")
+		.with_path_style()
+		.into();
+
+		// Initialize cosmetic cache with initial values
+		let cosmetic_cache = Cache::builder()
+			.time_to_live(Duration::from_hours(2))
+			.build();
+
+		let cosmetics = Cosmetic::find()
+			.all(&database)
+			.await
+			.expect("Unable to fetch cosmetics from db");
+		for cosmetic in cosmetics {
+			let Ok(info) =
+				CachedCosmeticInfo::from_db_model(&cosmetic, s3_bucket.clone()).await
+			else {
+				warn!(
+					"Unable to fetch cached cosmetic info for cosmetic id {}",
+					cosmetic.id
+				);
+				continue;
+			};
+			cosmetic_cache.insert(cosmetic.id, info).await;
+		}
+
 		// Return final state
 		ApiState {
 			tebex: TebexApiState {
@@ -53,19 +92,8 @@ impl ApiState {
 				.expect("Unable to build reqwest HTTPS client"),
 			paseto_key: SymmetricKey::generate()
 				.expect("Unable to generate paseto signing key"),
-			s3_bucket: Bucket::new(
-				&args.s3_bucket_name,
-				s3::Region::Custom {
-					region: args.s3_bucket_region.clone(),
-					endpoint: args.s3_bucket_endpoint.clone()
-				},
-				Credentials::default().expect(
-					"Unable to read s3 credentials (https://lib.rs/crates/aws-creds)"
-				)
-			)
-			.expect("Unable to connect to s3 bucket")
-			.with_path_style()
-			.into()
+			s3_bucket,
+			cosmetic_cache
 		}
 	}
 }
@@ -76,7 +104,8 @@ pub(super) struct ApiState {
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
-	pub(super) s3_bucket: Arc<Bucket>
+	pub(super) s3_bucket: Arc<Bucket>,
+	pub(super) cosmetic_cache: Cache<i32, CachedCosmeticInfo>
 }
 
 #[derive(Debug, Clone)]

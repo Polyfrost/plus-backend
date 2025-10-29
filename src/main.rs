@@ -1,4 +1,4 @@
-#![feature(try_blocks)]
+#![feature(try_blocks, duration_constructors_lite)]
 #![forbid(clippy::unwrap_used, unsafe_code)]
 use tracing_subscriber::{
 	EnvFilter,

@@ -108,6 +108,8 @@
                                     postgresql
                                     # Add treefmt wrapper to the PATH for ease of use
                                     self.formatter.${system}
+                                    # s3
+                                    s3cmd
                                 ]);
 
                             env = {

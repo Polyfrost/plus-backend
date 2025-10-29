@@ -3,13 +3,7 @@ use aide::{
 	axum::{ApiRouter, routing::get_with},
 	transform::TransformOperation
 };
-use axum::{
-	Json,
-	extract::State,
-	http::StatusCode,
-	response::IntoResponse
-};
-use s3::error::S3Error;
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use schemars::JsonSchema;
 use sea_orm::EntityTrait;
 use serde::Serialize;
@@ -73,12 +67,17 @@ async fn endpoint(
 
 		let cosmetics = Cosmetic::find().all(&state.database).await?;
 
+		let mut join_set = JoinSet::new();
+		for cosmetic in cosmetics {
+			let cosmetic_cache = state.cosmetic_cache.clone();
+			let s3_bucket = state.s3_bucket.clone();
+			join_set.spawn(async move {
+				CosmeticInfo::from_db_model(&cosmetic, cosmetic_cache, s3_bucket).await
+			});
+		}
+
 		response.cosmetics.extend(
-			cosmetics
-				.into_iter()
-				.map(|c| (c, state.s3_bucket.clone()))
-				.map(|(c, b)| CosmeticInfo::from_db(c, b))
-				.collect::<JoinSet<Result<CosmeticInfo, S3Error>>>()
+			join_set
 				.join_all()
 				.await
 				.into_iter()
