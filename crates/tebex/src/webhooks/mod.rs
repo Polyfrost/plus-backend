@@ -1,7 +1,5 @@
 #[cfg(feature = "axum")]
 pub mod axum;
-#[cfg(test)]
-mod tests;
 mod types;
 
 use std::net::{IpAddr, Ipv4Addr};

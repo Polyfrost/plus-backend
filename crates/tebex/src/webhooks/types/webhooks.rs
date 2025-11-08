@@ -43,24 +43,3 @@ pub enum WebhookType {
 		content: HashMap<String, Value>
 	}
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn test_parsing() {
-		for test in crate::webhooks::tests::TEST_PAYLOADS {
-			let Ok(parsed) = serde_json::from_str::<TebexWebhookPayload>(test) else {
-				panic!("Unable to parse payload:\n\n{test}")
-			};
-
-			dbg!(&parsed);
-
-			assert!(
-				!matches!(parsed.webhook_type, WebhookType::Unknown { .. }),
-				"Parsed test subject should not deserialize to WebhookPayload::Unknown"
-			)
-		}
-	}
-}

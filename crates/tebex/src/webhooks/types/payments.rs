@@ -22,7 +22,7 @@ pub struct TebexPaymentSubject {
 	pub coupons: Vec<TebexCouponUse>,
 	pub gift_cards: Vec<TebexGiftCardUse>,
 	pub recurring_payment_reference: Option<String>,
-	pub custom: HashMap<String, Value>, // TODO: find type?
+	pub custom: Option<HashMap<String, Value>>, // TODO: find type?
 	// pub revenue_share: [], // TODO: find type
 	pub decline_reason: Option<TebexDeclineReason>,
 	pub creator_code: Option<String>
@@ -92,7 +92,7 @@ pub struct TebexProduct {
 	pub paid_price: TebexCost,
 	// pub variables: [], // TODO: find type
 	pub expires_at: Option<DateTime<Utc>>,
-	pub custom: String,          // TODO: verify if nullable
+	pub custom: Option<String>,          // TODO: verify if nullable
 	pub username: TebexUsername  // pub servers: [] // TODO: find type
 }
 
