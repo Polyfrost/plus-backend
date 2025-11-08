@@ -1,7 +1,8 @@
 use tebex::webhooks::{TebexWebhookPayload, WebhookType};
 
 const PAYLOADS: &[&str] = &[
-	include_str!("payloads/payment-completed.json"),
+	include_str!("payloads/payment-completed-1.json"),
+	include_str!("payloads/payment-completed-2.json"),
 	include_str!("payloads/validation.json")
 ];
 
