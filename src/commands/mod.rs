@@ -58,5 +58,14 @@ pub(crate) struct ServeArgs {
 	pub(crate) s3_bucket_region: String,
 	/// The endpoint of the s3 bucket to use
 	#[bpaf(long("s3-bucket-endpoint"), env("S3_BUCKET_ENDPOINT"))]
-	pub(crate) s3_bucket_endpoint: String
+	pub(crate) s3_bucket_endpoint: String,
+	/// The MSA client ID to use for Microsoft authentication
+	#[bpaf(long("msa-client-id"), env("MSA_CLIENT_ID"))]
+	pub(crate) msa_client_id: String,
+	/// The MSA client secret to use for Microsoft authentication
+	#[bpaf(long("msa-client-secret"), env("MSA_CLIENT_SECRET"))]
+	pub(crate) msa_client_secret: String,
+	/// The MSA redirect URI to use for Microsoft authentication
+	#[bpaf(long("msa-redirect-uri"), env("MSA_REDIRECT_URI"))]
+	pub(crate) msa_redirect_uri: String
 }
