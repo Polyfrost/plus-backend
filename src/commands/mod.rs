@@ -59,6 +59,9 @@ pub(crate) struct ServeArgs {
 	/// The endpoint of the s3 bucket to use
 	#[bpaf(long("s3-bucket-endpoint"), env("S3_BUCKET_ENDPOINT"))]
 	pub(crate) s3_bucket_endpoint: String,
+	/// Path to your admin allowlist file
+	#[bpaf(long("admin-allowlist-path"), env("ADMIN_ALLOWLIST_PATH"))]
+	pub(crate) admin_allowlist_path: std::path::PathBuf,
 	/// The MSA client ID to use for Microsoft authentication
 	#[bpaf(long("msa-client-id"), env("MSA_CLIENT_ID"))]
 	pub(crate) msa_client_id: String,

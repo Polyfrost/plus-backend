@@ -1,3 +1,4 @@
+pub(super) mod admin_allowlist;
 mod login;
 mod msa;
 
