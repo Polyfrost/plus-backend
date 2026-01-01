@@ -2,7 +2,7 @@ use sea_orm_migration::prelude::*;
 
 use crate::{
 	m20250917_163702_create_users_table::User,
-	m20250917_163707_create_cosmetics_table::Cosmetic
+	m20250917_163707_create_cosmetics_table::Cosmetic,
 };
 
 #[derive(DeriveMigrationName)]
@@ -22,24 +22,24 @@ impl MigrationTrait for Migration {
 						ColumnDef::new(UserCosmetic::TransactionId)
 							.string_len(25)
 							.null()
-							.default(Keyword::Null)
+							.default(Keyword::Null),
 					)
 					.foreign_key(
 						ForeignKey::create()
 							.from_col(UserCosmetic::User)
-							.to(User::Table, User::Id)
+							.to(User::Table, User::Id),
 					)
 					.foreign_key(
 						ForeignKey::create()
 							.from_col(UserCosmetic::Cosmetic)
-							.to(Cosmetic::Table, Cosmetic::Id)
+							.to(Cosmetic::Table, Cosmetic::Id),
 					)
 					.primary_key(
 						Index::create()
 							.col(UserCosmetic::User)
-							.col(UserCosmetic::Cosmetic)
+							.col(UserCosmetic::Cosmetic),
 					)
-					.to_owned()
+					.to_owned(),
 			)
 			.await?;
 
@@ -60,5 +60,5 @@ enum UserCosmetic {
 	Table,
 	User,
 	Cosmetic,
-	TransactionId
+	TransactionId,
 }

@@ -1,23 +1,18 @@
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::get_with},
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{
 	Json,
 	extract::{Query, State},
 	http::StatusCode,
-	response::IntoResponse
+	response::IntoResponse,
 };
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait as _,
-	EntityTrait,
-	QueryFilter,
-	QuerySelect,
-	QueryTrait,
-	SelectColumns
+	ColumnTrait as _, EntityTrait, QueryFilter, QuerySelect, QueryTrait, SelectColumns,
 };
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
@@ -26,7 +21,7 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	account::OptionalAuthenticationExtractor,
-	cosmetics::{ActiveCosmetics, CosmeticInfo}
+	cosmetics::{ActiveCosmetics, CosmeticInfo},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -36,27 +31,27 @@ pub enum ResponseError {
 	#[error("Unable to fetch user data from database: {0}")]
 	DatabaseFetch(#[from] sea_orm::error::DbErr),
 	#[error("Unable to presign S3 URLs: {0}")]
-	S3Presign(#[from] s3::error::S3Error)
+	S3Presign(#[from] s3::error::S3Error),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getPlayerCosmetics")
 		.summary("Get a player's cosmetic status")
 		.description(
-			"Lists all cosmetics owned by a player, along with all active cosmetics"
+			"Lists all cosmetics owned by a player, along with all active cosmetics",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
 			res.description(
-				"Authentication was not given, so a player query parameter is required"
+				"Authentication was not given, so a player query parameter is required",
 			)
 		})
 		.response_with::<{ StatusCode::INTERNAL_SERVER_ERROR.as_u16() }, String, _>(
 			|res| {
 				res.description(
-					"An internal server error occurred while trying to fetch cosmetics"
+					"An internal server error occurred while trying to fetch cosmetics",
 				)
-			}
+			},
 		)
 }
 
@@ -66,9 +61,9 @@ impl IntoResponse for ResponseError {
 			match self {
 				ResponseError::PlayerRequired => StatusCode::BAD_REQUEST,
 				ResponseError::S3Presign(_) => StatusCode::INTERNAL_SERVER_ERROR,
-				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR
+				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -80,14 +75,14 @@ struct QueryParams {
 	/// optional if authentication is passed instead.
 	#[serde(default)]
 	#[schemars(example = &"f7c77d99-9f15-4a66-a87d-c4a51ef30d19")]
-	player: Option<Uuid>
+	player: Option<Uuid>,
 }
 
 /// Information about the player's cosmetics
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct Response {
 	cosmetics: Vec<CosmeticInfo>,
-	active: ActiveCosmetics
+	active: ActiveCosmetics,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -98,7 +93,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 async fn endpoint(
 	State(state): State<ApiState>,
 	OptionalAuthenticationExtractor(player): OptionalAuthenticationExtractor,
-	Query(query): Query<QueryParams>
+	Query(query): Query<QueryParams>,
 ) -> Result<Json<Response>, ResponseError> {
 	let mut response = Response::default();
 	let Some(player) = query.player.or(player) else {
@@ -118,8 +113,8 @@ async fn endpoint(
 						.select_column(user::Column::Id)
 						.filter(user::Column::MinecraftUuid.eq(player))
 						.limit(1)
-						.into_query()
-				)
+						.into_query(),
+				),
 			)
 			.find_also_related(Cosmetic)
 			.all(&state.database)
@@ -133,7 +128,7 @@ async fn endpoint(
 			if user_cosmetic.active {
 				match cosmetic.r#type {
 					CosmeticType::Cape => response.active.cape = Some(cosmetic.id),
-					CosmeticType::Emote => ()
+					CosmeticType::Emote => (),
 				}
 			}
 
@@ -148,7 +143,7 @@ async fn endpoint(
 				.join_all()
 				.await
 				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?
+				.collect::<Result<Vec<_>, _>>()?,
 		);
 	};
 

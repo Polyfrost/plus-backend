@@ -8,18 +8,12 @@ mod websocket;
 use aide::{
 	axum::ApiRouter,
 	openapi::{
-		ApiKeyLocation,
-		Contact,
-		License,
-		OpenApi,
-		SchemaObject,
-		SecurityScheme,
-		Server
+		ApiKeyLocation, Contact, License, OpenApi, SchemaObject, SecurityScheme, Server,
 	},
 	redoc::Redoc,
 	scalar::Scalar,
 	swagger::Swagger,
-	transform::TransformOpenApi
+	transform::TransformOpenApi,
 };
 use axum::{Extension, http::header, routing::get as axum_get};
 use schemars::{JsonSchema, schema_for};
@@ -29,9 +23,9 @@ use tower_http::trace::TraceLayer;
 use crate::{
 	api::{
 		state::ApiState,
-		websocket::structs::{ClientBoundPacket, ServerBoundPacket}
+		websocket::structs::{ClientBoundPacket, ServerBoundPacket},
 	},
-	commands::ServeArgs
+	commands::ServeArgs,
 };
 
 fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
@@ -41,7 +35,7 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 		.description(
 			"This API provides all the backend services necessary for enabling the \
 			 functionalities of the Poly+ mod, such as storing and serving cosmetic \
-			 information."
+			 information.",
 		)
 		.license(License {
 			name: "PolyForm Shield License 1.0.0".to_string(),
@@ -69,18 +63,24 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 			description: Some("A development backend server".to_string()),
 			..Default::default()
 		})
-		.security_scheme(account::OPENAPI_SECURITY_NAME, SecurityScheme::Http {
-			scheme: "bearer".to_string(),
-			bearer_format: Some("paseto".to_string()),
-			description: None,
-			extensions: Default::default()
-		})
-		.security_scheme("Admin Password", SecurityScheme::ApiKey {
-			location: ApiKeyLocation::Header,
-			name: "Authorization".to_string(),
-			description: Some("Admin password".to_string()),
-			extensions: Default::default()
-		})
+		.security_scheme(
+			account::OPENAPI_SECURITY_NAME,
+			SecurityScheme::Http {
+				scheme: "bearer".to_string(),
+				bearer_format: Some("paseto".to_string()),
+				description: None,
+				extensions: Default::default(),
+			},
+		)
+		.security_scheme(
+			"Admin Password",
+			SecurityScheme::ApiKey {
+				location: ApiKeyLocation::Header,
+				name: "Authorization".to_string(),
+				description: Some("Admin password".to_string()),
+				extensions: Default::default(),
+			},
+		)
 }
 
 #[derive(Clone, Copy)]
@@ -105,28 +105,28 @@ pub(crate) async fn start(args: ServeArgs) {
 			SchemaObject {
 				json_schema: schema_for!(ClientBoundPacket),
 				example: None,
-				external_docs: None
-			}
+				external_docs: None,
+			},
 		);
 		components.schemas.insert(
 			ServerBoundPacket::schema_name().into_owned(),
 			SchemaObject {
 				json_schema: schema_for!(ServerBoundPacket),
 				example: None,
-				external_docs: None
-			}
+				external_docs: None,
+			},
 		);
 	}
 	let openapi_rendered = Box::leak(
 		serde_json::to_string(&openapi)
 			.expect("Unable to render OpenAPI documentation as JSON")
-			.into_boxed_str()
+			.into_boxed_str(),
 	);
 	let app = app
 		.route("/scalar", Scalar::new("/openapi.json").axum_route().into())
 		.route(
 			"/swagger",
-			Swagger::new("/openapi.json").axum_route().into()
+			Swagger::new("/openapi.json").axum_route().into(),
 		)
 		.route("/redoc", Redoc::new("/openapi.json").axum_route().into())
 		.route(
@@ -134,8 +134,8 @@ pub(crate) async fn start(args: ServeArgs) {
 			axum_get(
 				async |Extension(OpenApiSpec(spec)): Extension<OpenApiSpec>| {
 					([(header::CONTENT_TYPE, "application/json")], spec)
-				}
-			)
+				},
+			),
 		)
 		.layer(Extension(OpenApiSpec(openapi_rendered)))
 		.layer(Extension(args.client_ip_source))

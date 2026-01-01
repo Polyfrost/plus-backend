@@ -4,7 +4,7 @@ use sea_orm_migration::prelude::*;
 pub enum User {
 	Table,
 	Id,
-	MinecraftUuid
+	MinecraftUuid,
 }
 
 #[derive(DeriveMigrationName)]
@@ -22,15 +22,15 @@ impl MigrationTrait for Migration {
 						ColumnDef::new(User::Id)
 							.integer()
 							.auto_increment()
-							.primary_key()
+							.primary_key(),
 					)
 					.col(
 						ColumnDef::new(User::MinecraftUuid)
 							.uuid()
 							.unique_key()
-							.not_null()
+							.not_null(),
 					)
-					.to_owned()
+					.to_owned(),
 			)
 			.await
 	}

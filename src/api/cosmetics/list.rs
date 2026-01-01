@@ -1,7 +1,7 @@
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::get_with},
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use schemars::JsonSchema;
@@ -16,7 +16,7 @@ pub enum ResponseError {
 	#[error("Unable to fetch user data from database: {0}")]
 	DatabaseFetch(#[from] sea_orm::error::DbErr),
 	#[error("Unable to presign S3 URLs: {0}")]
-	S3Presign(#[from] s3::error::S3Error)
+	S3Presign(#[from] s3::error::S3Error),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -27,9 +27,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.response_with::<{ StatusCode::INTERNAL_SERVER_ERROR.as_u16() }, String, _>(
 			|res| {
 				res.description(
-					"An internal server error occurred while trying to fetch cosmetics"
+					"An internal server error occurred while trying to fetch cosmetics",
 				)
-			}
+			},
 		)
 }
 
@@ -38,9 +38,9 @@ impl IntoResponse for ResponseError {
 		(
 			match self {
 				ResponseError::S3Presign(_) => StatusCode::INTERNAL_SERVER_ERROR,
-				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR
+				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -49,7 +49,7 @@ impl IntoResponse for ResponseError {
 /// Information about the player's cosmetics
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct Response {
-	cosmetics: Vec<CosmeticInfo>
+	cosmetics: Vec<CosmeticInfo>,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -58,7 +58,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
-	State(state): State<ApiState>
+	State(state): State<ApiState>,
 ) -> Result<Json<Response>, ResponseError> {
 	let mut response = Response::default();
 
@@ -81,7 +81,7 @@ async fn endpoint(
 				.join_all()
 				.await
 				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?
+				.collect::<Result<Vec<_>, _>>()?,
 		);
 	};
 

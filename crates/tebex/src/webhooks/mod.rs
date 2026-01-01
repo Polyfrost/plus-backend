@@ -14,7 +14,7 @@ pub use types::*;
 pub const WEBHOOK_SOURCE_IPS: &[IpAddr] = &[
 	// https://docs.tebex.io/developers/webhooks/overview#ip-address
 	IpAddr::V4(Ipv4Addr::new(18, 209, 80, 3)),
-	IpAddr::V4(Ipv4Addr::new(54, 87, 231, 232))
+	IpAddr::V4(Ipv4Addr::new(54, 87, 231, 232)),
 ];
 
 const SHA256_BYTES: usize = 256 / 8;
@@ -27,7 +27,7 @@ pub enum WebhookValidationError {
 	#[error("validation with HMAC failed: {0}")]
 	Validation(#[from] hmac::digest::MacError),
 	#[error("parsing JSON webhook payload failed: {0}")]
-	Parsing(#[from] serde_json::Error)
+	Parsing(#[from] serde_json::Error),
 }
 
 impl TebexWebhookPayload {
@@ -36,7 +36,7 @@ impl TebexWebhookPayload {
 	pub fn validate_str(
 		s: &str,
 		signature: &str,
-		secret: &str
+		secret: &str,
 	) -> Result<Self, WebhookValidationError> {
 		// Validate signature with HMAC
 		let webhook_hash = Sha256::digest(s);

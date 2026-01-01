@@ -1,10 +1,6 @@
-#![feature(try_blocks, duration_constructors_lite)]
 #![forbid(clippy::unwrap_used, unsafe_code)]
 use tracing_subscriber::{
-	EnvFilter,
-	fmt,
-	layer::SubscriberExt,
-	util::SubscriberInitExt as _
+	EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt as _,
 };
 
 use crate::commands::backend_args;
@@ -20,10 +16,14 @@ async fn main() {
 		.with(fmt::layer())
 		.with(EnvFilter::from_default_env())
 		.init();
+	// Setup TLS
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.expect("Failed to install rustls crypto provider");
 
 	let args = backend_args().run();
 
 	match args.command {
-		commands::Subcommand::Serve(args) => api::start(args).await
+		commands::Subcommand::Serve(args) => api::start(args).await,
 	}
 }

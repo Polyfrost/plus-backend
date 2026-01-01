@@ -11,7 +11,7 @@ pub(super) enum TebexWebhokError {
 	#[error("Unable to parse customer UUID from Tebex: {0}")]
 	UuidParsing(#[from] sea_orm::sqlx::types::uuid::Error),
 	#[error("Unable to insert data into database: {0}")]
-	DatabaseInsert(#[from] sea_orm::DbErr)
+	DatabaseInsert(#[from] sea_orm::DbErr),
 }
 
 impl IntoResponse for TebexWebhokError {
@@ -19,9 +19,9 @@ impl IntoResponse for TebexWebhokError {
 		(
 			match &self {
 				TebexWebhokError::UuidParsing(_) => StatusCode::BAD_REQUEST,
-				TebexWebhokError::DatabaseInsert(_) => StatusCode::INTERNAL_SERVER_ERROR
+				TebexWebhokError::DatabaseInsert(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -30,7 +30,7 @@ impl IntoResponse for TebexWebhokError {
 /// A response to Tebex signalling webhook success
 #[derive(Serialize)]
 struct SuccessfulWebhookResponse {
-	id: String
+	id: String,
 }
 
 // TODO: Proper instrumentation for this with webhook type
@@ -38,7 +38,7 @@ struct SuccessfulWebhookResponse {
 #[tracing::instrument(level = "debug", skip_all)]
 pub(super) async fn endpoint(
 	State(state): State<ApiState>,
-	payload: TebexWebhookPayload
+	payload: TebexWebhookPayload,
 ) -> Result<impl IntoResponse, TebexWebhokError> {
 	trace!("Tebex Webhook recieved: {payload:?}");
 
@@ -64,7 +64,7 @@ pub(super) async fn endpoint(
 								let cosmetics = CosmeticPackage::find()
 									.filter(
 										cosmetic_package::Column::PackageId
-											.eq(product_id)
+											.eq(product_id),
 									)
 									.all(txn)
 									.await?;
@@ -74,7 +74,7 @@ pub(super) async fn endpoint(
 										user: ActiveValue::Set(user.id),
 										cosmetic: ActiveValue::Set(c.cosmetic_id),
 										transaction_id: ActiveValue::Set(Some(
-											payment.transaction_id.clone()
+											payment.transaction_id.clone(),
 										)),
 										..Default::default()
 									}
@@ -86,20 +86,20 @@ pub(super) async fn endpoint(
 
 							Ok(())
 						}
-						.instrument(span!(Level::DEBUG, "database_insert"))
+						.instrument(span!(Level::DEBUG, "database_insert")),
 					)
 				})
 				.await
 				.map_err(|e| match e {
 					TransactionError::Connection(e) => e.into(),
-					TransactionError::Transaction(e) => e
+					TransactionError::Transaction(e) => e,
 				})?;
 		}
 		// On unknown webhook types, log it and process as a no-op so Tebex doesn't mark
 		// this webhook as failed
 		WebhookType::Unknown {
 			unknown_type,
-			content
+			content,
 		} => {
 			let _span = span!(Level::WARN, "unknown_tebex_webhook_type", id = payload.id)
 				.entered();
@@ -118,6 +118,6 @@ pub(super) async fn endpoint(
 	trace!("Tebex Webhook handled successfully");
 	Ok((
 		StatusCode::OK,
-		Json(SuccessfulWebhookResponse { id: payload.id })
+		Json(SuccessfulWebhookResponse { id: payload.id }),
 	))
 }

@@ -1,6 +1,7 @@
 [package]
 name = "tebex"
 version = "0.1.0"
+publish = false # TODO remove
 edition.workspace = true
 repository.workspace = true
 

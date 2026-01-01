@@ -24,7 +24,7 @@ struct CosmeticInfo {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	url: Option<String>,
 	#[serde(flatten)]
-	cached_info: CachedCosmeticInfo
+	cached_info: CachedCosmeticInfo,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -32,7 +32,7 @@ pub struct CachedCosmeticInfo {
 	/// The hash of this cosmetic. A different hash indicates
 	/// the cosmetic has changed and should be redownlowded.
 	/// The hash format is unspecified
-	hash: String
+	hash: String,
 }
 
 impl CosmeticInfo {
@@ -44,20 +44,20 @@ impl CosmeticInfo {
 	pub async fn from_db_model(
 		value: &entities::cosmetic::Model,
 		cache: Cache<i32, CachedCosmeticInfo>,
-		s3_bucket: Arc<Bucket>
+		s3_bucket: Arc<Bucket>,
 	) -> Result<Self, S3Error> {
 		Ok(Self {
 			id: value.id,
 			r#type: value.r#type.clone(),
 			url: match &value.path {
 				Some(p) => Some(s3_bucket.as_ref().presign_get(p, 604800, None).await?),
-				_ => None
+				_ => None,
 			},
 			cached_info: if let Some(info) = cache.get(&value.id).await {
 				info
 			} else {
 				CachedCosmeticInfo::from_db_model(value, s3_bucket).await?
-			}
+			},
 		})
 	}
 }
@@ -73,7 +73,7 @@ impl CachedCosmeticInfo {
 	)]
 	pub async fn from_db_model(
 		value: &entities::cosmetic::Model,
-		s3_bucket: Arc<Bucket>
+		s3_bucket: Arc<Bucket>,
 	) -> Result<Self, S3Error> {
 		Ok(Self {
 			hash: match &value.path {
@@ -90,8 +90,8 @@ impl CachedCosmeticInfo {
 						}
 					}
 				}
-				None => Self::DEFAULT_HASH.to_string()
-			}
+				None => Self::DEFAULT_HASH.to_string(),
+			},
 		})
 	}
 }
@@ -153,7 +153,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			ApiRouter::new()
 				.merge(get_player::router())
 				.merge(put_player::router())
-				.merge(upload_cape::router())
+				.merge(upload_cape::router()),
 		)
 		.merge(list::router())
 }

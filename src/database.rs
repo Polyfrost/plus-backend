@@ -7,14 +7,14 @@ pub(crate) trait DatabaseUserExt {
 	/// new user into the database.
 	async fn get_or_create(
 		db: &impl ConnectionTrait,
-		minecraft_uuid: Uuid
+		minecraft_uuid: Uuid,
 	) -> Result<user::Model, DbErr>;
 }
 
 impl DatabaseUserExt for User {
 	async fn get_or_create(
 		db: &impl ConnectionTrait,
-		minecraft_uuid: Uuid
+		minecraft_uuid: Uuid,
 	) -> Result<user::Model, DbErr> {
 		let existing = User::find()
 			.filter(user::Column::MinecraftUuid.eq(minecraft_uuid))
@@ -23,13 +23,14 @@ impl DatabaseUserExt for User {
 
 		Ok(match existing {
 			Some(model) => model,
-			None =>
+			None => {
 				User::insert(user::ActiveModel {
 					minecraft_uuid: ActiveValue::Set(minecraft_uuid),
 					..Default::default()
 				})
 				.exec_with_returning(db)
-				.await?,
+				.await?
+			}
 		})
 	}
 }

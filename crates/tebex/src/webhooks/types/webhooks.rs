@@ -14,7 +14,7 @@ pub struct TebexWebhookPayload {
 	pub date: DateTime<Utc>,
 	/// The actual data being sent in this webhook call
 	#[serde(flatten)]
-	pub webhook_type: WebhookType
+	pub webhook_type: WebhookType,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,7 +31,7 @@ pub enum WebhookType {
 	#[serde(rename = "payment.completed")]
 	PaymentCompleted {
 		#[serde(flatten)]
-		payment: Box<TebexPaymentSubject>
+		payment: Box<TebexPaymentSubject>,
 	},
 
 	/// A catch-all for unhandled webhook types.
@@ -40,6 +40,6 @@ pub enum WebhookType {
 		#[serde(rename = "type")]
 		unknown_type: String,
 		#[serde(rename = "subject")]
-		content: HashMap<String, Value>
-	}
+		content: HashMap<String, Value>,
+	},
 }

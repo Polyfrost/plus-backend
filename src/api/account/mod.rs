@@ -4,15 +4,11 @@ use aide::{OperationInput, axum::ApiRouter, openapi::SecurityRequirement};
 use axum::{
 	extract::FromRequestParts,
 	http::request::Parts,
-	response::{IntoResponse, Response}
+	response::{IntoResponse, Response},
 };
 use http::StatusCode;
 use pasetors::{
-	Local,
-	claims::ClaimsValidationRules,
-	local,
-	token::UntrustedToken,
-	version4::V4
+	Local, claims::ClaimsValidationRules, local, token::UntrustedToken, version4::V4,
 };
 use reqwest::header::AUTHORIZATION;
 use uuid::Uuid;
@@ -28,11 +24,11 @@ pub struct OptionalAuthenticationExtractor(pub Option<Uuid>);
 impl OperationInput for AuthenticationExtractor {
 	fn operation_input(
 		_ctx: &mut aide::generate::GenContext,
-		operation: &mut aide::openapi::Operation
+		operation: &mut aide::openapi::Operation,
 	) {
 		operation.security.push(SecurityRequirement::from([(
 			OPENAPI_SECURITY_NAME.to_string(),
-			Vec::new()
+			Vec::new(),
 		)]));
 	}
 }
@@ -40,11 +36,11 @@ impl OperationInput for AuthenticationExtractor {
 impl OperationInput for OptionalAuthenticationExtractor {
 	fn operation_input(
 		_ctx: &mut aide::generate::GenContext,
-		operation: &mut aide::openapi::Operation
+		operation: &mut aide::openapi::Operation,
 	) {
 		operation.security.extend([
 			SecurityRequirement::default(),
-			SecurityRequirement::from([(OPENAPI_SECURITY_NAME.to_string(), Vec::new())])
+			SecurityRequirement::from([(OPENAPI_SECURITY_NAME.to_string(), Vec::new())]),
 		]);
 	}
 }
@@ -59,7 +55,7 @@ impl FromRequestParts<ApiState> for AuthenticationExtractor {
 
 	async fn from_request_parts(
 		parts: &mut Parts,
-		state: &ApiState
+		state: &ApiState,
 	) -> Result<Self, Self::Rejection> {
 		let header = parts
 			.headers
@@ -79,7 +75,7 @@ impl FromRequestParts<ApiState> for AuthenticationExtractor {
 				.map_err(|_| INVALID_AUTHORIZATION_ERR.into_response())?,
 			&ClaimsValidationRules::new(),
 			None,
-			PASETO_IMPLICIT_ASSERT
+			PASETO_IMPLICIT_ASSERT,
 		)
 		.map_err(|_| INVALID_AUTHORIZATION_ERR.into_response())?;
 		let claims = token
@@ -103,19 +99,17 @@ impl FromRequestParts<ApiState> for OptionalAuthenticationExtractor {
 
 	async fn from_request_parts(
 		parts: &mut Parts,
-		state: &ApiState
+		state: &ApiState,
 	) -> Result<Self, Self::Rejection> {
-		Ok(Self(
-			if parts.headers.contains_key(AUTHORIZATION) {
-				Some(
-					AuthenticationExtractor::from_request_parts(parts, state)
-						.await?
-						.0
-				)
-			} else {
-				None
-			}
-		))
+		Ok(Self(if parts.headers.contains_key(AUTHORIZATION) {
+			Some(
+				AuthenticationExtractor::from_request_parts(parts, state)
+					.await?
+					.0,
+			)
+		} else {
+			None
+		}))
 	}
 }
 

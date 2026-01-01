@@ -14,9 +14,9 @@ impl MigrationTrait for Migration {
 						ColumnDef::new(UserCosmetic::Active)
 							.boolean()
 							.default(false)
-							.not_null()
+							.not_null(),
 					)
-					.to_owned()
+					.to_owned(),
 			)
 			.await
 	}
@@ -27,7 +27,7 @@ impl MigrationTrait for Migration {
 				TableAlterStatement::new()
 					.table(UserCosmetic::Table)
 					.drop_column(UserCosmetic::Active)
-					.to_owned()
+					.to_owned(),
 			)
 			.await
 	}
@@ -36,5 +36,5 @@ impl MigrationTrait for Migration {
 #[derive(DeriveIden)]
 enum UserCosmetic {
 	Table,
-	Active
+	Active,
 }

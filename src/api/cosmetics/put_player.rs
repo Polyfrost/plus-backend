@@ -3,34 +3,25 @@ use std::collections::HashSet;
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::put_with},
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{
 	Json,
 	extract::State,
 	http::StatusCode,
-	response::{IntoResponse, NoContent}
+	response::{IntoResponse, NoContent},
 };
 use entities::sea_orm_active_enums::{CosmeticType, CosmeticTypeEnum};
 use migrations::Expr;
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveEnum,
-	ColumnTrait,
-	EntityTrait,
-	IntoSimpleExpr,
-	QueryFilter,
-	QuerySelect,
-	QueryTrait,
-	SelectColumns as _,
-	TransactionTrait
+	ActiveEnum, ColumnTrait, EntityTrait, IntoSimpleExpr, QueryFilter, QuerySelect,
+	QueryTrait, SelectColumns as _, TransactionTrait,
 };
 use serde::Deserialize;
 
 use crate::api::{
-	ApiState,
-	account::AuthenticationExtractor,
-	cosmetics::PartialActiveCosmetics
+	ApiState, account::AuthenticationExtractor, cosmetics::PartialActiveCosmetics,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -38,7 +29,7 @@ pub enum ResponseError {
 	#[error("The given ID {id} is invalid for cosmetic type {cosmetic_type}")]
 	InvalidId { cosmetic_type: String, id: i32 },
 	#[error("Unable to query database: {0}")]
-	Database(#[from] sea_orm::error::DbErr)
+	Database(#[from] sea_orm::error::DbErr),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -48,7 +39,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
 			res.description(
-				"An error given when a passed ID is invalid for a given cosmetic type"
+				"An error given when a passed ID is invalid for a given cosmetic type",
 			)
 			.example("The given ID 2 is invalid for cosmetic type emote")
 		})
@@ -56,9 +47,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			|res| {
 				res.description(
 					"An internal server error occurred while trying to set active \
-					 cosmetics"
+					 cosmetics",
 				)
-			}
+			},
 		)
 }
 
@@ -67,9 +58,9 @@ impl IntoResponse for ResponseError {
 		(
 			match self {
 				ResponseError::InvalidId { .. } => StatusCode::BAD_REQUEST,
-				ResponseError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR
+				ResponseError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -78,7 +69,7 @@ impl IntoResponse for ResponseError {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RequestBody {
 	/// An object of cosmetic types to the active one.
-	active: PartialActiveCosmetics
+	active: PartialActiveCosmetics,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -89,7 +80,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticationExtractor(player): AuthenticationExtractor,
-	Json(body): Json<RequestBody>
+	Json(body): Json<RequestBody>,
 ) -> Result<NoContent, ResponseError> {
 	{
 		use entities::{cosmetic, prelude::*, user, user_cosmetic};
@@ -102,14 +93,14 @@ async fn endpoint(
 			.filter(
 				Expr::tuple([
 					cosmetic::Column::Id.into_simple_expr(),
-					cosmetic::Column::Type.into_simple_expr()
+					cosmetic::Column::Type.into_simple_expr(),
 				])
 				.is_in(body.active.into_iter().filter_map(|(name, value)| {
 					Some(Expr::tuple([
 						value?.into(),
-						Expr::val(name).cast_as(CosmeticTypeEnum)
+						Expr::val(name).cast_as(CosmeticTypeEnum),
 					]))
-				}))
+				})),
 			)
 			.distinct()
 			.into_tuple()
@@ -125,11 +116,11 @@ async fn endpoint(
 				&& !correct_cosmetics.contains(&(
 					id,
 					CosmeticType::try_from_value(&name_string)
-						.expect("Should always suceed")
+						.expect("Should always suceed"),
 				)) {
 				return Err(ResponseError::InvalidId {
 					cosmetic_type: name_string,
-					id
+					id,
 				});
 			}
 
@@ -140,7 +131,7 @@ async fn endpoint(
 						user_cosmetic::Column::Cosmetic.eq(id)
 					} else {
 						false.into()
-					}
+					},
 				)
 				.filter(
 					user_cosmetic::Column::Cosmetic.in_subquery(
@@ -148,8 +139,8 @@ async fn endpoint(
 							.select_only()
 							.column(cosmetic::Column::Id)
 							.filter(cosmetic::Column::Type.eq(name))
-							.into_query()
-					)
+							.into_query(),
+					),
 				)
 				.filter(
 					user_cosmetic::Column::User.in_subquery(
@@ -157,8 +148,8 @@ async fn endpoint(
 							.select_only()
 							.select_column(user::Column::Id)
 							.filter(user::Column::MinecraftUuid.eq(player))
-							.into_query()
-					)
+							.into_query(),
+					),
 				)
 				.exec(&txn)
 				.await?;

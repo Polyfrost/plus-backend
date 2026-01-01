@@ -13,7 +13,7 @@ pub struct ActivePackagesRequest<'a> {
 	pub id: &'a str,
 	/// Optionally, a package to filter by (to check if a specific package has
 	/// been purchased)
-	pub package: Option<&'a str>
+	pub package: Option<&'a str>,
 }
 
 /// Information about a payment related to an active package for a player
@@ -22,14 +22,14 @@ pub struct ActivePackage {
 	pub txn_id: String,
 	pub date: DateTime<Utc>,
 	pub quantity: u32,
-	pub package: ActivePackageInfo
+	pub package: ActivePackageInfo,
 }
 
 /// Information about an active package for a player
 #[derive(Debug, Deserialize, Clone)]
 pub struct ActivePackageInfo {
 	pub id: u32,
-	pub name: String
+	pub name: String,
 }
 
 // TODO: use thiserror enums for returning errors. probably an API-wide enum

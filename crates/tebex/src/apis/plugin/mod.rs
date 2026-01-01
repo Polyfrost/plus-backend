@@ -19,7 +19,7 @@ macro_rules! impl_req_funcs {
 
 pub trait PluginApiRequest
 where
-	Self: Sized
+	Self: Sized,
 {
 	type Response;
 
@@ -30,7 +30,7 @@ where
 #[derive(Debug, Clone)]
 pub struct TebexPluginApiClient {
 	inner: Arc<reqwest::Client>,
-	secret: String
+	secret: String,
 }
 
 impl TebexPluginApiClient {
@@ -41,17 +41,17 @@ impl TebexPluginApiClient {
 	pub fn new(secret: impl Into<String>) -> Result<Self, reqwest::Error> {
 		Ok(Self::new_from_client(
 			secret,
-			Arc::new(reqwest::Client::builder().https_only(true).build()?)
+			Arc::new(reqwest::Client::builder().https_only(true).build()?),
 		))
 	}
 
 	pub fn new_from_client(
 		secret: impl Into<String>,
-		client: Arc<reqwest::Client>
+		client: Arc<reqwest::Client>,
 	) -> Self {
 		Self {
 			inner: client,
-			secret: secret.into()
+			secret: secret.into(),
 		}
 	}
 }

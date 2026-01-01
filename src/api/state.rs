@@ -6,7 +6,7 @@ use migrations::{Migrator, MigratorTrait};
 use moka::future::Cache;
 use pasetors::{
 	keys::{Generate, SymmetricKey},
-	version4::V4
+	version4::V4,
 };
 use reqwest::{Client, ClientBuilder};
 use s3::{Bucket, creds::Credentials};
@@ -44,11 +44,11 @@ impl ApiState {
 			&args.s3_bucket_name,
 			s3::Region::Custom {
 				region: args.s3_bucket_region.clone(),
-				endpoint: args.s3_bucket_endpoint.clone()
+				endpoint: args.s3_bucket_endpoint.clone(),
 			},
 			Credentials::default().expect(
-				"Unable to read s3 credentials (https://lib.rs/crates/aws-creds)"
-			)
+				"Unable to read s3 credentials (https://lib.rs/crates/aws-creds)",
+			),
 		)
 		.expect("Unable to connect to s3 bucket")
 		.with_path_style()
@@ -80,10 +80,10 @@ impl ApiState {
 		ApiState {
 			tebex: TebexApiState {
 				webhook_secret: Box::leak(
-					args.tebex_webhook_secret.clone().into_boxed_str()
+					args.tebex_webhook_secret.clone().into_boxed_str(),
 				),
 				plugin_client: TebexPluginApiClient::new(&args.tebex_game_server_secret)
-					.expect("Unable to construct Tebex plugin API client")
+					.expect("Unable to construct Tebex plugin API client"),
 			},
 			database,
 			client: ClientBuilder::new()
@@ -95,7 +95,7 @@ impl ApiState {
 				.expect("Unable to generate paseto signing key"),
 			s3_bucket,
 			cosmetic_cache,
-			admin_password: args.admin_password.clone()
+			admin_password: args.admin_password.clone(),
 		}
 	}
 }
@@ -108,19 +108,19 @@ pub(super) struct ApiState {
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
 	pub(super) cosmetic_cache: Cache<i32, CachedCosmeticInfo>,
-	pub(super) admin_password: String
+	pub(super) admin_password: String,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct TebexApiState {
 	webhook_secret: &'static str,
-	pub(super) plugin_client: TebexPluginApiClient
+	pub(super) plugin_client: TebexPluginApiClient,
 }
 
 impl FromRef<ApiState> for TebexWebhookState {
 	fn from_ref(input: &ApiState) -> Self {
 		Self {
-			secret: Cow::Borrowed(input.tebex.webhook_secret)
+			secret: Cow::Borrowed(input.tebex.webhook_secret),
 		}
 	}
 }

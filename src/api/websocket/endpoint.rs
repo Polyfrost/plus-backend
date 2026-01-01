@@ -3,27 +3,26 @@ use std::collections::HashMap;
 use aide::{
 	axum::{ApiRouter, routing::ApiMethodDocs},
 	openapi::Operation,
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{
 	body::Body,
-	extract::{State, WebSocketUpgrade, ws::Message},
-	routing::get
+	extract::{
+		State, WebSocketUpgrade,
+		ws::{Message, WebSocket},
+	},
+	routing::get,
 };
 use http::{Response, StatusCode};
 use sea_orm::{
-	ColumnTrait as _,
-	EntityTrait as _,
-	JoinType,
-	QueryFilter,
-	QuerySelect,
-	RelationTrait as _
+	ColumnTrait as _, EntityTrait as _, JoinType, QueryFilter, QuerySelect,
+	RelationTrait as _,
 };
 
 use crate::api::{
 	ApiState,
 	cosmetics::ActiveCosmetics,
-	websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError}
+	websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 };
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -41,67 +40,73 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 						"Establishes a websocket connection to the server. Websocket \
 						 packets can examined from the ClientBoundPacket and \
 						 ServerBoundPacket OpenAPI schemas. This largely follows a \
-						 request-response model, but that may not always be true."
+						 request-response model, but that may not always be true.",
 					)
 					.tag("misc")
 					.response_with::<{ StatusCode::SWITCHING_PROTOCOLS.as_u16() }, (), _>(
 						|res| {
 							res.description(
-								"Communication will continue over the WebSocket protocol"
+								"Communication will continue over the WebSocket protocol",
 							)
-						}
+						},
 					);
 
 				operation
-			})
+			}),
 		)
+}
+
+async fn handle_msg(
+	socket: &mut WebSocket,
+	state: &ApiState,
+	msg: Result<Message, axum::Error>,
+) -> Result<(), WebsocketError> {
+	let msg = msg?;
+
+	let parsed = serde_json::from_slice::<ServerBoundPacket>(&msg.into_data())?;
+
+	match parsed {
+		ServerBoundPacket::GetActiveCosmetics { players } => {
+			use entities::{cosmetic, prelude::*, user, user_cosmetic};
+
+			let response = User::find()
+				.find_with_related(UserCosmetic)
+				.join(
+					JoinType::LeftJoin,
+					cosmetic::Relation::UserCosmetic.def().rev(),
+				)
+				.filter(user::Column::MinecraftUuid.is_in(players))
+				.filter(user_cosmetic::Column::Active.eq(true))
+				.filter(cosmetic::Column::Type.is_in(ActiveCosmetics::NAMES))
+				.all(&state.database)
+				.await?
+				.into_iter()
+				.fold(HashMap::new(), |mut acc, (user, cosmetics)| {
+					for cosmetic in cosmetics {
+						acc.entry(user.minecraft_uuid)
+							.or_insert(Vec::new())
+							.push(cosmetic.cosmetic);
+					}
+					acc
+				});
+
+			let serialized = serde_json::to_string(&ClientBoundPacket::CosmeticsInfo {
+				cosmetics: response,
+			})
+			.expect("CosmeticsInfo serialization should never fail");
+
+			socket.send(Message::Text(serialized.into())).await?;
+		}
+	}
+
+	Ok(())
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(State(state): State<ApiState>, ws: WebSocketUpgrade) -> Response<Body> {
 	ws.on_upgrade(async move |mut socket| {
 		while let Some(msg) = socket.recv().await {
-			let result: Result<(), WebsocketError> = try {
-				let msg = msg?;
-
-				let parsed =
-					serde_json::from_slice::<ServerBoundPacket>(&msg.into_data())?;
-
-				match parsed {
-					ServerBoundPacket::GetActiveCosmetics { players } => {
-						use entities::{cosmetic, prelude::*, user, user_cosmetic};
-
-						let response = User::find()
-							.find_with_related(UserCosmetic)
-							.join(
-								JoinType::LeftJoin,
-								cosmetic::Relation::UserCosmetic.def().rev()
-							)
-							.filter(user::Column::MinecraftUuid.is_in(players))
-							.filter(user_cosmetic::Column::Active.eq(true))
-							.filter(cosmetic::Column::Type.is_in(ActiveCosmetics::NAMES))
-							.all(&state.database)
-							.await?
-							.into_iter()
-							.fold(HashMap::new(), |mut acc, (user, cosmetics)| {
-								for cosmetic in cosmetics {
-									acc.entry(user.minecraft_uuid)
-										.or_insert(Vec::new())
-										.push(cosmetic.cosmetic);
-								}
-								acc
-							});
-
-						let serialized =
-							serde_json::to_string(&ClientBoundPacket::CosmeticsInfo {
-								cosmetics: response
-							})
-							.expect("CosmeticsInfo serialization should never fail");
-
-						socket.send(Message::Text(serialized.into())).await?;
-					}
-				}
-			};
+			let result = handle_msg(&mut socket, &state, msg).await;
 
 			match result {
 				Ok(_) => continue,

@@ -9,7 +9,7 @@ pub struct Migration;
 enum CosmeticPackage {
 	Table,
 	PackageId,
-	CosmeticId
+	CosmeticId,
 }
 
 #[async_trait::async_trait]
@@ -23,24 +23,24 @@ impl MigrationTrait for Migration {
 					.col(
 						ColumnDef::new(CosmeticPackage::PackageId)
 							.integer()
-							.not_null()
+							.not_null(),
 					)
 					.col(
 						ColumnDef::new(CosmeticPackage::CosmeticId)
 							.integer()
-							.not_null()
+							.not_null(),
 					)
 					.foreign_key(
 						ForeignKey::create()
 							.from_col(CosmeticPackage::CosmeticId)
-							.to(Cosmetic::Table, Cosmetic::Id)
+							.to(Cosmetic::Table, Cosmetic::Id),
 					)
 					.primary_key(
 						Index::create()
 							.col(CosmeticPackage::PackageId)
-							.col(CosmeticPackage::CosmeticId)
+							.col(CosmeticPackage::CosmeticId),
 					)
-					.to_owned()
+					.to_owned(),
 			)
 			.await?;
 

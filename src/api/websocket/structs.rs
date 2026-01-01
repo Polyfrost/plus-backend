@@ -11,7 +11,7 @@ pub enum WebsocketError {
 	#[error("Unable to query database: {0}")]
 	DatabaseQuery(#[from] sea_orm::error::DbErr),
 	#[error("Unable to serialize response: {0}")]
-	Serialization(#[from] serde_json::Error)
+	Serialization(#[from] serde_json::Error),
 }
 
 impl WebsocketError {
@@ -20,7 +20,7 @@ impl WebsocketError {
 	pub fn error_code(&self) -> &'static str {
 		match self {
 			Self::Fatal(_) => Self::ERROR_CODES[0],
-			Self::DatabaseQuery(_) | Self::Serialization(_) => Self::ERROR_CODES[1]
+			Self::DatabaseQuery(_) | Self::Serialization(_) => Self::ERROR_CODES[1],
 		}
 	}
 }
@@ -28,7 +28,7 @@ impl WebsocketError {
 impl Serialize for WebsocketError {
 	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
 	where
-		S: serde::Serializer
+		S: serde::Serializer,
 	{
 		let mut state = serializer.serialize_struct("WebsocketError", 2)?;
 		state.serialize_field("error_code", self.error_code())?;
@@ -38,7 +38,9 @@ impl Serialize for WebsocketError {
 }
 
 impl JsonSchema for WebsocketError {
-	fn schema_name() -> Cow<'static, str> { Cow::Borrowed("WebsocketError") }
+	fn schema_name() -> Cow<'static, str> {
+		Cow::Borrowed("WebsocketError")
+	}
 
 	fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 		json_schema!({
@@ -65,8 +67,8 @@ pub enum ServerBoundPacket {
 	/// Fetches active cosmetics for a list of players in bulk
 	GetActiveCosmetics {
 		/// An array of player UUIDs to include in the bulk lookup
-		players: Vec<Uuid>
-	}
+		players: Vec<Uuid>,
+	},
 }
 
 /// A JSON object that the server will send to the client in the websocket
@@ -84,11 +86,11 @@ pub enum ClientBoundPacket {
 		/// Any players without active cosmetics are not returned in this
 		/// object.
 		#[schemars(example = HashMap::from([("424ef6d0-4774-4f8c-8bef-8f62ebdac9c0", [1,2])]))]
-		cosmetics: HashMap<Uuid, Vec<i32>>
+		cosmetics: HashMap<Uuid, Vec<i32>>,
 	},
 	/// An error response from the server
 	Error {
 		#[serde(flatten)]
-		error: WebsocketError
-	}
+		error: WebsocketError,
+	},
 }

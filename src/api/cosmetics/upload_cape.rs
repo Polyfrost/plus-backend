@@ -1,14 +1,13 @@
 use aide::{
-	OperationInput,
-	OperationIo,
+	OperationInput, OperationIo,
 	axum::{ApiRouter, routing::post_with},
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{
 	Json,
 	extract::{FromRequest, Multipart, Request, State, multipart::MultipartRejection},
 	http::StatusCode,
-	response::IntoResponse
+	response::IntoResponse,
 };
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
@@ -16,9 +15,7 @@ use sea_orm::{ActiveModelTrait, ActiveValue, Set};
 use uuid::Uuid;
 
 use crate::api::{
-	ApiState,
-	admin_auth::AdminAuthenticationExtractor,
-	cosmetics::CosmeticInfo
+	ApiState, admin_auth::AdminAuthenticationExtractor, cosmetics::CosmeticInfo,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -32,7 +29,7 @@ pub enum UploadError {
 	#[error("Multipart error: {0}")]
 	Multipart(#[from] axum::extract::multipart::MultipartError),
 	#[error("Multipart rejection: {0}")]
-	Rejection(#[from] MultipartRejection)
+	Rejection(#[from] MultipartRejection),
 }
 
 impl IntoResponse for UploadError {
@@ -40,10 +37,11 @@ impl IntoResponse for UploadError {
 		(
 			match self {
 				Self::MissingFile | Self::Rejection(_) => StatusCode::BAD_REQUEST,
-				Self::Database(_) | Self::S3(_) | Self::Multipart(_) =>
-					StatusCode::INTERNAL_SERVER_ERROR,
+				Self::Database(_) | Self::S3(_) | Self::Multipart(_) => {
+					StatusCode::INTERNAL_SERVER_ERROR
+				}
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -53,7 +51,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("uploadCape")
 		.summary("Upload a new cape")
 		.description(
-			"Uploads a new cape cosmetic to S3 and registers it in the database."
+			"Uploads a new cape cosmetic to S3 and registers it in the database.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<CosmeticInfo>, _>(|res| {
@@ -72,7 +70,7 @@ struct FileUpload(Multipart);
 
 impl<S> FromRequest<S> for FileUpload
 where
-	S: Send + Sync
+	S: Send + Sync,
 {
 	type Rejection = UploadError;
 
@@ -80,7 +78,7 @@ where
 		Ok(Self(
 			Multipart::from_request(req, state)
 				.await
-				.map_err(UploadError::Rejection)?
+				.map_err(UploadError::Rejection)?,
 		))
 	}
 }
@@ -88,30 +86,33 @@ where
 #[derive(JsonSchema)]
 struct CapeUploadRequest {
 	#[schemars(with = "String")]
-	file: String
+	file: String,
 }
 
 impl OperationInput for FileUpload {
 	fn operation_input(
 		ctx: &mut aide::generate::GenContext,
-		operation: &mut aide::openapi::Operation
+		operation: &mut aide::openapi::Operation,
 	) {
 		operation.request_body = Some(aide::openapi::ReferenceOr::Item(
 			aide::openapi::RequestBody {
 				description: Some("Multipart file upload".into()),
-				content: [("multipart/form-data".into(), aide::openapi::MediaType {
-					schema: Some(aide::openapi::SchemaObject {
-						json_schema: ctx.schema.subschema_for::<CapeUploadRequest>(),
-						example: None,
-						external_docs: None
-					}),
-					..Default::default()
-				})]
+				content: [(
+					"multipart/form-data".into(),
+					aide::openapi::MediaType {
+						schema: Some(aide::openapi::SchemaObject {
+							json_schema: ctx.schema.subschema_for::<CapeUploadRequest>(),
+							example: None,
+							external_docs: None,
+						}),
+						..Default::default()
+					},
+				)]
 				.into_iter()
 				.collect(),
 				required: true,
-				extensions: Default::default()
-			}
+				extensions: Default::default(),
+			},
 		));
 	}
 }
@@ -119,7 +120,7 @@ impl OperationInput for FileUpload {
 async fn endpoint(
 	State(state): State<ApiState>,
 	_auth: AdminAuthenticationExtractor,
-	FileUpload(mut multipart): FileUpload
+	FileUpload(mut multipart): FileUpload,
 ) -> Result<Json<CosmeticInfo>, UploadError> {
 	let mut file_data = None;
 	let mut content_type = None;
@@ -149,7 +150,7 @@ async fn endpoint(
 		.put_object_with_content_type(
 			&path,
 			&data,
-			content_type.as_deref().unwrap_or("image/png")
+			content_type.as_deref().unwrap_or("image/png"),
 		)
 		.await?;
 
@@ -165,7 +166,7 @@ async fn endpoint(
 
 	let info = crate::api::cosmetics::CachedCosmeticInfo::from_db_model(
 		&model,
-		state.s3_bucket.clone()
+		state.s3_bucket.clone(),
 	)
 	.await?;
 	state.cosmetic_cache.insert(model.id, info).await;
@@ -174,8 +175,8 @@ async fn endpoint(
 		CosmeticInfo::from_db_model(
 			&model,
 			state.cosmetic_cache.clone(),
-			state.s3_bucket.clone()
+			state.s3_bucket.clone(),
 		)
-		.await?
+		.await?,
 	))
 }

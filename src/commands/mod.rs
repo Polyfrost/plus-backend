@@ -7,13 +7,13 @@ use bpaf::Bpaf;
 #[bpaf(options, version)]
 pub(crate) struct BackendArgs {
 	#[bpaf(external(self::subcommand))]
-	pub(crate) command: Subcommand
+	pub(crate) command: Subcommand,
 }
 
 #[derive(Clone, Debug, Bpaf)]
 pub(crate) enum Subcommand {
 	#[bpaf(command("serve"))]
-	Serve(#[bpaf(external(serve_args))] ServeArgs)
+	Serve(#[bpaf(external(serve_args))] ServeArgs),
 }
 
 #[derive(Clone, Debug, Bpaf)]
@@ -61,5 +61,5 @@ pub(crate) struct ServeArgs {
 	pub(crate) s3_bucket_endpoint: String,
 	/// Password for admin operations
 	#[bpaf(long("admin-password"), env("ADMIN_PASSWORD"))]
-	pub(crate) admin_password: String
+	pub(crate) admin_password: String,
 }

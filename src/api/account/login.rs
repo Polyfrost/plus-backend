@@ -3,13 +3,13 @@ use std::time::Duration;
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::post_with},
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{
 	Json,
 	extract::{Query, State, rejection::QueryRejection},
 	http::StatusCode,
-	response::IntoResponse
+	response::IntoResponse,
 };
 use pasetors::{claims::Claims, local};
 use schemars::JsonSchema;
@@ -20,7 +20,7 @@ use crate::api::{ApiState, account::PASETO_IMPLICIT_ASSERT};
 
 #[derive(Deserialize)]
 pub struct SessionserverLoginSuccess {
-	id: Uuid
+	id: Uuid,
 }
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -32,7 +32,7 @@ pub enum LoginError {
 	#[error("Unable to construct authentication token: {0}")]
 	TokenCreation(#[from] pasetors::errors::Error),
 	#[error("Mojang sessionserver authentication did not suceeed")]
-	Unauthorized
+	Unauthorized,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -43,9 +43,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.response_with::<{ StatusCode::INTERNAL_SERVER_ERROR.as_u16() }, String, _>(
 			|res| {
 				res.description(
-					"An internal server error occurred while trying to log in"
+					"An internal server error occurred while trying to log in",
 				)
-			}
+			},
 		)
 }
 
@@ -56,9 +56,9 @@ impl IntoResponse for LoginError {
 				Self::InvalidUuid(_) => StatusCode::BAD_REQUEST,
 				Self::SessionserverAuthentication(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				Self::TokenCreation(_) => StatusCode::INTERNAL_SERVER_ERROR,
-				Self::Unauthorized => StatusCode::UNAUTHORIZED
+				Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -73,7 +73,7 @@ struct LoginQuery {
 	///
 	/// This should ideally be randomly generated on the client
 	#[schemars(example = &"FnuhJQCStLeUOIwnrHgBjiTolqWRBBSe")]
-	server_id: String
+	server_id: String,
 }
 
 /// A response given on successful a payment restore
@@ -81,7 +81,7 @@ struct LoginQuery {
 pub struct LoginResponse {
 	/// The authentication token to use for requests to the plus backend.
 	/// These tokens are valid for 2 hours after their issue date.
-	token: String
+	token: String,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -91,7 +91,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	Query(query): Query<LoginQuery>
+	Query(query): Query<LoginQuery>,
 ) -> Result<Json<LoginResponse>, LoginError> {
 	let response = state
 		.client
@@ -125,7 +125,7 @@ async fn endpoint(
 			claims
 		},
 		None,
-		PASETO_IMPLICIT_ASSERT
+		PASETO_IMPLICIT_ASSERT,
 	)?;
 
 	Ok(Json(LoginResponse { token }))

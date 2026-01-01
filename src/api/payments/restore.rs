@@ -3,13 +3,13 @@ use std::collections::{HashMap, HashSet};
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::post_with},
-	transform::TransformOperation
+	transform::TransformOperation,
 };
 use axum::{
 	Json,
 	extract::{Query, State, rejection::QueryRejection},
 	http::StatusCode,
-	response::IntoResponse
+	response::IntoResponse,
 };
 use entities::{cosmetic_package, prelude::*, user_cosmetic};
 use migrations::OnConflict;
@@ -28,7 +28,7 @@ pub enum RestoreError {
 	#[error("Unable to fetch active packages for player: {0}")]
 	ActivePackagesFetch(#[source] reqwest::Error),
 	#[error("Unable to query database: {0}")]
-	DatabaseError(#[from] sea_orm::DbErr)
+	DatabaseError(#[from] sea_orm::DbErr),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -36,15 +36,15 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Restore all previous payments made by a player")
 		.description(
 			"Fetches all payments made by a player from Tebex and ensures they are \
-			 properly stored in the database"
+			 properly stored in the database",
 		)
 		.tag("payments")
 		.response_with::<{ StatusCode::INTERNAL_SERVER_ERROR.as_u16() }, String, _>(
 			|res| {
 				res.description(
-					"An internal server error occurred while trying to restore payments"
+					"An internal server error occurred while trying to restore payments",
 				)
-			}
+			},
 		)
 }
 
@@ -54,9 +54,9 @@ impl IntoResponse for RestoreError {
 			match self {
 				Self::InvalidUuid(_) => StatusCode::BAD_REQUEST,
 				Self::ActivePackagesFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
-				Self::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR
+				Self::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string()
+			self.to_string(),
 		)
 			.into_response()
 	}
@@ -66,7 +66,7 @@ impl IntoResponse for RestoreError {
 struct RestoreQuery {
 	/// The UUID of the player to attempt to restore the purchases of
 	#[schemars(example = &"f7c77d999f154a66a87dc4a51ef30d19")]
-	player: Uuid
+	player: Uuid,
 }
 
 /// A response given on successful a payment restore
@@ -74,7 +74,7 @@ struct RestoreQuery {
 struct RestoreResponse {
 	/// A list of all Tebex payment IDs restored
 	#[schemars(example = ["tbx-42121625a15259-c182f4", "tbx-18222225a75296-bc0925"])]
-	restored_ids: HashSet<String>
+	restored_ids: HashSet<String>,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -84,7 +84,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	query: Result<Query<RestoreQuery>, QueryRejection>
+	query: Result<Query<RestoreQuery>, QueryRejection>,
 ) -> Result<Json<RestoreResponse>, RestoreError> {
 	// Handle query errors
 	let Query(query) = query?;
@@ -98,7 +98,7 @@ async fn endpoint(
 				.player
 				.simple()
 				.encode_lower(&mut Uuid::encode_buffer()),
-			package: None
+			package: None,
 		})
 		.await
 		.map_err(RestoreError::ActivePackagesFetch)?; // TODO handle 404 "invalid ID" from tebex
@@ -123,7 +123,7 @@ async fn endpoint(
 		.filter(cosmetic_package::Column::PackageId.is_in(transactions.keys().copied()))
 		.filter(
 			// sea-orm doesn't support inner joins on find_with_related
-			cosmetic_package::Column::CosmeticId.is_not_null()
+			cosmetic_package::Column::CosmeticId.is_not_null(),
 		)
 		.all(&txn)
 		.await?;
@@ -148,7 +148,7 @@ async fn endpoint(
 					.package_id
 					.try_into()
 					.expect("package_id should not be negative")]
-					.to_string()
+					.to_string(),
 			)),
 			..Default::default()
 		}

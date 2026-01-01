@@ -1,6 +1,6 @@
 use sea_orm_migration::{
 	prelude::{extension::postgres::Type, *},
-	sea_orm::{EnumIter, Iterable as _}
+	sea_orm::{EnumIter, Iterable as _},
 };
 
 #[derive(DeriveIden)]
@@ -9,7 +9,7 @@ pub struct CosmeticType;
 #[derive(DeriveIden, EnumIter)]
 pub enum CosmeticVariants {
 	Cape,
-	Emote
+	Emote,
 }
 
 #[derive(DeriveIden)]
@@ -17,7 +17,7 @@ pub enum Cosmetic {
 	Table,
 	Id,
 	Type,
-	Path
+	Path,
 }
 
 #[derive(DeriveMigrationName)]
@@ -31,7 +31,7 @@ impl MigrationTrait for Migration {
 				Type::create()
 					.as_enum(CosmeticType)
 					.values(CosmeticVariants::iter())
-					.to_owned()
+					.to_owned(),
 			)
 			.await?;
 
@@ -44,15 +44,15 @@ impl MigrationTrait for Migration {
 						ColumnDef::new(Cosmetic::Id)
 							.integer()
 							.auto_increment()
-							.primary_key()
+							.primary_key(),
 					)
 					.col(
 						ColumnDef::new(Cosmetic::Type)
 							.custom(CosmeticType)
-							.not_null()
+							.not_null(),
 					)
 					.col(ColumnDef::new(Cosmetic::Path).string().null())
-					.to_owned()
+					.to_owned(),
 			)
 			.await?;
 
