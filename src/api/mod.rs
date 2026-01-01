@@ -1,4 +1,5 @@
 mod account;
+pub(crate) mod admin_auth;
 mod cosmetics;
 mod payments;
 mod state;
@@ -6,7 +7,15 @@ mod websocket;
 
 use aide::{
 	axum::ApiRouter,
-	openapi::{Contact, License, OpenApi, SchemaObject, SecurityScheme, Server},
+	openapi::{
+		ApiKeyLocation,
+		Contact,
+		License,
+		OpenApi,
+		SchemaObject,
+		SecurityScheme,
+		Server
+	},
 	redoc::Redoc,
 	scalar::Scalar,
 	swagger::Swagger,
@@ -64,6 +73,12 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 			scheme: "bearer".to_string(),
 			bearer_format: Some("paseto".to_string()),
 			description: None,
+			extensions: Default::default()
+		})
+		.security_scheme("Admin Password", SecurityScheme::ApiKey {
+			location: ApiKeyLocation::Header,
+			name: "Authorization".to_string(),
+			description: Some("Admin password".to_string()),
 			extensions: Default::default()
 		})
 }

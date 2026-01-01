@@ -1,6 +1,4 @@
-pub(super) mod admin_allowlist;
 mod login;
-mod msa;
 
 use aide::{OperationInput, axum::ApiRouter, openapi::SecurityRequirement};
 use axum::{
@@ -122,7 +120,5 @@ impl FromRequestParts<ApiState> for OptionalAuthenticationExtractor {
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.merge(login::router())
-		.nest("/msa", msa::setup_router().await)
+	ApiRouter::new().merge(login::router())
 }

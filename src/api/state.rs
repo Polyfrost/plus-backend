@@ -95,31 +95,8 @@ impl ApiState {
 				.expect("Unable to generate paseto signing key"),
 			s3_bucket,
 			cosmetic_cache,
-			admin: AdminState {
-				path: args.admin_allowlist_path.clone(),
-				cache: Cache::builder()
-					.time_to_live(Duration::from_secs(30)) // cheap and lazy so we can reload often
-					.build()
-			},
-			msa: MsaAuthState {
-				client_id: args.msa_client_id.clone(),
-				client_secret: args.msa_client_secret.clone(),
-				redirect_uri: args.msa_redirect_uri.clone(),
-				pkce_cache: Cache::builder()
-					.time_to_live(Duration::from_mins(10))
-					.build()
-			}
+			admin_password: args.admin_password.clone()
 		}
-	}
-
-	pub(super) async fn admin_allowlist(&self) -> HashSet<Uuid> {
-		if let Some(v) = self.admin.cache.get(&()).await {
-			return v;
-		}
-
-		let v = super::account::admin_allowlist::load_admin_allowlist(&self.admin.path);
-		self.admin.cache.insert((), v.clone()).await;
-		v
 	}
 }
 
@@ -131,28 +108,13 @@ pub(super) struct ApiState {
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
 	pub(super) cosmetic_cache: Cache<i32, CachedCosmeticInfo>,
-	pub(super) admin: AdminState,
-	pub(super) msa: MsaAuthState
+	pub(super) admin_password: String
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct TebexApiState {
 	webhook_secret: &'static str,
 	pub(super) plugin_client: TebexPluginApiClient
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct AdminState {
-	pub(super) path: PathBuf,
-	pub(super) cache: Cache<(), HashSet<Uuid>>
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct MsaAuthState {
-	pub(super) client_id: String,
-	pub(super) client_secret: String,
-	pub(super) redirect_uri: String,
-	pub(super) pkce_cache: Cache<String, String>
 }
 
 impl FromRef<ApiState> for TebexWebhookState {
