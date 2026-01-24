@@ -1,5 +1,6 @@
 mod get_player;
 mod list;
+mod list_capes;
 mod put_player;
 mod upload_cape;
 
@@ -153,7 +154,8 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			ApiRouter::new()
 				.merge(get_player::router())
 				.merge(put_player::router())
-				.merge(upload_cape::router()),
+				.merge(upload_cape::router())
+				.merge(list_capes::router()),
 		)
 		.merge(list::router())
 }
