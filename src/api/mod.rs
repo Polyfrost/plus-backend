@@ -15,10 +15,14 @@ use aide::{
 	swagger::Swagger,
 	transform::TransformOpenApi,
 };
-use axum::{Extension, http::header, routing::get as axum_get};
+use axum::{
+	Extension,
+	http::{Method, header},
+	routing::get as axum_get,
+};
 use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
 	api::{
@@ -139,7 +143,20 @@ pub(crate) async fn start(args: ServeArgs) {
 		)
 		.layer(Extension(OpenApiSpec(openapi_rendered)))
 		.layer(Extension(args.client_ip_source))
-		.layer(TraceLayer::new_for_http());
+		.layer(TraceLayer::new_for_http())
+		.layer(
+			CorsLayer::new()
+				.allow_origin([
+					"https://plus-admin.polyfrost.org"
+						.parse::<header::HeaderValue>()
+						.expect("Unable to parse allowed CORS origin"),
+					"http://localhost:3000"
+						.parse::<header::HeaderValue>()
+						.expect("Unable to parse allowed CORS origin"),
+				])
+				.allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+				.allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+		);
 
 	// Setup the listener and start the web server
 	let listener = TcpListener::bind(args.bind_addr)
