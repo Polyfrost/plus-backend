@@ -1,7 +1,13 @@
-use std::{borrow::Cow, collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+	borrow::Cow,
+	collections::{HashMap, HashSet},
+	sync::Arc,
+	time::Duration,
+};
 
 use axum::extract::FromRef;
 use entities::prelude::*;
+use entities::sea_orm_active_enums::BodySlot;
 use migrations::{Migrator, MigratorTrait};
 use moka::future::Cache;
 use pasetors::{
@@ -15,7 +21,7 @@ use tebex::{apis::plugin::TebexPluginApiClient, webhooks::axum::TebexWebhookStat
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::{api::cosmetics::CachedCosmeticInfo, commands::ServeArgs};
+use crate::{api::cosmetics::CachedAssetInfo, commands::ServeArgs};
 
 impl ApiState {
 	#[tracing::instrument(skip_all, name = "initialize_state", level = "debug")]
@@ -54,27 +60,34 @@ impl ApiState {
 		.with_path_style()
 		.into();
 
-		// Initialize cosmetic cache with initial values
-		let cosmetic_cache = Cache::builder()
+		// Initialize asset cache with initial values
+		let asset_cache = Cache::builder()
 			.time_to_live(Duration::from_hours(2))
 			.build();
 
-		let cosmetics = Cosmetic::find()
+		let assets = Asset::find()
 			.all(&database)
 			.await
-			.expect("Unable to fetch cosmetics from db");
-		for cosmetic in cosmetics {
+			.expect("Unable to fetch assets from db");
+		for asset in assets {
 			let Ok(info) =
-				CachedCosmeticInfo::from_db_model(&cosmetic, s3_bucket.clone()).await
+				CachedAssetInfo::from_db_model(&asset, s3_bucket.clone()).await
 			else {
 				warn!(
-					"Unable to fetch cached cosmetic info for cosmetic id {}",
-					cosmetic.id
+					"Unable to fetch cached asset info for asset id {}",
+					asset.id
 				);
 				continue;
 			};
-			cosmetic_cache.insert(cosmetic.id, info).await;
+			asset_cache.insert(asset.id, info).await;
 		}
+
+		let (equipment_persist_tx, equipment_persist_rx) =
+			tokio::sync::mpsc::channel(256);
+		tokio::spawn(persist_equipment_queue(
+			database.clone(),
+			equipment_persist_rx,
+		));
 
 		// Return final state
 		ApiState {
@@ -94,7 +107,9 @@ impl ApiState {
 			paseto_key: SymmetricKey::generate()
 				.expect("Unable to generate paseto signing key"),
 			s3_bucket,
-			cosmetic_cache,
+			asset_cache,
+			realtime: RealtimeState::default(),
+			equipment_persist_tx,
 			admin_password: args.admin_password.clone(),
 		}
 	}
@@ -107,7 +122,9 @@ pub(super) struct ApiState {
 	pub(super) client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
-	pub(super) cosmetic_cache: Cache<i32, CachedCosmeticInfo>,
+	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
+	pub(super) realtime: RealtimeState,
+	pub(super) equipment_persist_tx: tokio::sync::mpsc::Sender<EquipmentPersistence>,
 	pub(super) admin_password: String,
 }
 
@@ -115,6 +132,95 @@ pub(super) struct ApiState {
 pub(super) struct TebexApiState {
 	webhook_secret: &'static str,
 	pub(super) plugin_client: TebexPluginApiClient,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct RealtimeState {
+	pub(super) connections:
+		Arc<tokio::sync::RwLock<HashMap<ConnectionId, RealtimeConnection>>>,
+	pub(super) connections_by_owner:
+		Arc<tokio::sync::RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
+	pub(super) player_runtime:
+		Arc<tokio::sync::RwLock<HashMap<Uuid, PlayerRuntimeState>>>,
+	pub(super) watchers: Arc<tokio::sync::RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
+}
+
+pub(super) type ConnectionId = Uuid;
+
+#[derive(Debug, Clone)]
+pub(super) struct RealtimeConnection {
+	pub(super) owner: Uuid,
+	pub(super) tx: tokio::sync::mpsc::UnboundedSender<
+		crate::api::websocket::structs::ClientBoundPacket,
+	>,
+	pub(super) subscriptions: HashSet<Uuid>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct PlayerRuntimeState {
+	pub(super) equipped: HashMap<BodySlot, i32>,
+	pub(super) active_emote: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct EquipmentPersistence {
+	pub(super) player: Uuid,
+	pub(super) slot: BodySlot,
+	pub(super) cosmetic_id: Option<i32>,
+}
+
+async fn persist_equipment_queue(
+	database: DatabaseConnection,
+	mut rx: tokio::sync::mpsc::Receiver<EquipmentPersistence>,
+) {
+	use entities::{player_equipped_cosmetic, prelude::*, user};
+	use sea_orm::{
+		ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::OnConflict,
+	};
+
+	while let Some(update) = rx.recv().await {
+		let result = async {
+			let Some(player) = User::find()
+				.filter(user::Column::MinecraftUuid.eq(update.player))
+				.one(&database)
+				.await?
+			else {
+				return Ok::<(), sea_orm::DbErr>(());
+			};
+
+			if let Some(cosmetic_id) = update.cosmetic_id {
+				PlayerEquippedCosmetic::insert(player_equipped_cosmetic::ActiveModel {
+					player_id: Set(player.id),
+					slot: Set(update.slot),
+					cosmetic_id: Set(cosmetic_id),
+					updated_at: ActiveValue::NotSet,
+				})
+				.on_conflict(
+					OnConflict::columns([
+						player_equipped_cosmetic::Column::PlayerId,
+						player_equipped_cosmetic::Column::Slot,
+					])
+					.update_column(player_equipped_cosmetic::Column::CosmeticId)
+					.to_owned(),
+				)
+				.exec(&database)
+				.await?;
+			} else {
+				PlayerEquippedCosmetic::delete_many()
+					.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
+					.filter(player_equipped_cosmetic::Column::Slot.eq(update.slot))
+					.exec(&database)
+					.await?;
+			}
+
+			Ok(())
+		}
+		.await;
+
+		if let Err(error) = result {
+			warn!("Unable to persist websocket equipment update: {error}");
+		}
+	}
 }
 
 impl FromRef<ApiState> for TebexWebhookState {

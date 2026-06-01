@@ -1,0 +1,121 @@
+use aide::{
+	OperationIo,
+	axum::{ApiRouter, routing::get_with},
+	transform::TransformOperation,
+};
+use axum::{
+	Json,
+	extract::{Query, State},
+	http::StatusCode,
+	response::IntoResponse,
+};
+use entities::sea_orm_active_enums::{TransactionProvider, TransactionStatus};
+use schemars::JsonSchema;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::api::{
+	ApiState,
+	account::{AuthenticatedPlayer, role_at_least},
+};
+
+#[derive(thiserror::Error, Debug, OperationIo)]
+pub enum TransactionsError {
+	#[error("Authenticated player does not have permission")]
+	Forbidden,
+	#[error("The requested player does not exist")]
+	PlayerMissing,
+	#[error("Unable to query database: {0}")]
+	Database(#[from] sea_orm::error::DbErr),
+}
+
+impl IntoResponse for TransactionsError {
+	fn into_response(self) -> axum::response::Response {
+		(
+			match self {
+				Self::Forbidden => StatusCode::FORBIDDEN,
+				Self::PlayerMissing => StatusCode::NOT_FOUND,
+				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			},
+			self.to_string(),
+		)
+			.into_response()
+	}
+}
+
+fn endpoint_doc(op: TransformOperation) -> TransformOperation {
+	op.id("getPlayerTransactions")
+		.summary("Get player transactions")
+		.description("Lists transactions for the authenticated player or for another player when the caller is elevated.")
+		.tag("transactions")
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TransactionsQuery {
+	#[serde(default)]
+	player: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct TransactionInfo {
+	id: i32,
+	provider: TransactionProvider,
+	provider_transaction_id: Option<String>,
+	status: TransactionStatus,
+	raw_metadata: serde_json::Value,
+}
+
+#[derive(Debug, Default, Serialize, JsonSchema)]
+struct TransactionsResponse {
+	transactions: Vec<TransactionInfo>,
+}
+
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().api_route(
+		"/transactions/player",
+		get_with(self::endpoint, self::endpoint_doc),
+	)
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn endpoint(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(authenticated): AuthenticatedPlayer,
+	Query(query): Query<TransactionsQuery>,
+) -> Result<Json<TransactionsResponse>, TransactionsError> {
+	use entities::{prelude::*, transaction, user};
+
+	let target_uuid = query.player.unwrap_or(authenticated.minecraft_uuid);
+	if target_uuid != authenticated.minecraft_uuid
+		&& !role_at_least(
+			&authenticated.role,
+			&entities::sea_orm_active_enums::PlayerRole::Moderator,
+		) {
+		return Err(TransactionsError::Forbidden);
+	}
+
+	let Some(player) = User::find()
+		.filter(user::Column::MinecraftUuid.eq(target_uuid))
+		.one(&state.database)
+		.await?
+	else {
+		return Err(TransactionsError::PlayerMissing);
+	};
+
+	let transactions = Transaction::find()
+		.filter(transaction::Column::PlayerId.eq(player.id))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|transaction| TransactionInfo {
+			id: transaction.id,
+			provider: transaction.provider,
+			provider_transaction_id: transaction.provider_transaction_id,
+			status: transaction.status,
+			raw_metadata: transaction.raw_metadata,
+		})
+		.collect();
+
+	Ok(Json(TransactionsResponse { transactions }))
+}

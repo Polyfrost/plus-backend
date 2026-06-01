@@ -8,16 +8,44 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
 	#[sea_orm(primary_key)]
 	pub id: i32,
+	pub asset_id: Option<i32>,
 	pub r#type: CosmeticType,
-	pub path: Option<String>,
+	pub name: String,
+	pub enabled: bool,
+	pub created_at: DateTimeWithTimeZone,
+	pub updated_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+	#[sea_orm(
+		belongs_to = "super::asset::Entity",
+		from = "Column::AssetId",
+		to = "super::asset::Column::Id",
+		on_update = "NoAction",
+		on_delete = "NoAction"
+	)]
+	Asset,
+	#[sea_orm(has_many = "super::cosmetic_allowed_slot::Entity")]
+	CosmeticAllowedSlot,
 	#[sea_orm(has_many = "super::cosmetic_package::Entity")]
 	CosmeticPackage,
-	#[sea_orm(has_many = "super::user_cosmetic::Entity")]
-	UserCosmetic,
+	#[sea_orm(has_many = "super::player_equipped_cosmetic::Entity")]
+	PlayerEquippedCosmetic,
+	#[sea_orm(has_many = "super::player_owned_cosmetic::Entity")]
+	PlayerOwnedCosmetic,
+}
+
+impl Related<super::asset::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::Asset.def()
+	}
+}
+
+impl Related<super::cosmetic_allowed_slot::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::CosmeticAllowedSlot.def()
+	}
 }
 
 impl Related<super::cosmetic_package::Entity> for Entity {
@@ -26,18 +54,15 @@ impl Related<super::cosmetic_package::Entity> for Entity {
 	}
 }
 
-impl Related<super::user_cosmetic::Entity> for Entity {
+impl Related<super::player_equipped_cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
-		Relation::UserCosmetic.def()
+		Relation::PlayerEquippedCosmetic.def()
 	}
 }
 
-impl Related<super::user::Entity> for Entity {
+impl Related<super::player_owned_cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
-		super::user_cosmetic::Relation::User.def()
-	}
-	fn via() -> Option<RelationDef> {
-		Some(super::user_cosmetic::Relation::Cosmetic.def().rev())
+		Relation::PlayerOwnedCosmetic.def()
 	}
 }
 

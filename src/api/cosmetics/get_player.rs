@@ -9,11 +9,8 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
-use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
-use sea_orm::{
-	ColumnTrait as _, EntityTrait, QueryFilter, QuerySelect, QueryTrait, SelectColumns,
-};
+use sea_orm::{ColumnTrait as _, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -21,7 +18,7 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	account::OptionalAuthenticationExtractor,
-	cosmetics::{ActiveCosmetics, CosmeticInfo},
+	cosmetics::{CosmeticInfo, EmoteInfo, EquippedCosmetics},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -82,7 +79,8 @@ struct QueryParams {
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct Response {
 	cosmetics: Vec<CosmeticInfo>,
-	active: ActiveCosmetics,
+	emotes: Vec<EmoteInfo>,
+	equipped: EquippedCosmetics,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -101,41 +99,43 @@ async fn endpoint(
 	};
 
 	{
-		use entities::{prelude::*, user, user_cosmetic};
+		use entities::{
+			player_equipped_cosmetic, player_owned_cosmetic, player_owned_emote,
+			prelude::*, user,
+		};
 
-		let cosmetics = UserCosmetic::find()
-			.filter(
-				user_cosmetic::Column::User.in_subquery(
-					// If this subquery contains no elements, the outer query will return
-					// nothing
-					User::find()
-						.select_only()
-						.select_column(user::Column::Id)
-						.filter(user::Column::MinecraftUuid.eq(player))
-						.limit(1)
-						.into_query(),
-				),
-			)
+		let Some(player) = User::find()
+			.filter(user::Column::MinecraftUuid.eq(player))
+			.one(&state.database)
+			.await?
+		else {
+			return Ok(Json(response));
+		};
+
+		let cosmetics = PlayerOwnedCosmetic::find()
+			.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
 			.find_also_related(Cosmetic)
 			.all(&state.database)
 			.await?;
 
 		let mut tasks = JoinSet::new();
-		for (user_cosmetic, cosmetic) in cosmetics
-			.into_iter()
-			.filter_map(|(uc, c)| c.map(|c| (uc, c)))
-		{
-			if user_cosmetic.active {
-				match cosmetic.r#type {
-					CosmeticType::Cape => response.active.cape = Some(cosmetic.id),
-					CosmeticType::Emote => response.active.emote = Some(cosmetic.id),
+		for cosmetic in cosmetics.into_iter().filter_map(|(_, c)| c) {
+			let asset = match cosmetic.asset_id {
+				Some(asset_id) => {
+					Asset::find_by_id(asset_id).one(&state.database).await?
 				}
-			}
-
-			let cosmetic_cache = state.cosmetic_cache.clone();
+				None => None,
+			};
+			let asset_cache = state.asset_cache.clone();
 			let s3_bucket = state.s3_bucket.clone();
 			tasks.spawn(async move {
-				CosmeticInfo::from_db_model(&cosmetic, cosmetic_cache, s3_bucket).await
+				CosmeticInfo::from_db_model(
+					&cosmetic,
+					asset.as_ref(),
+					asset_cache,
+					s3_bucket,
+				)
+				.await
 			});
 		}
 		response.cosmetics.extend(
@@ -144,6 +144,44 @@ async fn endpoint(
 				.await
 				.into_iter()
 				.collect::<Result<Vec<_>, _>>()?,
+		);
+
+		let emotes = PlayerOwnedEmote::find()
+			.filter(player_owned_emote::Column::PlayerId.eq(player.id))
+			.find_also_related(Emote)
+			.all(&state.database)
+			.await?;
+
+		let mut tasks = JoinSet::new();
+		for emote in emotes.into_iter().filter_map(|(_, e)| e) {
+			let asset = match emote.asset_id {
+				Some(asset_id) => {
+					Asset::find_by_id(asset_id).one(&state.database).await?
+				}
+				None => None,
+			};
+			let asset_cache = state.asset_cache.clone();
+			let s3_bucket = state.s3_bucket.clone();
+			tasks.spawn(async move {
+				EmoteInfo::from_db_model(&emote, asset.as_ref(), asset_cache, s3_bucket)
+					.await
+			});
+		}
+		response.emotes.extend(
+			tasks
+				.join_all()
+				.await
+				.into_iter()
+				.collect::<Result<Vec<_>, _>>()?,
+		);
+
+		response.equipped.extend(
+			PlayerEquippedCosmetic::find()
+				.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
+				.all(&state.database)
+				.await?
+				.into_iter()
+				.map(|equipment| (equipment.slot, equipment.cosmetic_id)),
 		);
 	};
 

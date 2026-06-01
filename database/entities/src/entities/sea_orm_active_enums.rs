@@ -10,6 +10,7 @@ use sea_orm::entity::prelude::*;
 	EnumIter,
 	DeriveActiveEnum,
 	schemars :: JsonSchema,
+	serde :: Deserialize,
 	serde :: Serialize,
 	Hash,
 )]
@@ -20,4 +21,139 @@ pub enum CosmeticType {
 	Cape,
 	#[sea_orm(string_value = "emote")]
 	Emote,
+	#[sea_orm(string_value = "backpack")]
+	Backpack,
+	#[sea_orm(string_value = "glasses")]
+	Glasses,
+	#[sea_orm(string_value = "wings")]
+	Wings,
+	#[sea_orm(string_value = "glove")]
+	Glove,
+}
+
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "asset_kind")]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+	#[sea_orm(string_value = "image")]
+	Image,
+	#[sea_orm(string_value = "bundle")]
+	Bundle,
+}
+
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "body_slot")]
+#[serde(rename_all = "snake_case")]
+pub enum BodySlot {
+	#[sea_orm(string_value = "cape")]
+	Cape,
+	#[sea_orm(string_value = "backpack")]
+	Backpack,
+	#[sea_orm(string_value = "glasses")]
+	Glasses,
+	#[sea_orm(string_value = "wings")]
+	Wings,
+	#[sea_orm(string_value = "left_hand")]
+	LeftHand,
+	#[sea_orm(string_value = "right_hand")]
+	RightHand,
+}
+
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	PartialOrd,
+	Ord,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "player_role")]
+#[serde(rename_all = "snake_case")]
+pub enum PlayerRole {
+	#[sea_orm(string_value = "player")]
+	Player,
+	#[sea_orm(string_value = "moderator")]
+	Moderator,
+	#[sea_orm(string_value = "admin")]
+	Admin,
+}
+
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "transaction_provider"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionProvider {
+	#[sea_orm(string_value = "tebex")]
+	Tebex,
+	#[sea_orm(string_value = "ingame")]
+	Ingame,
+	#[sea_orm(string_value = "admin_grant")]
+	AdminGrant,
+}
+
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "transaction_status")]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionStatus {
+	#[sea_orm(string_value = "pending")]
+	Pending,
+	#[sea_orm(string_value = "completed")]
+	Completed,
+	#[sea_orm(string_value = "failed")]
+	Failed,
+	#[sea_orm(string_value = "refunded")]
+	Refunded,
 }

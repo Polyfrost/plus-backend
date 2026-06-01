@@ -11,15 +11,20 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
-use entities::{cosmetic_package, prelude::*, user_cosmetic};
-use migrations::OnConflict;
+use entities::{
+	cosmetic_package, emote_package, prelude::*,
+	sea_orm_active_enums::TransactionProvider,
+};
 use schemars::JsonSchema;
-use sea_orm::{ActiveValue, TransactionTrait, TryInsertResult, prelude::*};
+use sea_orm::{ActiveValue, TransactionTrait, prelude::*};
 use serde::{Deserialize, Serialize};
 use tebex::apis::plugin::customer_purchases::ActivePackagesRequest;
 use uuid::Uuid;
 
-use crate::{api::ApiState, database::DatabaseUserExt};
+use crate::{
+	api::{ApiState, websocket::structs::ClientBoundPacket},
+	database::{DatabaseTransactionExt, DatabaseUserExt},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum RestoreError {
@@ -117,52 +122,87 @@ async fn endpoint(
 
 	let txn = state.database.begin().await?;
 
-	// Fetch all cosmetics for the active packages of this player
-	let cosmetics = Cosmetic::find()
-		.find_with_related(CosmeticPackage)
-		.filter(cosmetic_package::Column::PackageId.is_in(transactions.keys().copied()))
-		.filter(
-			// sea-orm doesn't support inner joins on find_with_related
-			cosmetic_package::Column::CosmeticId.is_not_null(),
-		)
-		.all(&txn)
-		.await?;
-
-	if cosmetics.is_empty() {
-		return Ok(Json(response));
-	}
-
 	// Get the user in the database (or make it if it does not exist)
 	let user = User::get_or_create(&txn, query.player).await?;
 
-	// Insert all of the cosmetics they SHOULD have into the database, ignoring
-	// conflicts
-	let inserted = UserCosmetic::insert_many(cosmetics.iter().map(|(c, cp)| {
-		user_cosmetic::ActiveModel {
-			user: ActiveValue::Set(user.id),
-			cosmetic: ActiveValue::Set(c.id),
-			transaction_id: ActiveValue::Set(Some(
-				transactions[&cp
-					.first()
-					.expect("should be at least one CosmeticPackage")
-					.package_id
-					.try_into()
-					.expect("package_id should not be negative")]
-					.to_string(),
-			)),
-			..Default::default()
+	let mut granted_cosmetics = Vec::new();
+	let mut granted_emotes = Vec::new();
+
+	for (package_id, transaction_id) in &transactions {
+		let transaction = Transaction::get_or_create_tebex(
+			&txn,
+			user.id,
+			transaction_id,
+			serde_json::json!({ "source": "restore", "package_id": package_id }),
+		)
+		.await?;
+		response.restored_ids.insert((*transaction_id).to_string());
+
+		let cosmetics = CosmeticPackage::find()
+			.filter(cosmetic_package::Column::PackageId.eq(*package_id))
+			.all(&txn)
+			.await?;
+		if !cosmetics.is_empty() {
+			use entities::player_owned_cosmetic;
+			PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(|package| {
+				player_owned_cosmetic::ActiveModel {
+					player_id: ActiveValue::Set(user.id),
+					cosmetic_id: ActiveValue::Set(package.cosmetic_id),
+					acquired_via: ActiveValue::Set(TransactionProvider::Tebex),
+					transaction_id: ActiveValue::Set(Some(transaction.id)),
+					..Default::default()
+				}
+			}))
+			.on_conflict_do_nothing()
+			.exec(&txn)
+			.await?;
+			granted_cosmetics
+				.extend(cosmetics.into_iter().map(|package| package.cosmetic_id));
 		}
-	}))
-	.on_conflict(OnConflict::new().do_nothing().to_owned())
-	.do_nothing()
-	.exec_with_returning_many(&txn)
-	.await?;
+
+		let emotes = EmotePackage::find()
+			.filter(emote_package::Column::PackageId.eq(*package_id))
+			.all(&txn)
+			.await?;
+		if !emotes.is_empty() {
+			use entities::player_owned_emote;
+			PlayerOwnedEmote::insert_many(emotes.iter().map(|package| {
+				player_owned_emote::ActiveModel {
+					player_id: ActiveValue::Set(user.id),
+					emote_id: ActiveValue::Set(package.emote_id),
+					acquired_via: ActiveValue::Set(TransactionProvider::Tebex),
+					transaction_id: ActiveValue::Set(Some(transaction.id)),
+					..Default::default()
+				}
+			}))
+			.on_conflict_do_nothing()
+			.exec(&txn)
+			.await?;
+			granted_emotes.extend(emotes.into_iter().map(|package| package.emote_id));
+		}
+	}
 
 	txn.commit().await?;
 
-	if let TryInsertResult::Inserted(inserted) = inserted {
-		for txn_id in inserted.into_iter().filter_map(|m| m.transaction_id) {
-			response.restored_ids.insert(txn_id);
+	let connection_ids = state
+		.realtime
+		.connections_by_owner
+		.read()
+		.await
+		.get(&query.player)
+		.cloned()
+		.unwrap_or_default();
+	if !connection_ids.is_empty() {
+		let connections = state.realtime.connections.read().await;
+		for connection_id in connection_ids {
+			let Some(connection) = connections.get(&connection_id) else {
+				continue;
+			};
+			let _ = connection.tx.send(ClientBoundPacket::OwnershipUpdated {
+				player: query.player,
+				cosmetic_ids: granted_cosmetics.clone(),
+				emote_ids: granted_emotes.clone(),
+			});
 		}
 	}
 

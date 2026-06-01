@@ -65,14 +65,23 @@ async fn endpoint(
 	{
 		use entities::prelude::*;
 
-		let cosmetics = Cosmetic::find().all(&state.database).await?;
+		let cosmetics = Cosmetic::find()
+			.find_also_related(Asset)
+			.all(&state.database)
+			.await?;
 
 		let mut join_set = JoinSet::new();
-		for cosmetic in cosmetics {
-			let cosmetic_cache = state.cosmetic_cache.clone();
+		for (cosmetic, asset) in cosmetics {
+			let asset_cache = state.asset_cache.clone();
 			let s3_bucket = state.s3_bucket.clone();
 			join_set.spawn(async move {
-				CosmeticInfo::from_db_model(&cosmetic, cosmetic_cache, s3_bucket).await
+				CosmeticInfo::from_db_model(
+					&cosmetic,
+					asset.as_ref(),
+					asset_cache,
+					s3_bucket,
+				)
+				.await
 			});
 		}
 

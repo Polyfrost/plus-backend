@@ -9,13 +9,14 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::sea_orm_active_enums::AssetKind;
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, Set};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::api::{
-	ApiState, admin_auth::AdminAuthenticationExtractor, cosmetics::CosmeticInfo,
+	ApiState, admin_auth::AdminAuthenticationExtractor, cosmetics::EmoteInfo,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -55,7 +56,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			 ZIP archives are preferred; other file types are stored as a single asset.",
 		)
 		.tag("cosmetics")
-		.response_with::<{ StatusCode::OK.as_u16() }, Json<CosmeticInfo>, _>(|res| {
+		.response_with::<{ StatusCode::OK.as_u16() }, Json<EmoteInfo>, _>(|res| {
 			res.description("The uploaded cosmetic info")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
@@ -85,6 +86,7 @@ where
 }
 
 #[derive(JsonSchema)]
+#[allow(dead_code)]
 struct EmoteUploadRequest {
 	#[schemars(with = "String")]
 	file: String,
@@ -125,11 +127,18 @@ fn default_content_type(extension: &str) -> &'static str {
 	}
 }
 
+fn sha256_hex(data: &[u8]) -> String {
+	Sha256::digest(data)
+		.iter()
+		.map(|byte| format!("{byte:02x}"))
+		.collect()
+}
+
 async fn endpoint(
 	State(state): State<ApiState>,
 	_auth: AdminAuthenticationExtractor,
 	FileUpload(mut multipart): FileUpload,
-) -> Result<Json<CosmeticInfo>, UploadError> {
+) -> Result<Json<EmoteInfo>, UploadError> {
 	let mut file_data = None;
 	let mut content_type = None;
 	let mut extension = "zip".to_string();
@@ -164,27 +173,42 @@ async fn endpoint(
 		)
 		.await?;
 
-	use entities::cosmetic;
+	use entities::{asset, emote};
 
-	let model = cosmetic::ActiveModel {
-		r#type: Set(CosmeticType::Emote),
-		path: Set(Some(path)),
+	let asset = asset::ActiveModel {
+		storage_path: Set(Some(path)),
+		url: Set(None),
+		asset_kind: Set(AssetKind::Bundle),
+		content_type: Set(
+			content_type.or_else(|| Some(default_content_type(&extension).to_string()))
+		),
+		hash: Set(Some(sha256_hex(&data))),
 		..Default::default()
 	}
 	.insert(&state.database)
 	.await?;
 
-	let info = crate::api::cosmetics::CachedCosmeticInfo::from_db_model(
-		&model,
+	let model = emote::ActiveModel {
+		asset_id: Set(Some(asset.id)),
+		name: Set("Emote".to_string()),
+		enabled: Set(true),
+		..Default::default()
+	}
+	.insert(&state.database)
+	.await?;
+
+	let info = crate::api::cosmetics::CachedAssetInfo::from_db_model(
+		&asset,
 		state.s3_bucket.clone(),
 	)
 	.await?;
-	state.cosmetic_cache.insert(model.id, info).await;
+	state.asset_cache.insert(asset.id, info).await;
 
 	Ok(Json(
-		CosmeticInfo::from_db_model(
+		EmoteInfo::from_db_model(
 			&model,
-			state.cosmetic_cache.clone(),
+			Some(&asset),
+			state.asset_cache.clone(),
 			state.s3_bucket.clone(),
 		)
 		.await?,

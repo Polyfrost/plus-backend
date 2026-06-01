@@ -1,14 +1,20 @@
 mod get_player;
+mod grant;
+mod grant_emote;
 mod list;
 mod list_capes;
+mod list_emotes;
 mod put_player;
 mod upload_cape;
 mod upload_emote;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use aide::axum::ApiRouter;
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::{
+	asset,
+	sea_orm_active_enums::{BodySlot, CosmeticType},
+};
 use moka::future::Cache;
 use s3::{Bucket, error::S3Error};
 use schemars::JsonSchema;
@@ -17,20 +23,35 @@ use serde::{Deserialize, Serialize};
 use crate::api::ApiState;
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
-struct CosmeticInfo {
+pub(super) struct CosmeticInfo {
 	/// The unique ID of this cosmetic
 	id: i32,
 	/// The type of this cosmetic
 	r#type: CosmeticType,
+	/// The display name for this cosmetic
+	name: String,
 	/// The media url for this cosmetic
 	#[serde(skip_serializing_if = "Option::is_none")]
 	url: Option<String>,
 	#[serde(flatten)]
-	cached_info: CachedCosmeticInfo,
+	cached_info: CachedAssetInfo,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
-pub struct CachedCosmeticInfo {
+pub(super) struct EmoteInfo {
+	/// The unique ID of this emote
+	id: i32,
+	/// The display name for this emote
+	name: String,
+	/// The emote bundle URL
+	#[serde(skip_serializing_if = "Option::is_none")]
+	url: Option<String>,
+	#[serde(flatten)]
+	cached_info: CachedAssetInfo,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct CachedAssetInfo {
 	/// The hash of this cosmetic. A different hash indicates
 	/// the cosmetic has changed and should be redownlowded.
 	/// The hash format is unspecified
@@ -45,41 +66,62 @@ impl CosmeticInfo {
 	)]
 	pub async fn from_db_model(
 		value: &entities::cosmetic::Model,
-		cache: Cache<i32, CachedCosmeticInfo>,
+		asset: Option<&asset::Model>,
+		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
 	) -> Result<Self, S3Error> {
+		let cached_info =
+			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
 		Ok(Self {
 			id: value.id,
 			r#type: value.r#type.clone(),
-			url: match &value.path {
-				Some(p) => Some(s3_bucket.as_ref().presign_get(p, 604800, None).await?),
-				_ => None,
-			},
-			cached_info: if let Some(info) = cache.get(&value.id).await {
-				info
-			} else {
-				CachedCosmeticInfo::from_db_model(value, s3_bucket).await?
-			},
+			name: value.name.clone(),
+			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
+			cached_info,
 		})
 	}
 }
 
-impl CachedCosmeticInfo {
+impl EmoteInfo {
+	#[tracing::instrument(
+		name = "convert_db_emote_info",
+		level = "debug",
+		skip(cache, s3_bucket)
+	)]
+	pub async fn from_db_model(
+		value: &entities::emote::Model,
+		asset: Option<&asset::Model>,
+		cache: Cache<i32, CachedAssetInfo>,
+		s3_bucket: Arc<Bucket>,
+	) -> Result<Self, S3Error> {
+		let cached_info =
+			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
+		Ok(Self {
+			id: value.id,
+			name: value.name.clone(),
+			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
+			cached_info,
+		})
+	}
+}
+
+impl CachedAssetInfo {
 	// sha256("null")
 	const DEFAULT_HASH: &str = "37a6259cc0c1dae299a7866489dff0bd";
 
 	#[tracing::instrument(
-		name = "fetch_cached_cosmetic_info",
+		name = "fetch_cached_asset_info",
 		level = "debug",
 		skip(s3_bucket)
 	)]
 	pub async fn from_db_model(
-		value: &entities::cosmetic::Model,
+		value: &asset::Model,
 		s3_bucket: Arc<Bucket>,
 	) -> Result<Self, S3Error> {
 		Ok(Self {
-			hash: match &value.path {
-				Some(path) => {
+			hash: match (&value.hash, &value.storage_path) {
+				(Some(hash), _) => hash.clone(),
+				(None, Some(path)) => {
 					let (headers, _) = s3_bucket.head_object(path).await?;
 					match headers.e_tag {
 						None => Self::DEFAULT_HASH.to_string(),
@@ -92,61 +134,59 @@ impl CachedCosmeticInfo {
 						}
 					}
 				}
-				None => Self::DEFAULT_HASH.to_string(),
+				(None, None) => Self::DEFAULT_HASH.to_string(),
 			},
 		})
 	}
+
+	async fn from_optional_asset(
+		asset: Option<&asset::Model>,
+		cache: Cache<i32, CachedAssetInfo>,
+		s3_bucket: Arc<Bucket>,
+	) -> Result<Self, S3Error> {
+		let Some(asset) = asset else {
+			return Ok(Self {
+				hash: Self::DEFAULT_HASH.to_string(),
+			});
+		};
+
+		if let Some(info) = cache.get(&asset.id).await {
+			return Ok(info);
+		}
+
+		Self::from_db_model(asset, s3_bucket).await
+	}
+
+	async fn asset_url(
+		asset: Option<&asset::Model>,
+		s3_bucket: Arc<Bucket>,
+	) -> Result<Option<String>, S3Error> {
+		let Some(asset) = asset else {
+			return Ok(None);
+		};
+
+		if let Some(url) = &asset.url {
+			return Ok(Some(url.clone()));
+		}
+
+		match &asset.storage_path {
+			Some(path) => Ok(Some(
+				s3_bucket.as_ref().presign_get(path, 604800, None).await?,
+			)),
+			None => Ok(None),
+		}
+	}
 }
 
-macro_rules! gen_active_cosmetics_structs {
-	($($name:ident),+) => {
-		#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-		pub struct ActiveCosmetics {
-			$(
-				#[doc = "The ID of the active "]
-				#[doc = stringify!($name)]
-				#[doc = ", or null to disable"]
-				$name: Option<i32>
-			),+
-		}
+/// Current equipment keyed by body slot.
+pub(super) type EquippedCosmetics = HashMap<BodySlot, i32>;
 
-		impl ActiveCosmetics {
-			pub const NAMES: [&str; { [$(stringify!($name)),+].len() }] = [$(stringify!($name)),+];
-		}
-
-		/// An object of partially-set active cosmetics.
-		///
-		/// Omitting a key keeps it the same, using `null` unsets it, and passing a value sets that as the active.
-		#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-		pub struct PartialActiveCosmetics {
-			$(
-				#[doc = "The ID of the active "]
-				#[doc = stringify!($name)]
-				#[doc = ", or null to disable"]
-				#[serde(
-					default,
-					skip_serializing_if = "Option::is_none",
-					serialize_with = "::serde_with::rust::double_option::serialize",
-					deserialize_with = "::serde_with::rust::double_option::deserialize",
-				)]
-				$name: Option<Option<i32>>
-			),+
-		}
-
-		impl IntoIterator for &PartialActiveCosmetics {
-			type Item = (&'static str, Option<i32>);
-			type IntoIter = std::iter::Flatten<
-				std::array::IntoIter<Option<(&'static str, Option<i32>)>, { ActiveCosmetics::NAMES.len() }>
-			>;
-
-			fn into_iter(self) -> Self::IntoIter {
-				[$(self.$name.map(|v| (stringify!($name), v))),+].into_iter().flatten()
-			}
-		}
-	};
+/// Partial equipment updates. Missing slots are left unchanged, while a `null`
+/// value unequips the slot.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub(super) struct PartialEquippedCosmetics {
+	pub equipped: HashMap<BodySlot, Option<i32>>,
 }
-
-gen_active_cosmetics_structs!(cape, emote);
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
@@ -157,7 +197,10 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(put_player::router())
 				.merge(upload_cape::router())
 				.merge(upload_emote::router())
+				.merge(grant::router())
+				.merge(grant_emote::router())
 				.merge(list_capes::router()),
 		)
+		.merge(list_emotes::router())
 		.merge(list::router())
 }

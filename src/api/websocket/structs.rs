@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
+use entities::sea_orm_active_enums::BodySlot;
 use schemars::{JsonSchema, json_schema};
 use serde::{Deserialize, Serialize, ser::SerializeStruct as _};
 use uuid::Uuid;
@@ -12,15 +13,26 @@ pub enum WebsocketError {
 	DatabaseQuery(#[from] sea_orm::error::DbErr),
 	#[error("Unable to serialize response: {0}")]
 	Serialization(#[from] serde_json::Error),
+	#[error("Unable to parse request: {0}")]
+	Deserialization(serde_json::Error),
+	#[error("Player does not own cosmetic {0}")]
+	UnownedCosmetic(i32),
+	#[error("Cosmetic {cosmetic_id} is not allowed in slot {slot:?}")]
+	InvalidSlot { slot: BodySlot, cosmetic_id: i32 },
+	#[error("Player does not own emote {0}")]
+	UnownedEmote(i32),
 }
 
 impl WebsocketError {
-	const ERROR_CODES: &[&str] = &["fatal", "internal_server_error"];
+	const ERROR_CODES: &[&str] =
+		&["fatal", "internal_server_error", "bad_request", "not_owned"];
 
 	pub fn error_code(&self) -> &'static str {
 		match self {
 			Self::Fatal(_) => Self::ERROR_CODES[0],
 			Self::DatabaseQuery(_) | Self::Serialization(_) => Self::ERROR_CODES[1],
+			Self::Deserialization(_) | Self::InvalidSlot { .. } => Self::ERROR_CODES[2],
+			Self::UnownedCosmetic(_) | Self::UnownedEmote(_) => Self::ERROR_CODES[3],
 		}
 	}
 }
@@ -69,6 +81,20 @@ pub enum ServerBoundPacket {
 		/// An array of player UUIDs to include in the bulk lookup
 		players: Vec<Uuid>,
 	},
+	SubscribePlayers {
+		players: Vec<Uuid>,
+	},
+	UnsubscribePlayers {
+		players: Vec<Uuid>,
+	},
+	SetEquippedCosmetic {
+		slot: BodySlot,
+		cosmetic_id: Option<i32>,
+	},
+	PlayEmote {
+		emote_id: i32,
+	},
+	StopEmote,
 }
 
 /// A JSON object that the server will send to the client in the websocket
@@ -88,9 +114,85 @@ pub enum ClientBoundPacket {
 		#[schemars(example = HashMap::from([("424ef6d0-4774-4f8c-8bef-8f62ebdac9c0", [1,2])]))]
 		cosmetics: HashMap<Uuid, Vec<i32>>,
 	},
+	SubscriptionSnapshot {
+		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
+		active_emotes: HashMap<Uuid, i32>,
+	},
+	PlayerCosmeticEquipped {
+		player: Uuid,
+		slot: BodySlot,
+		cosmetic_id: Option<i32>,
+	},
+	PlayerEmoteStarted {
+		player: Uuid,
+		emote_id: i32,
+	},
+	PlayerEmoteStopped {
+		player: Uuid,
+	},
+	OwnershipUpdated {
+		player: Uuid,
+		cosmetic_ids: Vec<i32>,
+		emote_ids: Vec<i32>,
+	},
 	/// An error response from the server
 	Error {
 		#[serde(flatten)]
 		error: WebsocketError,
 	},
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::HashMap;
+
+	use entities::sea_orm_active_enums::BodySlot;
+	use uuid::Uuid;
+
+	use super::{ClientBoundPacket, ServerBoundPacket};
+
+	#[test]
+	fn parses_slot_based_equipment_update() {
+		let packet: ServerBoundPacket = serde_json::from_str(
+			r#"{"type":"SetEquippedCosmetic","slot":"cape","cosmetic_id":42}"#,
+		)
+		.expect("packet should parse");
+
+		match packet {
+			ServerBoundPacket::SetEquippedCosmetic { slot, cosmetic_id } => {
+				assert_eq!(slot, BodySlot::Cape);
+				assert_eq!(cosmetic_id, Some(42));
+			}
+			_ => panic!("unexpected packet variant"),
+		}
+	}
+
+	#[test]
+	fn parses_player_subscription() {
+		let player = Uuid::nil();
+		let packet: ServerBoundPacket = serde_json::from_str(&format!(
+			r#"{{"type":"SubscribePlayers","players":["{player}"]}}"#
+		))
+		.expect("packet should parse");
+
+		match packet {
+			ServerBoundPacket::SubscribePlayers { players } => {
+				assert_eq!(players, vec![player]);
+			}
+			_ => panic!("unexpected packet variant"),
+		}
+	}
+
+	#[test]
+	fn serializes_subscription_snapshot_packet() {
+		let player = Uuid::nil();
+		let packet = ClientBoundPacket::SubscriptionSnapshot {
+			equipped: HashMap::from([(player, HashMap::from([(BodySlot::Cape, 1)]))]),
+			active_emotes: HashMap::from([(player, 6)]),
+		};
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(serialized["type"], "SubscriptionSnapshot");
+		assert_eq!(serialized["equipped"][player.to_string()]["cape"], 1);
+	}
 }

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::put_with},
@@ -11,23 +9,22 @@ use axum::{
 	http::StatusCode,
 	response::{IntoResponse, NoContent},
 };
-use entities::sea_orm_active_enums::{CosmeticType, CosmeticTypeEnum};
-use migrations::Expr;
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveEnum, ColumnTrait, EntityTrait, IntoSimpleExpr, QueryFilter, QuerySelect,
-	QueryTrait, SelectColumns as _, TransactionTrait,
+	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
 };
 use serde::Deserialize;
 
 use crate::api::{
-	ApiState, account::AuthenticationExtractor, cosmetics::PartialActiveCosmetics,
+	ApiState, account::AuthenticatedPlayer, cosmetics::PartialEquippedCosmetics,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ResponseError {
-	#[error("The given ID {id} is invalid for cosmetic type {cosmetic_type}")]
-	InvalidId { cosmetic_type: String, id: i32 },
+	#[error("The given ID {id} is not owned by the player")]
+	UnownedCosmetic { id: i32 },
+	#[error("The given ID {id} cannot be equipped in slot {slot}")]
+	InvalidSlot { slot: String, id: i32 },
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
@@ -39,9 +36,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
 			res.description(
-				"An error given when a passed ID is invalid for a given cosmetic type",
+				"An error given when a passed ID is not owned or cannot be equipped in a slot",
 			)
-			.example("The given ID 2 is invalid for cosmetic type emote")
+			.example("The given ID 2 cannot be equipped in slot cape")
 		})
 		.response_with::<{ StatusCode::INTERNAL_SERVER_ERROR.as_u16() }, String, _>(
 			|res| {
@@ -57,7 +54,8 @@ impl IntoResponse for ResponseError {
 	fn into_response(self) -> axum::response::Response {
 		(
 			match self {
-				ResponseError::InvalidId { .. } => StatusCode::BAD_REQUEST,
+				ResponseError::UnownedCosmetic { .. }
+				| ResponseError::InvalidSlot { .. } => StatusCode::BAD_REQUEST,
 				ResponseError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self.to_string(),
@@ -68,8 +66,9 @@ impl IntoResponse for ResponseError {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct RequestBody {
-	/// An object of cosmetic types to the active one.
-	active: PartialActiveCosmetics,
+	/// Slot keyed equipment updates.
+	#[serde(flatten)]
+	equipment: PartialEquippedCosmetics,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -79,80 +78,66 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	AuthenticationExtractor(player): AuthenticationExtractor,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Json(body): Json<RequestBody>,
 ) -> Result<NoContent, ResponseError> {
 	{
-		use entities::{cosmetic, prelude::*, user, user_cosmetic};
+		use entities::{
+			cosmetic_allowed_slot, player_equipped_cosmetic, player_owned_cosmetic,
+			prelude::*,
+		};
+		use sea_orm::sea_query::OnConflict;
 
 		let txn = state.database.begin().await?;
 
-		let correct_cosmetics = Cosmetic::find()
-			.select_only()
-			.columns([cosmetic::Column::Id, cosmetic::Column::Type])
-			.filter(
-				Expr::tuple([
-					cosmetic::Column::Id.into_simple_expr(),
-					cosmetic::Column::Type.into_simple_expr(),
-				])
-				.is_in(body.active.into_iter().filter_map(|(name, value)| {
-					Some(Expr::tuple([
-						value?.into(),
-						Expr::val(name).cast_as(CosmeticTypeEnum),
-					]))
-				})),
-			)
-			.distinct()
-			.into_tuple()
-			.all(&txn)
-			.await?
-			.into_iter()
-			.collect::<HashSet<(i32, CosmeticType)>>();
+		for (slot, value) in body.equipment.equipped {
+			if let Some(id) = value {
+				let owned = PlayerOwnedCosmetic::find()
+					.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
+					.filter(player_owned_cosmetic::Column::CosmeticId.eq(id))
+					.one(&txn)
+					.await?
+					.is_some();
+				if !owned {
+					return Err(ResponseError::UnownedCosmetic { id });
+				}
 
-		for (name, value) in body.active.into_iter() {
-			// Ensure this id exists
-			let name_string = name.to_string();
-			if let Some(id) = value
-				&& !correct_cosmetics.contains(&(
-					id,
-					CosmeticType::try_from_value(&name_string)
-						.expect("Should always suceed"),
-				)) {
-				return Err(ResponseError::InvalidId {
-					cosmetic_type: name_string,
-					id,
-				});
-			}
+				let allowed = CosmeticAllowedSlot::find()
+					.filter(cosmetic_allowed_slot::Column::CosmeticId.eq(id))
+					.filter(cosmetic_allowed_slot::Column::Slot.eq(slot.clone()))
+					.one(&txn)
+					.await?
+					.is_some();
+				if !allowed {
+					return Err(ResponseError::InvalidSlot {
+						slot: format!("{slot:?}"),
+						id,
+					});
+				}
 
-			UserCosmetic::update_many()
-				.col_expr(
-					user_cosmetic::Column::Active,
-					if let Some(id) = value {
-						user_cosmetic::Column::Cosmetic.eq(id)
-					} else {
-						false.into()
-					},
-				)
-				.filter(
-					user_cosmetic::Column::Cosmetic.in_subquery(
-						Cosmetic::find()
-							.select_only()
-							.column(cosmetic::Column::Id)
-							.filter(cosmetic::Column::Type.eq(name))
-							.into_query(),
-					),
-				)
-				.filter(
-					user_cosmetic::Column::User.in_subquery(
-						User::find()
-							.select_only()
-							.select_column(user::Column::Id)
-							.filter(user::Column::MinecraftUuid.eq(player))
-							.into_query(),
-					),
+				PlayerEquippedCosmetic::insert(player_equipped_cosmetic::ActiveModel {
+					player_id: Set(player.id),
+					slot: Set(slot),
+					cosmetic_id: Set(id),
+					updated_at: ActiveValue::NotSet,
+				})
+				.on_conflict(
+					OnConflict::columns([
+						player_equipped_cosmetic::Column::PlayerId,
+						player_equipped_cosmetic::Column::Slot,
+					])
+					.update_column(player_equipped_cosmetic::Column::CosmeticId)
+					.to_owned(),
 				)
 				.exec(&txn)
 				.await?;
+			} else {
+				PlayerEquippedCosmetic::delete_many()
+					.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
+					.filter(player_equipped_cosmetic::Column::Slot.eq(slot))
+					.exec(&txn)
+					.await?;
+			}
 		}
 
 		txn.commit().await?;

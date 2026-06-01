@@ -53,6 +53,8 @@ echo ""
 echo "Dev stack ready. Starting API on http://127.0.0.1:8080"
 echo "Wyvest UUID: a5331404-0e77-440e-8bef-24c071dac1ae"
 echo "PolyPlus: set apiUrl to http://127.0.0.1:8080"
+echo "WebSocket: use SubscribePlayers / UnsubscribePlayers (no lobbies)"
+echo "OpenAPI: http://127.0.0.1:8080/scalar"
 echo ""
 
 set -a

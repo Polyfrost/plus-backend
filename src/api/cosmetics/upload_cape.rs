@@ -9,9 +9,10 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::sea_orm_active_enums::{AssetKind, BodySlot, CosmeticType};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ActiveValue, Set};
+use sea_orm::{ActiveModelTrait, Set};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::api::{
@@ -84,6 +85,7 @@ where
 }
 
 #[derive(JsonSchema)]
+#[allow(dead_code)]
 struct CapeUploadRequest {
 	#[schemars(with = "String")]
 	file: String,
@@ -115,6 +117,13 @@ impl OperationInput for FileUpload {
 			},
 		));
 	}
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+	Sha256::digest(data)
+		.iter()
+		.map(|byte| format!("{byte:02x}"))
+		.collect()
 }
 
 async fn endpoint(
@@ -154,27 +163,48 @@ async fn endpoint(
 		)
 		.await?;
 
-	use entities::cosmetic;
+	use entities::{asset, cosmetic, cosmetic_allowed_slot};
 
-	let model = cosmetic::ActiveModel {
-		r#type: Set(CosmeticType::Cape),
-		path: Set(Some(path)),
+	let asset = asset::ActiveModel {
+		storage_path: Set(Some(path)),
+		url: Set(None),
+		asset_kind: Set(AssetKind::Image),
+		content_type: Set(content_type.or_else(|| Some("image/png".to_string()))),
+		hash: Set(Some(sha256_hex(&data))),
 		..Default::default()
 	}
 	.insert(&state.database)
 	.await?;
 
-	let info = crate::api::cosmetics::CachedCosmeticInfo::from_db_model(
-		&model,
+	let model = cosmetic::ActiveModel {
+		asset_id: Set(Some(asset.id)),
+		r#type: Set(CosmeticType::Cape),
+		name: Set("Cape".to_string()),
+		enabled: Set(true),
+		..Default::default()
+	}
+	.insert(&state.database)
+	.await?;
+
+	cosmetic_allowed_slot::ActiveModel {
+		cosmetic_id: Set(model.id),
+		slot: Set(BodySlot::Cape),
+	}
+	.insert(&state.database)
+	.await?;
+
+	let info = crate::api::cosmetics::CachedAssetInfo::from_db_model(
+		&asset,
 		state.s3_bucket.clone(),
 	)
 	.await?;
-	state.cosmetic_cache.insert(model.id, info).await;
+	state.asset_cache.insert(asset.id, info).await;
 
 	Ok(Json(
 		CosmeticInfo::from_db_model(
 			&model,
-			state.cosmetic_cache.clone(),
+			Some(&asset),
+			state.asset_cache.clone(),
 			state.s3_bucket.clone(),
 		)
 		.await?,

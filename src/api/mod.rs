@@ -2,7 +2,9 @@ mod account;
 pub(crate) mod admin_auth;
 mod cosmetics;
 mod payments;
+mod players;
 mod state;
+mod transactions;
 mod websocket;
 
 use aide::{
@@ -96,6 +98,8 @@ pub(crate) async fn start(args: ServeArgs) {
 	let app = ApiRouter::new()
 		.nest("/payments", payments::setup_router().await)
 		.nest("/account", account::setup_router().await)
+		.merge(players::setup_router().await)
+		.merge(transactions::setup_router().await)
 		.merge(cosmetics::setup_router().await)
 		.merge(websocket::setup_router().await)
 		.with_state(state);
