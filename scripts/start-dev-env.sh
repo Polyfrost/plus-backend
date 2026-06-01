@@ -49,6 +49,20 @@ pg_ctl \
 
 psql -d postgres -h "$db" -c 'CREATE DATABASE local;' || true
 
+if command -v sea-orm-cli >/dev/null 2>&1; then
+    DATABASE_URL="postgresql://localhost:5432/local" sea-orm-cli migrate up \
+        -d "$root/database/migrations" || true
+fi
+
+if [ -x "$root/scripts/seed-dev-assets.sh" ]; then
+    "$root/scripts/seed-dev-assets.sh" || echo "warning: seed-dev-assets.sh failed" >&2
+fi
+
+if [ -f "$root/scripts/populate-db.sql" ]; then
+  psql -d local -h "$db" -f "$root/scripts/populate-db.sql" || \
+    echo "warning: populate-db.sql failed" >&2
+fi
+
 # Ensure processes are stopped on exit
 trap 'pg_ctl -D "$db" stop; kill "$RCLONE_PID" || true' EXIT
 

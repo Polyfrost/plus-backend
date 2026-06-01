@@ -3,6 +3,7 @@ mod list;
 mod list_capes;
 mod put_player;
 mod upload_cape;
+mod upload_emote;
 
 use std::sync::Arc;
 
@@ -145,7 +146,7 @@ macro_rules! gen_active_cosmetics_structs {
 	};
 }
 
-gen_active_cosmetics_structs!(cape);
+gen_active_cosmetics_structs!(cape, emote);
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
@@ -155,6 +156,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(get_player::router())
 				.merge(put_player::router())
 				.merge(upload_cape::router())
+				.merge(upload_emote::router())
 				.merge(list_capes::router()),
 		)
 		.merge(list::router())

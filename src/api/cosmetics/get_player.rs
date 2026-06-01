@@ -128,7 +128,7 @@ async fn endpoint(
 			if user_cosmetic.active {
 				match cosmetic.r#type {
 					CosmeticType::Cape => response.active.cape = Some(cosmetic.id),
-					CosmeticType::Emote => (),
+					CosmeticType::Emote => response.active.emote = Some(cosmetic.id),
 				}
 			}
 
