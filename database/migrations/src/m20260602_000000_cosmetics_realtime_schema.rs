@@ -21,11 +21,6 @@ impl MigrationTrait for Migration {
 			END $$;
 
 			DO $$ BEGIN
-				CREATE TYPE body_slot AS ENUM ('cape', 'backpack', 'glasses', 'wings', 'left_hand', 'right_hand');
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END $$;
-
-			DO $$ BEGIN
 				CREATE TYPE transaction_provider AS ENUM ('tebex', 'ingame', 'admin_grant');
 			EXCEPTION WHEN duplicate_object THEN NULL;
 			END $$;
@@ -101,36 +96,6 @@ impl MigrationTrait for Migration {
 
 			SELECT setval(pg_get_serial_sequence('emote', 'id'), GREATEST((SELECT COALESCE(MAX(id), 1) FROM emote), 1));
 
-			CREATE TABLE IF NOT EXISTS cosmetic_allowed_slot (
-				cosmetic_id INTEGER NOT NULL REFERENCES cosmetic(id) ON DELETE CASCADE,
-				slot body_slot NOT NULL,
-				PRIMARY KEY (cosmetic_id, slot)
-			);
-
-			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'cape'::body_slot FROM cosmetic WHERE type = 'cape'
-			ON CONFLICT DO NOTHING;
-
-			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'backpack'::body_slot FROM cosmetic WHERE type = 'backpack'
-			ON CONFLICT DO NOTHING;
-
-			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'glasses'::body_slot FROM cosmetic WHERE type = 'glasses'
-			ON CONFLICT DO NOTHING;
-
-			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'wings'::body_slot FROM cosmetic WHERE type = 'wings'
-			ON CONFLICT DO NOTHING;
-
-			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'left_hand'::body_slot FROM cosmetic WHERE type = 'glove'
-			ON CONFLICT DO NOTHING;
-
-			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'right_hand'::body_slot FROM cosmetic WHERE type = 'glove'
-			ON CONFLICT DO NOTHING;
-
 			CREATE TABLE IF NOT EXISTS "transaction" (
 				id SERIAL PRIMARY KEY,
 				player_id INTEGER NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
@@ -171,7 +136,7 @@ impl MigrationTrait for Migration {
 
 			CREATE TABLE IF NOT EXISTS player_equipped_cosmetic (
 				player_id INTEGER NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
-				slot body_slot NOT NULL,
+				slot TEXT NOT NULL,
 				cosmetic_id INTEGER NOT NULL REFERENCES cosmetic(id) ON DELETE CASCADE,
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				PRIMARY KEY (player_id, slot)
@@ -202,7 +167,7 @@ impl MigrationTrait for Migration {
 			ON CONFLICT DO NOTHING;
 
 			INSERT INTO player_equipped_cosmetic (player_id, slot, cosmetic_id)
-			SELECT uc."user", 'cape'::body_slot, uc.cosmetic
+			SELECT uc."user", 'cape', uc.cosmetic
 			FROM user_cosmetic uc
 			INNER JOIN cosmetic c ON c.id = uc.cosmetic
 			WHERE uc.active = TRUE AND c.type = 'cape'
@@ -265,7 +230,6 @@ impl MigrationTrait for Migration {
 			DROP TABLE IF EXISTS player_owned_emote;
 			DROP TABLE IF EXISTS player_owned_cosmetic;
 			DROP TABLE IF EXISTS emote_package;
-			DROP TABLE IF EXISTS cosmetic_allowed_slot;
 			DROP TABLE IF EXISTS "transaction";
 			DROP TABLE IF EXISTS emote;
 
@@ -285,7 +249,6 @@ impl MigrationTrait for Migration {
 
 			DROP TYPE IF EXISTS transaction_status;
 			DROP TYPE IF EXISTS transaction_provider;
-			DROP TYPE IF EXISTS body_slot;
 			DROP TYPE IF EXISTS asset_kind;
 			DROP TYPE IF EXISTS player_role;
 			"#,

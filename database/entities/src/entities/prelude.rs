@@ -2,7 +2,6 @@
 
 pub use super::asset::Entity as Asset;
 pub use super::cosmetic::Entity as Cosmetic;
-pub use super::cosmetic_allowed_slot::Entity as CosmeticAllowedSlot;
 pub use super::cosmetic_package::Entity as CosmeticPackage;
 pub use super::emote::Entity as Emote;
 pub use super::emote_package::Entity as EmotePackage;

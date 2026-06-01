@@ -4,7 +4,6 @@ pub mod prelude;
 
 pub mod asset;
 pub mod cosmetic;
-pub mod cosmetic_allowed_slot;
 pub mod cosmetic_package;
 pub mod emote;
 pub mod emote_package;

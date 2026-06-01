@@ -14,7 +14,7 @@ use sea_orm::entity::prelude::*;
 	serde :: Serialize,
 	Hash,
 )]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "cosmetic_type")]
+#[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum CosmeticType {
 	#[sea_orm(string_value = "cape")]
@@ -50,35 +50,6 @@ pub enum AssetKind {
 	Image,
 	#[sea_orm(string_value = "bundle")]
 	Bundle,
-}
-
-#[derive(
-	Debug,
-	Clone,
-	PartialEq,
-	Eq,
-	EnumIter,
-	DeriveActiveEnum,
-	schemars :: JsonSchema,
-	serde :: Deserialize,
-	serde :: Serialize,
-	Hash,
-)]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "body_slot")]
-#[serde(rename_all = "snake_case")]
-pub enum BodySlot {
-	#[sea_orm(string_value = "cape")]
-	Cape,
-	#[sea_orm(string_value = "backpack")]
-	Backpack,
-	#[sea_orm(string_value = "glasses")]
-	Glasses,
-	#[sea_orm(string_value = "wings")]
-	Wings,
-	#[sea_orm(string_value = "left_hand")]
-	LeftHand,
-	#[sea_orm(string_value = "right_hand")]
-	RightHand,
 }
 
 #[derive(

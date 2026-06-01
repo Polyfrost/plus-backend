@@ -26,8 +26,6 @@ pub enum Relation {
 		on_delete = "NoAction"
 	)]
 	Asset,
-	#[sea_orm(has_many = "super::cosmetic_allowed_slot::Entity")]
-	CosmeticAllowedSlot,
 	#[sea_orm(has_many = "super::cosmetic_package::Entity")]
 	CosmeticPackage,
 	#[sea_orm(has_many = "super::player_equipped_cosmetic::Entity")]
@@ -39,12 +37,6 @@ pub enum Relation {
 impl Related<super::asset::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::Asset.def()
-	}
-}
-
-impl Related<super::cosmetic_allowed_slot::Entity> for Entity {
-	fn to() -> RelationDef {
-		Relation::CosmeticAllowedSlot.def()
 	}
 }
 

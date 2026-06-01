@@ -13,7 +13,7 @@ use std::{collections::HashMap, sync::Arc};
 use aide::axum::ApiRouter;
 use entities::{
 	asset,
-	sea_orm_active_enums::{BodySlot, CosmeticType},
+	sea_orm_active_enums::CosmeticType,
 };
 use moka::future::Cache;
 use s3::{Bucket, error::S3Error};
@@ -178,14 +178,14 @@ impl CachedAssetInfo {
 	}
 }
 
-/// Current equipment keyed by body slot.
-pub(super) type EquippedCosmetics = HashMap<BodySlot, i32>;
+/// Current equipment keyed by cosmetic type.
+pub(super) type EquippedCosmetics = HashMap<CosmeticType, i32>;
 
 /// Partial equipment updates. Missing slots are left unchanged, while a `null`
 /// value unequips the slot.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub(super) struct PartialEquippedCosmetics {
-	pub equipped: HashMap<BodySlot, Option<i32>>,
+	pub equipped: HashMap<CosmeticType, Option<i32>>,
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {

@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use entities::sea_orm_active_enums::BodySlot;
+use entities::sea_orm_active_enums::CosmeticType;
 use schemars::{JsonSchema, json_schema};
 use serde::{Deserialize, Serialize, ser::SerializeStruct as _};
 use uuid::Uuid;
@@ -18,7 +18,7 @@ pub enum WebsocketError {
 	#[error("Player does not own cosmetic {0}")]
 	UnownedCosmetic(i32),
 	#[error("Cosmetic {cosmetic_id} is not allowed in slot {slot:?}")]
-	InvalidSlot { slot: BodySlot, cosmetic_id: i32 },
+	InvalidSlot { slot: CosmeticType, cosmetic_id: i32 },
 	#[error("Player does not own emote {0}")]
 	UnownedEmote(i32),
 }
@@ -88,7 +88,7 @@ pub enum ServerBoundPacket {
 		players: Vec<Uuid>,
 	},
 	SetEquippedCosmetic {
-		slot: BodySlot,
+		slot: CosmeticType,
 		cosmetic_id: Option<i32>,
 	},
 	PlayEmote {
@@ -115,12 +115,12 @@ pub enum ClientBoundPacket {
 		cosmetics: HashMap<Uuid, Vec<i32>>,
 	},
 	SubscriptionSnapshot {
-		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
+		equipped: HashMap<Uuid, HashMap<CosmeticType, i32>>,
 		active_emotes: HashMap<Uuid, i32>,
 	},
 	PlayerCosmeticEquipped {
 		player: Uuid,
-		slot: BodySlot,
+		slot: CosmeticType,
 		cosmetic_id: Option<i32>,
 	},
 	PlayerEmoteStarted {
@@ -146,7 +146,7 @@ pub enum ClientBoundPacket {
 mod tests {
 	use std::collections::HashMap;
 
-	use entities::sea_orm_active_enums::BodySlot;
+	use entities::sea_orm_active_enums::CosmeticType;
 	use uuid::Uuid;
 
 	use super::{ClientBoundPacket, ServerBoundPacket};
@@ -160,7 +160,7 @@ mod tests {
 
 		match packet {
 			ServerBoundPacket::SetEquippedCosmetic { slot, cosmetic_id } => {
-				assert_eq!(slot, BodySlot::Cape);
+				assert_eq!(slot, CosmeticType::Cape);
 				assert_eq!(cosmetic_id, Some(42));
 			}
 			_ => panic!("unexpected packet variant"),
@@ -187,7 +187,7 @@ mod tests {
 	fn serializes_subscription_snapshot_packet() {
 		let player = Uuid::nil();
 		let packet = ClientBoundPacket::SubscriptionSnapshot {
-			equipped: HashMap::from([(player, HashMap::from([(BodySlot::Cape, 1)]))]),
+			equipped: HashMap::from([(player, HashMap::from([(CosmeticType::Cape, 1)]))]),
 			active_emotes: HashMap::from([(player, 6)]),
 		};
 

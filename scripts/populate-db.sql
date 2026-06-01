@@ -9,7 +9,6 @@ TRUNCATE
     player_owned_cosmetic,
     emote_package,
     cosmetic_package,
-    cosmetic_allowed_slot,
     emote,
     cosmetic,
     "transaction",
@@ -56,12 +55,6 @@ SELECT setval(
     pg_get_serial_sequence('emote', 'id'),
     (SELECT COALESCE(MAX(id), 1) FROM emote)
 );
-
-INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-SELECT id, 'cape'::body_slot
-FROM cosmetic
-WHERE type = 'cape'
-ON CONFLICT DO NOTHING;
 
 INSERT INTO "user" (minecraft_uuid, role)
 VALUES (:'wyvest_uuid'::uuid, 'admin')
