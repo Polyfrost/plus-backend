@@ -21,6 +21,10 @@ pub enum WebsocketError {
 	InvalidSlot { slot: CosmeticType, cosmetic_id: i32 },
 	#[error("Player does not own emote {0}")]
 	UnownedEmote(i32),
+	#[error("Too many players in one request (max {limit})")]
+	TooManyPlayersInRequest { limit: usize },
+	#[error("Too many player subscriptions (max {limit})")]
+	SubscriptionLimitExceeded { limit: usize },
 }
 
 impl WebsocketError {
@@ -31,7 +35,10 @@ impl WebsocketError {
 		match self {
 			Self::Fatal(_) => Self::ERROR_CODES[0],
 			Self::DatabaseQuery(_) | Self::Serialization(_) => Self::ERROR_CODES[1],
-			Self::Deserialization(_) | Self::InvalidSlot { .. } => Self::ERROR_CODES[2],
+			Self::Deserialization(_)
+			| Self::InvalidSlot { .. }
+			| Self::TooManyPlayersInRequest { .. }
+			| Self::SubscriptionLimitExceeded { .. } => Self::ERROR_CODES[2],
 			Self::UnownedCosmetic(_) | Self::UnownedEmote(_) => Self::ERROR_CODES[3],
 		}
 	}
@@ -81,7 +88,9 @@ pub enum ServerBoundPacket {
 		/// An array of player UUIDs to include in the bulk lookup
 		players: Vec<Uuid>,
 	},
+	/// Subscribe to cosmetic/emote updates for nearby players (render distance).
 	SubscribePlayers {
+		/// Player UUIDs to watch. Capped per request and per connection total.
 		players: Vec<Uuid>,
 	},
 	UnsubscribePlayers {

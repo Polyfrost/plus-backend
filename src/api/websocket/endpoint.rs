@@ -26,6 +26,22 @@ use crate::api::{
 	websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 };
 
+/// Max UUIDs in a single `SubscribePlayers` or `GetActiveCosmetics` message.
+const MAX_PLAYERS_PER_REQUEST: usize = 64;
+/// Max distinct players a connection may subscribe to at once (render distance).
+const MAX_PLAYER_SUBSCRIPTIONS: usize = 128;
+
+fn enforce_max_players_per_request(
+	players: &[Uuid],
+) -> Result<(), WebsocketError> {
+	if players.len() > MAX_PLAYERS_PER_REQUEST {
+		return Err(WebsocketError::TooManyPlayersInRequest {
+			limit: MAX_PLAYERS_PER_REQUEST,
+		});
+	}
+	Ok(())
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.route("/websocket", get(self::endpoint))
@@ -287,6 +303,16 @@ async fn subscribe(
 			});
 		};
 
+		let pending = requested
+			.iter()
+			.filter(|player| !connection.subscriptions.contains(player))
+			.count();
+		if connection.subscriptions.len() + pending > MAX_PLAYER_SUBSCRIPTIONS {
+			return Err(WebsocketError::SubscriptionLimitExceeded {
+				limit: MAX_PLAYER_SUBSCRIPTIONS,
+			});
+		}
+
 		requested
 			.into_iter()
 			.filter(|player| connection.subscriptions.insert(*player))
@@ -409,6 +435,7 @@ async fn handle_msg(
 
 	match parsed {
 		ServerBoundPacket::GetActiveCosmetics { players } => {
+			enforce_max_players_per_request(&players)?;
 			send_packet(
 				socket,
 				ClientBoundPacket::CosmeticsInfo {
@@ -418,6 +445,7 @@ async fn handle_msg(
 			.await?;
 		}
 		ServerBoundPacket::SubscribePlayers { players } => {
+			enforce_max_players_per_request(&players)?;
 			let snapshot = subscribe(state, connection_id, players).await?;
 			send_packet(socket, snapshot).await?;
 		}
