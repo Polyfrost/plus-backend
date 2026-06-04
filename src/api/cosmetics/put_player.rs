@@ -82,7 +82,10 @@ async fn endpoint(
 	Json(body): Json<RequestBody>,
 ) -> Result<NoContent, ResponseError> {
 	{
-		use entities::{player_equipped_cosmetic, player_owned_cosmetic, prelude::*};
+		use entities::{
+			cosmetic_allowed_slot, player_equipped_cosmetic, player_owned_cosmetic,
+			prelude::*,
+		};
 		use sea_orm::sea_query::OnConflict;
 
 		let txn = state.database.begin().await?;
@@ -99,11 +102,13 @@ async fn endpoint(
 					return Err(ResponseError::UnownedCosmetic { id });
 				}
 
-				let matches = Cosmetic::find_by_id(id)
+				let allowed = CosmeticAllowedSlot::find()
+					.filter(cosmetic_allowed_slot::Column::CosmeticId.eq(id))
+					.filter(cosmetic_allowed_slot::Column::Slot.eq(slot.clone()))
 					.one(&txn)
 					.await?
-					.is_some_and(|cosmetic| cosmetic.r#type == slot);
-				if !matches {
+					.is_some();
+				if !allowed {
 					return Err(ResponseError::InvalidSlot {
 						slot: format!("{slot:?}"),
 						id,

@@ -13,7 +13,7 @@ use axum::{
 	},
 	routing::get,
 };
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::sea_orm_active_enums::BodySlot;
 use http::{Response, StatusCode};
 use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter};
 use tokio::sync::mpsc;
@@ -107,7 +107,7 @@ async fn active_cosmetics(
 async fn load_equipped(
 	state: &ApiState,
 	player_id: i32,
-) -> Result<HashMap<CosmeticType, i32>, WebsocketError> {
+) -> Result<HashMap<BodySlot, i32>, WebsocketError> {
 	use entities::{player_equipped_cosmetic, prelude::*};
 
 	Ok(PlayerEquippedCosmetic::find()
@@ -122,7 +122,7 @@ async fn load_equipped(
 async fn load_equipped_for_players(
 	state: &ApiState,
 	players: &[Uuid],
-) -> Result<HashMap<Uuid, HashMap<CosmeticType, i32>>, WebsocketError> {
+) -> Result<HashMap<Uuid, HashMap<BodySlot, i32>>, WebsocketError> {
 	use entities::{prelude::*, user};
 
 	if players.is_empty() {
@@ -155,10 +155,10 @@ async fn load_equipped_for_players(
 async fn validate_cosmetic(
 	state: &ApiState,
 	player_id: i32,
-	slot: &CosmeticType,
+	slot: &BodySlot,
 	cosmetic_id: i32,
 ) -> Result<(), WebsocketError> {
-	use entities::{player_owned_cosmetic, prelude::*};
+	use entities::{cosmetic_allowed_slot, player_owned_cosmetic, prelude::*};
 
 	let owned = PlayerOwnedCosmetic::find()
 		.filter(player_owned_cosmetic::Column::PlayerId.eq(player_id))
@@ -170,11 +170,13 @@ async fn validate_cosmetic(
 		return Err(WebsocketError::UnownedCosmetic(cosmetic_id));
 	}
 
-	let matches = Cosmetic::find_by_id(cosmetic_id)
+	let allowed = CosmeticAllowedSlot::find()
+		.filter(cosmetic_allowed_slot::Column::CosmeticId.eq(cosmetic_id))
+		.filter(cosmetic_allowed_slot::Column::Slot.eq(slot.clone()))
 		.one(&state.database)
 		.await?
-		.is_some_and(|cosmetic| &cosmetic.r#type == slot);
-	if !matches {
+		.is_some();
+	if !allowed {
 		return Err(WebsocketError::InvalidSlot {
 			slot: slot.clone(),
 			cosmetic_id,
@@ -208,7 +210,7 @@ async fn register_connection(
 	state: &ApiState,
 	owner: Uuid,
 	tx: mpsc::UnboundedSender<ClientBoundPacket>,
-	equipped: HashMap<CosmeticType, i32>,
+	equipped: HashMap<BodySlot, i32>,
 ) -> ConnectionId {
 	let connection_id = Uuid::new_v4();
 

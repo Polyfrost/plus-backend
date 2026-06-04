@@ -7,7 +7,7 @@ use std::{
 
 use axum::extract::FromRef;
 use entities::prelude::*;
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::sea_orm_active_enums::BodySlot;
 use migrations::{Migrator, MigratorTrait};
 use moka::future::Cache;
 use pasetors::{
@@ -158,14 +158,14 @@ pub(super) struct RealtimeConnection {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct PlayerRuntimeState {
-	pub(super) equipped: HashMap<CosmeticType, i32>,
+	pub(super) equipped: HashMap<BodySlot, i32>,
 	pub(super) active_emote: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct EquipmentPersistence {
 	pub(super) player: Uuid,
-	pub(super) slot: CosmeticType,
+	pub(super) slot: BodySlot,
 	pub(super) cosmetic_id: Option<i32>,
 }
 

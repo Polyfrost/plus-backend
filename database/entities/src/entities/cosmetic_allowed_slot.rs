@@ -4,14 +4,12 @@ use super::sea_orm_active_enums::BodySlot;
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "player_equipped_cosmetic")]
+#[sea_orm(table_name = "cosmetic_allowed_slot")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
-	pub player_id: i32,
+	pub cosmetic_id: i32,
 	#[sea_orm(primary_key, auto_increment = false)]
 	pub slot: BodySlot,
-	pub cosmetic_id: i32,
-	pub updated_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -24,25 +22,11 @@ pub enum Relation {
 		on_delete = "Cascade"
 	)]
 	Cosmetic,
-	#[sea_orm(
-		belongs_to = "super::user::Entity",
-		from = "Column::PlayerId",
-		to = "super::user::Column::Id",
-		on_update = "NoAction",
-		on_delete = "Cascade"
-	)]
-	User,
 }
 
 impl Related<super::cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::Cosmetic.def()
-	}
-}
-
-impl Related<super::user::Entity> for Entity {
-	fn to() -> RelationDef {
-		Relation::User.def()
 	}
 }
 

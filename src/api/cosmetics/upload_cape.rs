@@ -9,7 +9,7 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
-use entities::sea_orm_active_enums::{AssetKind, CosmeticType};
+use entities::sea_orm_active_enums::{AssetKind, BodySlot, CosmeticType};
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, Set};
 use sha2::{Digest, Sha256};
@@ -163,7 +163,7 @@ async fn endpoint(
 		)
 		.await?;
 
-	use entities::{asset, cosmetic};
+	use entities::{asset, cosmetic, cosmetic_allowed_slot};
 
 	let asset = asset::ActiveModel {
 		storage_path: Set(Some(path)),
@@ -182,6 +182,13 @@ async fn endpoint(
 		name: Set("Cape".to_string()),
 		enabled: Set(true),
 		..Default::default()
+	}
+	.insert(&state.database)
+	.await?;
+
+	cosmetic_allowed_slot::ActiveModel {
+		cosmetic_id: Set(model.id),
+		slot: Set(BodySlot::Cape),
 	}
 	.insert(&state.database)
 	.await?;

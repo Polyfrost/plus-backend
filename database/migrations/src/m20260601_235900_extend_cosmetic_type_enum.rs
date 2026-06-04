@@ -8,33 +8,20 @@ impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
 		let db = manager.get_connection();
 
-		db.execute_unprepared(
-			r#"
-			ALTER TABLE cosmetic ALTER COLUMN type TYPE TEXT USING type::text;
-			DROP TYPE cosmetic_type;
-			"#,
-		)
-		.await?;
+		// Must be a separate migration from usage of new values (PostgreSQL 55P04).
+		for statement in [
+			"ALTER TYPE cosmetic_type ADD VALUE IF NOT EXISTS 'backpack'",
+			"ALTER TYPE cosmetic_type ADD VALUE IF NOT EXISTS 'glasses'",
+			"ALTER TYPE cosmetic_type ADD VALUE IF NOT EXISTS 'wings'",
+			"ALTER TYPE cosmetic_type ADD VALUE IF NOT EXISTS 'glove'",
+		] {
+			db.execute_unprepared(statement).await?;
+		}
 
 		Ok(())
 	}
 
-	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-		let db = manager.get_connection();
-
-		db.execute_unprepared(
-			r#"
-			DO $$ BEGIN
-				CREATE TYPE cosmetic_type AS ENUM ('cape', 'emote');
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END $$;
-
-			ALTER TABLE cosmetic
-				ALTER COLUMN type TYPE cosmetic_type USING type::cosmetic_type;
-			"#,
-		)
-		.await?;
-
+	async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
 		Ok(())
 	}
 }
