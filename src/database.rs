@@ -1,9 +1,15 @@
+use chrono::{Datelike, Utc};
 use entities::{
+	monthly_active_login,
 	prelude::*,
 	sea_orm_active_enums::{TransactionProvider, TransactionStatus},
 	transaction, user,
 };
-use sea_orm::{ActiveValue, DbErr, EntityTrait, QueryFilter, prelude::*};
+use sea_orm::{
+	ActiveValue, DbErr, EntityTrait, QueryFilter, Set,
+	prelude::*,
+	sea_query::{Expr, OnConflict},
+};
 use uuid::Uuid;
 
 pub(crate) trait DatabaseUserExt {
@@ -75,4 +81,43 @@ impl DatabaseTransactionExt for Transaction {
 		.exec_with_returning(db)
 		.await
 	}
+}
+
+pub(crate) fn current_utc_month() -> Date {
+	Utc::now()
+		.date_naive()
+		.with_day(1)
+		.expect("every month has a first day")
+}
+
+pub(crate) async fn record_monthly_active_login(
+	db: &impl ConnectionTrait,
+	player_id: i32,
+) -> Result<(), DbErr> {
+	MonthlyActiveLogin::insert(monthly_active_login::ActiveModel {
+		player_id: Set(player_id),
+		month: Set(current_utc_month()),
+		first_login_at: ActiveValue::NotSet,
+		last_login_at: ActiveValue::NotSet,
+		login_count: Set(1),
+	})
+	.on_conflict(
+		OnConflict::columns([
+			monthly_active_login::Column::PlayerId,
+			monthly_active_login::Column::Month,
+		])
+		.value(
+			monthly_active_login::Column::LastLoginAt,
+			Expr::current_timestamp(),
+		)
+		.value(
+			monthly_active_login::Column::LoginCount,
+			Expr::col(monthly_active_login::Column::LoginCount).add(1),
+		)
+		.to_owned(),
+	)
+	.exec_without_returning(db)
+	.await?;
+
+	Ok(())
 }

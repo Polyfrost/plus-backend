@@ -8,6 +8,7 @@ pub mod cosmetic_allowed_slot;
 pub mod cosmetic_package;
 pub mod emote;
 pub mod emote_package;
+pub mod monthly_active_login;
 pub mod player_equipped_cosmetic;
 pub mod player_owned_cosmetic;
 pub mod player_owned_emote;

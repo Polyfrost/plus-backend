@@ -16,7 +16,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api::{ApiState, account::PASETO_IMPLICIT_ASSERT};
+use crate::{
+	api::{ApiState, account::PASETO_IMPLICIT_ASSERT},
+	database::{DatabaseUserExt, record_monthly_active_login},
+};
 
 #[derive(Deserialize)]
 pub struct SessionserverLoginSuccess {
@@ -31,6 +34,8 @@ pub enum LoginError {
 	SessionserverAuthentication(#[source] reqwest::Error),
 	#[error("Unable to construct authentication token: {0}")]
 	TokenCreation(#[from] pasetors::errors::Error),
+	#[error("Unable to update login analytics: {0}")]
+	Database(#[from] sea_orm::error::DbErr),
 	#[error("Mojang sessionserver authentication did not suceeed")]
 	Unauthorized,
 }
@@ -56,6 +61,7 @@ impl IntoResponse for LoginError {
 				Self::InvalidUuid(_) => StatusCode::BAD_REQUEST,
 				Self::SessionserverAuthentication(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				Self::TokenCreation(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			},
 			self.to_string(),
@@ -113,6 +119,9 @@ async fn endpoint(
 		.map_err(LoginError::SessionserverAuthentication)?;
 	let parsed: SessionserverLoginSuccess =
 		serde_json::from_str(&body).map_err(|_| LoginError::Unauthorized)?;
+	let player =
+		entities::prelude::User::get_or_create(&state.database, parsed.id).await?;
+	record_monthly_active_login(&state.database, player.id).await?;
 
 	let token = local::encrypt(
 		&state.paseto_key,
