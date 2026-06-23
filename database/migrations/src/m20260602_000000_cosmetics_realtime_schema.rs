@@ -112,23 +112,23 @@ impl MigrationTrait for Migration {
 			ON CONFLICT DO NOTHING;
 
 			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'backpack'::body_slot FROM cosmetic WHERE type = 'backpack'
+			SELECT id, 'backpack'::body_slot FROM cosmetic WHERE type::text = 'backpack'
 			ON CONFLICT DO NOTHING;
 
 			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'glasses'::body_slot FROM cosmetic WHERE type = 'glasses'
+			SELECT id, 'glasses'::body_slot FROM cosmetic WHERE type::text = 'glasses'
 			ON CONFLICT DO NOTHING;
 
 			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'wings'::body_slot FROM cosmetic WHERE type = 'wings'
+			SELECT id, 'wings'::body_slot FROM cosmetic WHERE type::text = 'wings'
 			ON CONFLICT DO NOTHING;
 
 			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'left_hand'::body_slot FROM cosmetic WHERE type = 'glove'
+			SELECT id, 'left_hand'::body_slot FROM cosmetic WHERE type::text = 'glove'
 			ON CONFLICT DO NOTHING;
 
 			INSERT INTO cosmetic_allowed_slot (cosmetic_id, slot)
-			SELECT id, 'right_hand'::body_slot FROM cosmetic WHERE type = 'glove'
+			SELECT id, 'right_hand'::body_slot FROM cosmetic WHERE type::text = 'glove'
 			ON CONFLICT DO NOTHING;
 
 			CREATE TABLE IF NOT EXISTS "transaction" (
