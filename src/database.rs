@@ -112,7 +112,11 @@ pub(crate) async fn record_monthly_active_login(
 		)
 		.value(
 			monthly_active_login::Column::LoginCount,
-			Expr::col(monthly_active_login::Column::LoginCount).add(1),
+			Expr::col((
+					monthly_active_login::Entity,
+					monthly_active_login::Column::LoginCount,
+				))
+				.add(1),
 		)
 		.to_owned(),
 	)
