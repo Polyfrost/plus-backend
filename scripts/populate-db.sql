@@ -48,9 +48,9 @@ SELECT setval(
 
 INSERT INTO emote (id, asset_id, name, enabled)
 VALUES
-    (6, 6, 'Player Emote', true),
-    (7, 7, 'Wow Text', true),
-    (8, 8, 'Santa Guise', true);
+    (1000006, 6, 'Player Emote', true),
+    (1000007, 7, 'Wow Text', true),
+    (1000008, 8, 'Santa Guise', true);
 
 SELECT setval(
     pg_get_serial_sequence('emote', 'id'),
@@ -113,7 +113,7 @@ ON CONFLICT DO NOTHING;
 
 INSERT INTO emote_package (package_id, emote_id)
 VALUES
-    (2001, 6),
-    (2002, 7),
-    (2003, 8)
+    (2001, 1000006),
+    (2002, 1000007),
+    (2003, 1000008)
 ON CONFLICT DO NOTHING;

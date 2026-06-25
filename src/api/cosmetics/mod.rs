@@ -5,14 +5,17 @@ mod list;
 mod list_capes;
 mod list_emotes;
 mod put_player;
-mod upload_cape;
+mod upload_cosmetic;
 mod upload_emote;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+	collections::{BTreeMap, HashMap},
+	sync::Arc,
+};
 
 use aide::axum::ApiRouter;
 use entities::{
-	asset,
+	asset, cosmetic, cosmetic_group,
 	sea_orm_active_enums::{BodySlot, CosmeticType},
 };
 use moka::future::Cache;
@@ -22,15 +25,87 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::ApiState;
 
+pub(super) fn is_zip(data: &[u8]) -> bool {
+	data.len() >= 4 && &data[0..4] == b"PK\x03\x04"
+}
+
+fn is_macos_junk(name: &str) -> bool {
+	name.split('/')
+		.next_back()
+		.is_some_and(|base| base == ".DS_Store")
+		|| name.starts_with("__MACOSX/")
+		|| name.contains("/__MACOSX/")
+}
+
+pub(super) fn strip_macos_junk(data: &[u8]) -> Result<Vec<u8>, zip::result::ZipError> {
+	use std::io::{Cursor, Read, Write};
+
+	let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
+	let mut out = Cursor::new(Vec::new());
+	{
+		let mut writer = zip::ZipWriter::new(&mut out);
+		for i in 0..archive.len() {
+			let mut entry = archive.by_index(i)?;
+			let name = entry.name().to_string();
+			if entry.is_dir() || is_macos_junk(&name) {
+				continue;
+			}
+			let options = zip::write::SimpleFileOptions::default()
+				.compression_method(zip::CompressionMethod::Deflated);
+			writer.start_file(name, options)?;
+			let mut buf = Vec::with_capacity(entry.size() as usize);
+			entry.read_to_end(&mut buf)?;
+			writer.write_all(&buf)?;
+		}
+		writer.finish()?;
+	}
+	Ok(out.into_inner())
+}
+
+/// A buyable cosmetic. What the player owns once and chooses variants within.
+///
+/// When a cosmetic has multiple variants (e.g. every pride cape, or every cat
+/// ear color), they are grouped here under one entry; `variants` lists the
+/// individual choices. A cosmetic with no group is emitted as a single-variant
+/// entry. Owning/granting this cosmetic grants every variant beneath it.
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub(super) struct CosmeticInfo {
-	/// The unique ID of this cosmetic
+	/// The unique ID of this cosmetic. For a grouped cosmetic this is the group
+	/// id; for an ungrouped cosmetic it is the cosmetic's own id.
 	id: i32,
 	/// The type of this cosmetic
 	r#type: CosmeticType,
 	/// The display name for this cosmetic
 	name: String,
-	/// The media url for this cosmetic
+	/// The body slots any variant of this cosmetic may be equipped in. A glove,
+	/// for example, may allow one or both hands; the client must equip into one
+	/// of these.
+	allowed_slots: Vec<BodySlot>,
+	/// The selectable variants of this cosmetic. Always contains at least one
+	/// entry. Equip/ownership/websocket operations use the variant's `id`.
+	variants: Vec<VariantInfo>,
+}
+
+/// A single selectable variant of a [`CosmeticInfo`].
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub(super) struct VariantInfo {
+	/// The equippable cosmetic ID for this variant. This is the id used in
+	/// equip, ownership, and websocket operations.
+	id: i32,
+	/// The display name for this variant (e.g. "Blue", "Left Silver"). For an
+	/// ungrouped cosmetic this is the cosmetic's own name.
+	name: String,
+	/// The skin model this variant targets ("slim"/"wide"), when the client
+	/// must pick a model to match the player's skin. Absent when the variant is
+	/// model-independent.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	model: Option<String>,
+	/// The body slots THIS variant may be equipped in. Usually equals the
+	/// group's `allowed_slots`, but a variant can be narrower — e.g. a "Left"
+	/// gauntlet only allows `left_hand` while the group allows both hands. The
+	/// client must equip into one of these.
+	allowed_slots: Vec<BodySlot>,
+	/// The media url for this variant
 	#[serde(skip_serializing_if = "Option::is_none")]
 	url: Option<String>,
 	#[serde(flatten)]
@@ -58,15 +133,16 @@ pub struct CachedAssetInfo {
 	hash: String,
 }
 
-impl CosmeticInfo {
+impl VariantInfo {
 	#[tracing::instrument(
-		name = "convert_db_cosmetic_info",
+		name = "convert_db_variant_info",
 		level = "debug",
 		skip(cache, s3_bucket)
 	)]
-	pub async fn from_db_model(
-		value: &entities::cosmetic::Model,
+	async fn from_db_model(
+		value: &cosmetic::Model,
 		asset: Option<&asset::Model>,
+		allowed_slots: Vec<BodySlot>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
 	) -> Result<Self, S3Error> {
@@ -74,12 +150,97 @@ impl CosmeticInfo {
 			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
 		Ok(Self {
 			id: value.id,
-			r#type: value.r#type.clone(),
-			name: value.name.clone(),
+			allowed_slots,
+			name: value
+				.variant_name
+				.clone()
+				.or_else(|| value.name.clone())
+				.unwrap_or_else(|| format!("Cosmetic {}", value.id)),
+			model: value.model_variant.clone(),
 			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
 			cached_info,
 		})
 	}
+}
+
+pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
+	db: &C,
+) -> Result<HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>, sea_orm::DbErr> {
+	use entities::prelude::{CosmeticGroup, CosmeticGroupAllowedSlot};
+	use sea_orm::EntityTrait;
+
+	Ok(CosmeticGroup::find()
+		.find_with_related(CosmeticGroupAllowedSlot)
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|(group, slots)| {
+			(group.id, (group, slots.into_iter().map(|s| s.slot).collect()))
+		})
+		.collect())
+}
+
+pub(super) async fn group_cosmetics(
+	cosmetics: Vec<(cosmetic::Model, Option<asset::Model>, Vec<BodySlot>)>,
+	groups: HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>,
+	cache: Cache<i32, CachedAssetInfo>,
+	s3_bucket: Arc<Bucket>,
+) -> Result<Vec<CosmeticInfo>, S3Error> {
+	let mut buckets: BTreeMap<i32, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
+		BTreeMap::new();
+
+	for (cosmetic, asset, allowed_slots) in cosmetics {
+		let variant = VariantInfo::from_db_model(
+			&cosmetic,
+			asset.as_ref(),
+			allowed_slots.clone(),
+			cache.clone(),
+			s3_bucket.clone(),
+		)
+		.await?;
+
+		let group = cosmetic.group_id.and_then(|id| groups.get(&id).map(|g| (id, g)));
+		let (bucket_id, entry) = match group {
+			Some((group_id, (group, group_slots))) => (
+				group_id,
+				CosmeticInfo {
+					id: group_id,
+					r#type: group.r#type.clone(),
+					name: group.name.clone(),
+					allowed_slots: group_slots.clone(),
+					variants: Vec::new(),
+				},
+			),
+			None => (
+				cosmetic.id,
+				CosmeticInfo {
+					id: cosmetic.id,
+					r#type: cosmetic.r#type.clone(),
+					name: cosmetic
+						.name
+						.clone()
+						.unwrap_or_else(|| format!("Cosmetic {}", cosmetic.id)),
+					allowed_slots,
+					variants: Vec::new(),
+				},
+			),
+		};
+
+		buckets
+			.entry(bucket_id)
+			.or_insert((entry, Vec::new()))
+			.1
+			.push((cosmetic.variant_order, variant));
+	}
+
+	Ok(buckets
+		.into_values()
+		.map(|(mut entry, mut variants)| {
+			variants.sort_by_key(|(order, variant)| (*order, variant.id));
+			entry.variants = variants.into_iter().map(|(_, variant)| variant).collect();
+			entry
+		})
+		.collect())
 }
 
 impl EmoteInfo {
@@ -195,7 +356,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			ApiRouter::new()
 				.merge(get_player::router())
 				.merge(put_player::router())
-				.merge(upload_cape::router())
+				.merge(upload_cosmetic::router())
 				.merge(upload_emote::router())
 				.merge(grant::router())
 				.merge(grant_emote::router())

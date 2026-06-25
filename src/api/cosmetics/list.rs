@@ -7,9 +7,11 @@ use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use schemars::JsonSchema;
 use sea_orm::EntityTrait;
 use serde::Serialize;
-use tokio::task::JoinSet;
 
-use crate::api::{ApiState, cosmetics::CosmeticInfo};
+use crate::api::{
+	ApiState,
+	cosmetics::{CosmeticInfo, group_cosmetics, load_groups},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ResponseError {
@@ -66,32 +68,28 @@ async fn endpoint(
 		use entities::prelude::*;
 
 		let cosmetics = Cosmetic::find()
-			.find_also_related(Asset)
+			.find_with_related(CosmeticAllowedSlot)
 			.all(&state.database)
 			.await?;
 
-		let mut join_set = JoinSet::new();
-		for (cosmetic, asset) in cosmetics {
-			let asset_cache = state.asset_cache.clone();
-			let s3_bucket = state.s3_bucket.clone();
-			join_set.spawn(async move {
-				CosmeticInfo::from_db_model(
-					&cosmetic,
-					asset.as_ref(),
-					asset_cache,
-					s3_bucket,
-				)
-				.await
-			});
+		let mut rows = Vec::with_capacity(cosmetics.len());
+		for (cosmetic, allowed) in cosmetics {
+			let asset = match cosmetic.asset_id {
+				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
+				None => None,
+			};
+			let allowed_slots = allowed.into_iter().map(|s| s.slot).collect();
+			rows.push((cosmetic, asset, allowed_slots));
 		}
 
-		response.cosmetics.extend(
-			join_set
-				.join_all()
-				.await
-				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?,
-		);
+		let groups = load_groups(&state.database).await?;
+		response.cosmetics = group_cosmetics(
+			rows,
+			groups,
+			state.asset_cache.clone(),
+			state.s3_bucket.clone(),
+		)
+		.await?;
 	};
 
 	Ok(Json(response))

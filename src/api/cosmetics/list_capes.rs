@@ -4,13 +4,15 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::sea_orm_active_enums::{BodySlot, CosmeticType};
 use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
-use tokio::task::JoinSet;
 
-use crate::api::{ApiState, cosmetics::CosmeticInfo};
+use crate::api::{
+	ApiState,
+	cosmetics::{CosmeticInfo, group_cosmetics, load_groups},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ResponseError {
@@ -72,28 +74,19 @@ async fn endpoint(
 			.all(&state.database)
 			.await?;
 
-		let mut join_set = JoinSet::new();
-		for (cosmetic, asset) in cosmetics {
-			let asset_cache = state.asset_cache.clone();
-			let s3_bucket = state.s3_bucket.clone();
-			join_set.spawn(async move {
-				CosmeticInfo::from_db_model(
-					&cosmetic,
-					asset.as_ref(),
-					asset_cache,
-					s3_bucket,
-				)
-				.await
-			});
-		}
+		let rows = cosmetics
+			.into_iter()
+			.map(|(cosmetic, asset)| (cosmetic, asset, vec![BodySlot::Cape]))
+			.collect();
 
-		response.capes.extend(
-			join_set
-				.join_all()
-				.await
-				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?,
-		);
+		let groups = load_groups(&state.database).await?;
+		response.capes = group_cosmetics(
+			rows,
+			groups,
+			state.asset_cache.clone(),
+			state.s3_bucket.clone(),
+		)
+		.await?;
 	};
 
 	Ok(Json(response))

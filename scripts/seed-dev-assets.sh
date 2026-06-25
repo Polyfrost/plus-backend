@@ -38,7 +38,10 @@ while IFS=$'\t' read -r id url; do
 		continue
 	fi
 	echo "downloading cape: $name"
-	curl -fsSL "$url" -o "$dest"
+	if ! curl -fsSL "$url" -o "$dest"; then
+		echo "warning: failed to download cape $name from $url (skipping)" >&2
+		rm -f "$dest"
+	fi
 done < <(jq -r '.cosmetics[] | select(.type=="cape") | [.id, .url] | @tsv' "$capes_json")
 
 assets_root="$polycosmetics/src/client/resources/assets/polycosmetics"
@@ -81,9 +84,10 @@ build_emote_zip() {
 	staging="$(mktemp -d)"
 	case "$name" in
 		player)
-			mkdir -p "$staging/emotes"
+			mkdir -p "$staging/emotes" "$staging/models"
 			cp "$emotes_src/player.animation.json" "$emotes_src/player.emote.json" \
 				"$staging/emotes/"
+			cp "$assets_root/models/player.geo.json" "$staging/models/"
 			;;
 		wowtext | santaguise)
 			mkdir -p "$staging/emotes/$name" "$staging/textures/emotes"
@@ -98,7 +102,7 @@ build_emote_zip() {
 	esac
 	(
 		cd "$staging"
-		zip -qr "$dest" emotes textures
+		zip -qr "$dest" .
 	)
 	rm -rf "$staging"
 	echo "built emote zip: $name"

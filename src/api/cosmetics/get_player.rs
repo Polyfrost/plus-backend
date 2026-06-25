@@ -10,7 +10,7 @@ use axum::{
 	response::IntoResponse,
 };
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait as _, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait as _, EntityTrait, ModelTrait as _, QueryFilter};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -18,7 +18,9 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	account::OptionalAuthenticationExtractor,
-	cosmetics::{CosmeticInfo, EmoteInfo, EquippedCosmetics},
+	cosmetics::{
+		CosmeticInfo, EmoteInfo, EquippedCosmetics, group_cosmetics, load_groups,
+	},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -118,7 +120,7 @@ async fn endpoint(
 			.all(&state.database)
 			.await?;
 
-		let mut tasks = JoinSet::new();
+		let mut rows = Vec::new();
 		for cosmetic in cosmetics.into_iter().filter_map(|(_, c)| c) {
 			let asset = match cosmetic.asset_id {
 				Some(asset_id) => {
@@ -126,25 +128,24 @@ async fn endpoint(
 				}
 				None => None,
 			};
-			let asset_cache = state.asset_cache.clone();
-			let s3_bucket = state.s3_bucket.clone();
-			tasks.spawn(async move {
-				CosmeticInfo::from_db_model(
-					&cosmetic,
-					asset.as_ref(),
-					asset_cache,
-					s3_bucket,
-				)
-				.await
-			});
-		}
-		response.cosmetics.extend(
-			tasks
-				.join_all()
-				.await
+			let allowed_slots = cosmetic
+				.find_related(CosmeticAllowedSlot)
+				.all(&state.database)
+				.await?
 				.into_iter()
-				.collect::<Result<Vec<_>, _>>()?,
-		);
+				.map(|s| s.slot)
+				.collect();
+			rows.push((cosmetic, asset, allowed_slots));
+		}
+
+		let groups = load_groups(&state.database).await?;
+		response.cosmetics = group_cosmetics(
+			rows,
+			groups,
+			state.asset_cache.clone(),
+			state.s3_bucket.clone(),
+		)
+		.await?;
 
 		let emotes = PlayerOwnedEmote::find()
 			.filter(player_owned_emote::Column::PlayerId.eq(player.id))

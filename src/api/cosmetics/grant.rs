@@ -6,7 +6,10 @@ use aide::{
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use entities::sea_orm_active_enums::{TransactionProvider, TransactionStatus};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, Set, TransactionTrait};
+use sea_orm::{
+	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
+	TransactionTrait,
+};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -59,12 +62,27 @@ async fn endpoint(
 	AdminPlayer(_admin): AdminPlayer,
 	Json(body): Json<GrantRequest>,
 ) -> Result<StatusCode, GrantError> {
-	use entities::{player_owned_cosmetic, prelude::*, transaction};
+	use entities::{cosmetic, player_owned_cosmetic, prelude::*, transaction};
 
 	let txn = state.database.begin().await?;
-	let Some(_) = Cosmetic::find_by_id(body.cosmetic_id).one(&txn).await? else {
+	let Some(cosmetic) = Cosmetic::find_by_id(body.cosmetic_id).one(&txn).await? else {
 		return Err(GrantError::MissingCosmetic);
 	};
+
+	// Buying a cosmetic grants the whole group: if this cosmetic belongs to a
+	// group, every variant under that group is granted at once. Ungrouped
+	// cosmetics grant just themselves.
+	let cosmetic_ids: Vec<i32> = match cosmetic.group_id {
+		Some(group_id) => Cosmetic::find()
+			.filter(cosmetic::Column::GroupId.eq(group_id))
+			.all(&txn)
+			.await?
+			.into_iter()
+			.map(|c| c.id)
+			.collect(),
+		None => vec![cosmetic.id],
+	};
+
 	let player = User::get_or_create(&txn, body.player).await?;
 	let transaction = transaction::ActiveModel {
 		player_id: Set(player.id),
@@ -77,13 +95,15 @@ async fn endpoint(
 	.insert(&txn)
 	.await?;
 
-	PlayerOwnedCosmetic::insert(player_owned_cosmetic::ActiveModel {
-		player_id: Set(player.id),
-		cosmetic_id: Set(body.cosmetic_id),
-		acquired_via: Set(TransactionProvider::AdminGrant),
-		transaction_id: Set(Some(transaction.id)),
-		acquired_at: ActiveValue::NotSet,
-	})
+	PlayerOwnedCosmetic::insert_many(cosmetic_ids.iter().map(|&cosmetic_id| {
+		player_owned_cosmetic::ActiveModel {
+			player_id: Set(player.id),
+			cosmetic_id: Set(cosmetic_id),
+			acquired_via: Set(TransactionProvider::AdminGrant),
+			transaction_id: Set(Some(transaction.id)),
+			acquired_at: ActiveValue::NotSet,
+		}
+	}))
 	.on_conflict_do_nothing()
 	.exec(&txn)
 	.await?;
@@ -105,7 +125,7 @@ async fn endpoint(
 			};
 			let _ = connection.tx.send(ClientBoundPacket::OwnershipUpdated {
 				player: body.player,
-				cosmetic_ids: vec![body.cosmetic_id],
+				cosmetic_ids: cosmetic_ids.clone(),
 				emote_ids: Vec::new(),
 			});
 		}

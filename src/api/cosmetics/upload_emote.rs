@@ -31,13 +31,17 @@ pub enum UploadError {
 	Multipart(#[from] axum::extract::multipart::MultipartError),
 	#[error("Multipart rejection: {0}")]
 	Rejection(#[from] MultipartRejection),
+	#[error("Invalid ZIP bundle: {0}")]
+	Zip(#[from] zip::result::ZipError),
 }
 
 impl IntoResponse for UploadError {
 	fn into_response(self) -> axum::response::Response {
 		(
 			match self {
-				Self::MissingFile | Self::Rejection(_) => StatusCode::BAD_REQUEST,
+				Self::MissingFile | Self::Zip(_) | Self::Rejection(_) => {
+					StatusCode::BAD_REQUEST
+				}
 				Self::Database(_) | Self::S3(_) | Self::Multipart(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
@@ -90,6 +94,7 @@ where
 struct EmoteUploadRequest {
 	#[schemars(with = "String")]
 	file: String,
+	name: Option<String>,
 }
 
 impl OperationInput for FileUpload {
@@ -142,23 +147,44 @@ async fn endpoint(
 	let mut file_data = None;
 	let mut content_type = None;
 	let mut extension = "zip".to_string();
+	let mut name = None;
 
 	while let Some(field) = multipart.next_field().await? {
-		if field.name() == Some("file") {
-			if let Some(name) = field.file_name()
-				&& let Some(ext) = std::path::Path::new(name).extension()
-			{
-				extension = ext.to_string_lossy().to_string();
+		match field.name() {
+			Some("file") => {
+				if let Some(file_name) = field.file_name()
+					&& let Some(ext) = std::path::Path::new(file_name).extension()
+				{
+					extension = ext.to_string_lossy().to_string();
+				}
+				content_type = field.content_type().map(|s| s.to_string());
+				file_data = Some(field.bytes().await?);
 			}
-			content_type = field.content_type().map(|s| s.to_string());
-			file_data = Some(field.bytes().await?);
-			break;
+			Some("name") => {
+				let value = field.text().await?;
+				let trimmed = value.trim();
+				if !trimmed.is_empty() {
+					name = Some(trimmed.to_string());
+				}
+			}
+			_ => {}
 		}
 	}
 
 	let Some(data) = file_data else {
 		return Err(UploadError::MissingFile);
 	};
+
+	let is_bundle = crate::api::cosmetics::is_zip(&data);
+	let data: Vec<u8> = if is_bundle {
+		crate::api::cosmetics::strip_macos_junk(&data)?
+	} else {
+		data.to_vec()
+	};
+	if is_bundle {
+		extension = "zip".to_string();
+		content_type = Some("application/zip".to_string());
+	}
 
 	let path = format!("emotes/{}.{}", Uuid::now_v7(), extension);
 
@@ -190,7 +216,7 @@ async fn endpoint(
 
 	let model = emote::ActiveModel {
 		asset_id: Set(Some(asset.id)),
-		name: Set("Emote".to_string()),
+		name: Set(name.unwrap_or_else(|| "Emote".to_string())),
 		enabled: Set(true),
 		..Default::default()
 	}
