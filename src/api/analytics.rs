@@ -10,14 +10,15 @@ use axum::{
 	http::{StatusCode, request::Parts},
 	response::{IntoResponse, Response},
 };
+use chrono::{Days, Utc};
 use entities::{
-	monthly_active_login, player_owned_cosmetic, player_owned_emote, prelude::*,
-	sea_orm_active_enums::PlayerRole,
+	daily_playtime, monthly_active_login, player_owned_cosmetic, player_owned_emote,
+	prelude::*, sea_orm_active_enums::PlayerRole,
 };
 use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait as _, EntityTrait, FromQueryResult, PaginatorTrait as _, QueryFilter,
-	QuerySelect,
+	QuerySelect, sea_query::Alias,
 };
 use serde::Serialize;
 
@@ -122,7 +123,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAnalyticsOverview")
 		.summary("Get private analytics overview")
 		.description(
-			"Returns private aggregate analytics for users, MAU, and owned items.",
+			"Returns private aggregate analytics for users, MAU, owned items, and playtime.",
 		)
 		.tag("analytics")
 }
@@ -132,6 +133,15 @@ struct AnalyticsOverviewResponse {
 	total_users: i64,
 	monthly_active_users: i64,
 	owned_items_per_user: OwnedItemsPerUser,
+	playtime: Playtime,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct Playtime {
+	total_seconds: i64,
+	average_seconds_per_user: f64,
+	last_30d_seconds: i64,
+	total_sessions: i64,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -177,6 +187,12 @@ struct OwnedItemsCounts {
 struct PlayerOwnedCount {
 	player_id: i32,
 	count: i64,
+}
+
+#[derive(Debug, Default, FromQueryResult)]
+struct PlaytimeAggregate {
+	total_seconds: Option<i64>,
+	total_sessions: Option<i64>,
 }
 
 impl OwnedItemsCounts {
@@ -267,9 +283,58 @@ async fn endpoint(
 		owned_counts.total_owned_items as f64 / user_counts.total_users as f64
 	};
 
+	let playtime_totals = DailyPlaytime::find()
+		.select_only()
+		.column_as(
+			daily_playtime::Column::TotalSeconds
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"total_seconds",
+		)
+		.column_as(
+			daily_playtime::Column::SessionCount
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"total_sessions",
+		)
+		.into_model::<PlaytimeAggregate>()
+		.one(&state.database)
+		.await?
+		.unwrap_or_default();
+
+	let thirty_days_ago = (Utc::now() - Days::new(30)).date_naive();
+	let last_30d_seconds = DailyPlaytime::find()
+		.select_only()
+		.column_as(
+			daily_playtime::Column::TotalSeconds
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"total_seconds",
+		)
+		.filter(daily_playtime::Column::Day.gte(thirty_days_ago))
+		.into_model::<PlaytimeAggregate>()
+		.one(&state.database)
+		.await?
+		.unwrap_or_default()
+		.total_seconds
+		.unwrap_or(0);
+
+	let total_playtime_seconds = playtime_totals.total_seconds.unwrap_or(0);
+	let average_seconds_per_user = if user_counts.total_users == 0 {
+		0.0
+	} else {
+		total_playtime_seconds as f64 / user_counts.total_users as f64
+	};
+
 	Ok(Json(AnalyticsOverviewResponse {
 		total_users: user_counts.total_users,
 		monthly_active_users: user_counts.monthly_active_users,
+		playtime: Playtime {
+			total_seconds: total_playtime_seconds,
+			average_seconds_per_user,
+			last_30d_seconds,
+			total_sessions: playtime_totals.total_sessions.unwrap_or(0),
+		},
 		owned_items_per_user: OwnedItemsPerUser {
 			total_owned_items: owned_counts.total_owned_items,
 			average_per_user,

@@ -15,6 +15,7 @@ mod m20260625_000003_add_boots_cosmetic;
 mod m20260625_000004_add_shoulder_cosmetic;
 mod m20260625_000005_create_cosmetic_groups;
 mod m20260628_000000_add_particle_color;
+mod m20260629_000000_create_daily_playtime;
 
 pub struct Migrator;
 
@@ -37,6 +38,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260625_000004_add_shoulder_cosmetic::Migration),
 			Box::new(m20260625_000005_create_cosmetic_groups::Migration),
 			Box::new(m20260628_000000_add_particle_color::Migration),
+			Box::new(m20260629_000000_create_daily_playtime::Migration),
 		]
 	}
 }

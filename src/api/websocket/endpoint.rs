@@ -13,6 +13,8 @@ use axum::{
 	},
 	routing::get,
 };
+use chrono::Utc;
+use tracing::warn;
 use entities::sea_orm_active_enums::BodySlot;
 use http::{Response, StatusCode};
 use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter};
@@ -24,7 +26,7 @@ use crate::api::{
 	account::AuthenticatedPlayer,
 	state::{
 		ConnectionId, EquipmentPersistence, ParticleColorPersistence,
-		PlayerRuntimeState, RealtimeConnection,
+		PlayerRuntimeState, PlaytimeSession, RealtimeConnection,
 	},
 	websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 };
@@ -230,6 +232,7 @@ async fn validate_emote(
 
 async fn register_connection(
 	state: &ApiState,
+	player_id: i32,
 	owner: Uuid,
 	tx: mpsc::UnboundedSender<ClientBoundPacket>,
 	equipped: HashMap<BodySlot, i32>,
@@ -245,14 +248,24 @@ async fn register_connection(
 			subscriptions: HashSet::new(),
 		},
 	);
-	state
-		.realtime
-		.connections_by_owner
-		.write()
-		.await
-		.entry(owner)
-		.or_default()
-		.insert(connection_id);
+	let is_first_connection = {
+		let mut connections_by_owner =
+			state.realtime.connections_by_owner.write().await;
+		let owner_connections = connections_by_owner.entry(owner).or_default();
+		let was_empty = owner_connections.is_empty();
+		owner_connections.insert(connection_id);
+		was_empty
+	};
+
+	if is_first_connection {
+		state.realtime.playtime.write().await.insert(
+			owner,
+			PlaytimeSession {
+				player_id,
+				last_accounted_at: Utc::now(),
+			},
+		);
+	}
 
 	let mut player_runtime = state.realtime.player_runtime.write().await;
 	player_runtime
@@ -295,15 +308,32 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		}
 	};
 
-	if !owner_still_connected
-		&& let Some(runtime) = state
+	if !owner_still_connected {
+		if let Some(runtime) = state
 			.realtime
 			.player_runtime
 			.write()
 			.await
 			.get_mut(&connection.owner)
-	{
-		runtime.active_emote = None;
+		{
+			runtime.active_emote = None;
+		}
+
+		let session = state.realtime.playtime.write().await.remove(&connection.owner);
+		if let Some(session) = session {
+			let now = Utc::now();
+			if let Err(error) = crate::database::accrue_playtime(
+				&state.database,
+				session.player_id,
+				session.last_accounted_at,
+				now,
+				true,
+			)
+			.await
+			{
+				warn!("Unable to record playtime on disconnect: {error}");
+			}
+		}
 	}
 
 	let mut watchers = state.realtime.watchers.write().await;
@@ -602,6 +632,7 @@ async fn endpoint(
 		};
 		let connection_id = register_connection(
 			&state,
+			player.id,
 			player.minecraft_uuid,
 			tx,
 			equipped,

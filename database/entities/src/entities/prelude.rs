@@ -6,6 +6,7 @@ pub use super::cosmetic_allowed_slot::Entity as CosmeticAllowedSlot;
 pub use super::cosmetic_group::Entity as CosmeticGroup;
 pub use super::cosmetic_group_allowed_slot::Entity as CosmeticGroupAllowedSlot;
 pub use super::cosmetic_package::Entity as CosmeticPackage;
+pub use super::daily_playtime::Entity as DailyPlaytime;
 pub use super::emote::Entity as Emote;
 pub use super::emote_package::Entity as EmotePackage;
 pub use super::monthly_active_login::Entity as MonthlyActiveLogin;

@@ -1,6 +1,6 @@
-use chrono::{Datelike, Utc};
+use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
 use entities::{
-	monthly_active_login,
+	daily_playtime, monthly_active_login,
 	prelude::*,
 	sea_orm_active_enums::{TransactionProvider, TransactionStatus},
 	transaction, user,
@@ -117,6 +117,73 @@ pub(crate) async fn record_monthly_active_login(
 					monthly_active_login::Column::LoginCount,
 				))
 				.add(1),
+		)
+		.to_owned(),
+	)
+	.exec_without_returning(db)
+	.await?;
+
+	Ok(())
+}
+
+pub(crate) async fn accrue_playtime(
+	db: &impl ConnectionTrait,
+	player_id: i32,
+	from: DateTime<Utc>,
+	to: DateTime<Utc>,
+	end_session: bool,
+) -> Result<(), DbErr> {
+	let mut cursor = from;
+	while cursor < to {
+		let day = cursor.date_naive();
+		let next_midnight = (day + Days::new(1))
+			.and_hms_opt(0, 0, 0)
+			.expect("midnight is a valid time")
+			.and_utc();
+		let segment_end = next_midnight.min(to);
+		let seconds = (segment_end - cursor).num_seconds().max(0);
+		let is_final = segment_end >= to;
+		upsert_daily_playtime(db, player_id, day, seconds, end_session && is_final)
+			.await?;
+		cursor = segment_end;
+	}
+
+	if end_session && from >= to {
+		upsert_daily_playtime(db, player_id, to.date_naive(), 0, true).await?;
+	}
+
+	Ok(())
+}
+
+async fn upsert_daily_playtime(
+	db: &impl ConnectionTrait,
+	player_id: i32,
+	day: NaiveDate,
+	seconds: i64,
+	increment_session: bool,
+) -> Result<(), DbErr> {
+	let session_delta = i32::from(increment_session);
+
+	DailyPlaytime::insert(daily_playtime::ActiveModel {
+		player_id: Set(player_id),
+		day: Set(day),
+		total_seconds: Set(seconds),
+		session_count: Set(session_delta),
+	})
+	.on_conflict(
+		OnConflict::columns([
+			daily_playtime::Column::PlayerId,
+			daily_playtime::Column::Day,
+		])
+		.value(
+			daily_playtime::Column::TotalSeconds,
+			Expr::col((daily_playtime::Entity, daily_playtime::Column::TotalSeconds))
+				.add(seconds),
+		)
+		.value(
+			daily_playtime::Column::SessionCount,
+			Expr::col((daily_playtime::Entity, daily_playtime::Column::SessionCount))
+				.add(session_delta),
 		)
 		.to_owned(),
 	)

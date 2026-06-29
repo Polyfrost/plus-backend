@@ -6,6 +6,7 @@ use std::{
 };
 
 use axum::extract::FromRef;
+use chrono::{DateTime, Utc};
 use entities::prelude::*;
 use entities::sea_orm_active_enums::BodySlot;
 use migrations::{Migrator, MigratorTrait};
@@ -96,6 +97,12 @@ impl ApiState {
 			particle_color_persist_rx,
 		));
 
+		let realtime = RealtimeState::default();
+		tokio::spawn(flush_playtime_loop(
+			database.clone(),
+			realtime.playtime.clone(),
+		));
+
 		// Return final state
 		ApiState {
 			tebex: TebexApiState {
@@ -115,7 +122,7 @@ impl ApiState {
 				.expect("Unable to generate paseto signing key"),
 			s3_bucket,
 			asset_cache,
-			realtime: RealtimeState::default(),
+			realtime,
 			equipment_persist_tx,
 			particle_color_persist_tx,
 			admin_password: args.admin_password.clone(),
@@ -153,6 +160,7 @@ pub(super) struct RealtimeState {
 	pub(super) player_runtime:
 		Arc<tokio::sync::RwLock<HashMap<Uuid, PlayerRuntimeState>>>,
 	pub(super) watchers: Arc<tokio::sync::RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
+	pub(super) playtime: Arc<tokio::sync::RwLock<HashMap<Uuid, PlaytimeSession>>>,
 }
 
 pub(super) type ConnectionId = Uuid;
@@ -164,6 +172,13 @@ pub(super) struct RealtimeConnection {
 		crate::api::websocket::structs::ClientBoundPacket,
 	>,
 	pub(super) subscriptions: HashSet<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PlaytimeSession {
+	pub(super) player_id: i32,
+	/// Timestamp up to which this session's time has already been committed.
+	pub(super) last_accounted_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -267,6 +282,42 @@ async fn persist_particle_color_queue(
 
 		if let Err(error) = result {
 			warn!("Unable to persist websocket particle color update: {error}");
+		}
+	}
+}
+
+const PLAYTIME_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
+
+async fn flush_playtime_loop(
+	database: DatabaseConnection,
+	playtime: Arc<tokio::sync::RwLock<HashMap<Uuid, PlaytimeSession>>>,
+) {
+	let mut interval = tokio::time::interval(PLAYTIME_FLUSH_INTERVAL);
+	interval.tick().await;
+
+	loop {
+		interval.tick().await;
+		let now = Utc::now();
+
+		let pending: Vec<(i32, DateTime<Utc>)> = {
+			let mut guard = playtime.write().await;
+			guard
+				.values_mut()
+				.map(|session| {
+					let from = session.last_accounted_at;
+					session.last_accounted_at = now;
+					(session.player_id, from)
+				})
+				.collect()
+		};
+
+		for (player_id, from) in pending {
+			if let Err(error) =
+				crate::database::accrue_playtime(&database, player_id, from, now, false)
+					.await
+			{
+				warn!("Unable to flush playtime for player {player_id}: {error}");
+			}
 		}
 	}
 }
