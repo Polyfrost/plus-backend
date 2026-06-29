@@ -13,6 +13,7 @@ pub struct Model {
 	pub created_at: DateTimeWithTimeZone,
 	pub blacklisted: bool,
 	pub role: PlayerRole,
+	pub particle_color: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

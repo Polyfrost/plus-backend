@@ -70,6 +70,7 @@ async fn endpoint(
 
 		let cosmetics = Cosmetic::find()
 			.filter(cosmetic::Column::Type.eq(CosmeticType::Cape))
+			.filter(cosmetic::Column::Enabled.eq(true))
 			.find_also_related(Asset)
 			.all(&state.database)
 			.await?;

@@ -100,6 +100,9 @@ pub enum ServerBoundPacket {
 		slot: BodySlot,
 		cosmetic_id: Option<i32>,
 	},
+	SetParticleColor {
+		color: Option<i32>,
+	},
 	PlayEmote {
 		emote_id: i32,
 	},
@@ -126,11 +129,16 @@ pub enum ClientBoundPacket {
 	SubscriptionSnapshot {
 		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
 		active_emotes: HashMap<Uuid, i32>,
+		particle_colors: HashMap<Uuid, i32>,
 	},
 	PlayerCosmeticEquipped {
 		player: Uuid,
 		slot: BodySlot,
 		cosmetic_id: Option<i32>,
+	},
+	PlayerParticleColorChanged {
+		player: Uuid,
+		color: Option<i32>,
 	},
 	PlayerEmoteStarted {
 		player: Uuid,
@@ -198,6 +206,7 @@ mod tests {
 		let packet = ClientBoundPacket::SubscriptionSnapshot {
 			equipped: HashMap::from([(player, HashMap::from([(BodySlot::Cape, 1)]))]),
 			active_emotes: HashMap::from([(player, 6)]),
+			particle_colors: HashMap::from([(player, 0xFF_0000)]),
 		};
 
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");

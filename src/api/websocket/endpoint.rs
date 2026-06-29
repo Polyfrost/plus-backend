@@ -22,7 +22,10 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
-	state::{ConnectionId, EquipmentPersistence, PlayerRuntimeState, RealtimeConnection},
+	state::{
+		ConnectionId, EquipmentPersistence, ParticleColorPersistence,
+		PlayerRuntimeState, RealtimeConnection,
+	},
 	websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 };
 
@@ -152,6 +155,25 @@ async fn load_equipped_for_players(
 	Ok(equipped)
 }
 
+async fn load_particle_colors_for_players(
+	state: &ApiState,
+	players: &[Uuid],
+) -> Result<HashMap<Uuid, Option<i32>>, WebsocketError> {
+	use entities::{prelude::*, user};
+
+	if players.is_empty() {
+		return Ok(HashMap::new());
+	}
+
+	Ok(User::find()
+		.filter(user::Column::MinecraftUuid.is_in(players.to_vec()))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|user| (user.minecraft_uuid, user.particle_color))
+		.collect())
+}
+
 async fn validate_cosmetic(
 	state: &ApiState,
 	player_id: i32,
@@ -211,6 +233,7 @@ async fn register_connection(
 	owner: Uuid,
 	tx: mpsc::UnboundedSender<ClientBoundPacket>,
 	equipped: HashMap<BodySlot, i32>,
+	particle_color: Option<i32>,
 ) -> ConnectionId {
 	let connection_id = Uuid::new_v4();
 
@@ -234,10 +257,14 @@ async fn register_connection(
 	let mut player_runtime = state.realtime.player_runtime.write().await;
 	player_runtime
 		.entry(owner)
-		.and_modify(|runtime| runtime.equipped = equipped.clone())
+		.and_modify(|runtime| {
+			runtime.equipped = equipped.clone();
+			runtime.particle_color = particle_color;
+		})
 		.or_insert_with(|| PlayerRuntimeState {
 			equipped,
 			active_emote: None,
+			particle_color,
 		});
 
 	connection_id
@@ -302,6 +329,7 @@ async fn subscribe(
 			return Ok(ClientBoundPacket::SubscriptionSnapshot {
 				equipped: HashMap::new(),
 				active_emotes: HashMap::new(),
+				particle_colors: HashMap::new(),
 			});
 		};
 
@@ -325,6 +353,7 @@ async fn subscribe(
 		return Ok(ClientBoundPacket::SubscriptionSnapshot {
 			equipped: HashMap::new(),
 			active_emotes: HashMap::new(),
+			particle_colors: HashMap::new(),
 		});
 	}
 
@@ -337,6 +366,7 @@ async fn subscribe(
 
 	let mut equipped = HashMap::new();
 	let mut active_emotes = HashMap::new();
+	let mut particle_colors = HashMap::new();
 	let mut missing = Vec::new();
 	{
 		let player_runtime = state.realtime.player_runtime.read().await;
@@ -346,6 +376,9 @@ async fn subscribe(
 				if let Some(emote_id) = runtime.active_emote {
 					active_emotes.insert(*player, emote_id);
 				}
+				if let Some(color) = runtime.particle_color {
+					particle_colors.insert(*player, color);
+				}
 			} else {
 				missing.push(*player);
 			}
@@ -353,6 +386,7 @@ async fn subscribe(
 	}
 
 	let loaded_equipped = load_equipped_for_players(state, &missing).await?;
+	let loaded_particle_colors = load_particle_colors_for_players(state, &missing).await?;
 	{
 		let mut player_runtime = state.realtime.player_runtime.write().await;
 		for (player, equipped) in &loaded_equipped {
@@ -361,14 +395,21 @@ async fn subscribe(
 				.or_insert_with(|| PlayerRuntimeState {
 					equipped: equipped.clone(),
 					active_emote: None,
+					particle_color: loaded_particle_colors.get(player).copied().flatten(),
 				});
 		}
 	}
 	equipped.extend(loaded_equipped);
+	for (player, color) in loaded_particle_colors {
+		if let Some(color) = color {
+			particle_colors.insert(player, color);
+		}
+	}
 
 	Ok(ClientBoundPacket::SubscriptionSnapshot {
 		equipped,
 		active_emotes,
+		particle_colors,
 	})
 }
 
@@ -485,6 +526,26 @@ async fn handle_msg(
 			})
 			.await;
 		}
+		ServerBoundPacket::SetParticleColor { color } => {
+			{
+				let mut player_runtime = state.realtime.player_runtime.write().await;
+				player_runtime
+					.entry(player.minecraft_uuid)
+					.or_default()
+					.particle_color = color;
+			}
+			let _ = state.particle_color_persist_tx.try_send(ParticleColorPersistence {
+				player: player.minecraft_uuid,
+				color,
+			});
+			broadcast_to_watchers(state, player.minecraft_uuid, || {
+				ClientBoundPacket::PlayerParticleColorChanged {
+					player: player.minecraft_uuid,
+					color,
+				}
+			})
+			.await;
+		}
 		ServerBoundPacket::PlayEmote { emote_id } => {
 			validate_emote(state, player.id, emote_id).await?;
 
@@ -539,8 +600,14 @@ async fn endpoint(
 				return;
 			}
 		};
-		let connection_id =
-			register_connection(&state, player.minecraft_uuid, tx, equipped).await;
+		let connection_id = register_connection(
+			&state,
+			player.minecraft_uuid,
+			tx,
+			equipped,
+			player.particle_color,
+		)
+		.await;
 
 		loop {
 			let result = tokio::select! {

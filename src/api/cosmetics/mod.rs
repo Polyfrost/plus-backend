@@ -5,6 +5,7 @@ mod list;
 mod list_capes;
 mod list_emotes;
 mod put_player;
+mod set_enabled;
 mod upload_cosmetic;
 mod upload_emote;
 
@@ -358,6 +359,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(put_player::router())
 				.merge(upload_cosmetic::router())
 				.merge(upload_emote::router())
+				.merge(set_enabled::router())
 				.merge(grant::router())
 				.merge(grant_emote::router())
 				.merge(list_capes::router()),

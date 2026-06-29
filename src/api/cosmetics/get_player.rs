@@ -83,6 +83,7 @@ pub struct Response {
 	cosmetics: Vec<CosmeticInfo>,
 	emotes: Vec<EmoteInfo>,
 	equipped: EquippedCosmetics,
+	particle_color: Option<i32>,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -114,6 +115,8 @@ async fn endpoint(
 			return Ok(Json(response));
 		};
 
+		response.particle_color = player.particle_color;
+
 		let cosmetics = PlayerOwnedCosmetic::find()
 			.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
 			.find_also_related(Cosmetic)
@@ -121,7 +124,7 @@ async fn endpoint(
 			.await?;
 
 		let mut rows = Vec::new();
-		for cosmetic in cosmetics.into_iter().filter_map(|(_, c)| c) {
+		for cosmetic in cosmetics.into_iter().filter_map(|(_, c)| c).filter(|c| c.enabled) {
 			let asset = match cosmetic.asset_id {
 				Some(asset_id) => {
 					Asset::find_by_id(asset_id).one(&state.database).await?
@@ -179,10 +182,15 @@ async fn endpoint(
 		response.equipped.extend(
 			PlayerEquippedCosmetic::find()
 				.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
+				.find_also_related(Cosmetic)
 				.all(&state.database)
 				.await?
 				.into_iter()
-				.map(|equipment| (equipment.slot, equipment.cosmetic_id)),
+				.filter_map(|(equipment, cosmetic)| {
+					cosmetic
+						.filter(|c| c.enabled)
+						.map(|_| (equipment.slot, equipment.cosmetic_id))
+				}),
 		);
 	};
 

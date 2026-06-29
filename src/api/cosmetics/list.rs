@@ -5,7 +5,7 @@ use aide::{
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use schemars::JsonSchema;
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 
 use crate::api::{
@@ -65,9 +65,10 @@ async fn endpoint(
 	let mut response = Response::default();
 
 	{
-		use entities::prelude::*;
+		use entities::{cosmetic, prelude::*};
 
 		let cosmetics = Cosmetic::find()
+			.filter(cosmetic::Column::Enabled.eq(true))
 			.find_with_related(CosmeticAllowedSlot)
 			.all(&state.database)
 			.await?;

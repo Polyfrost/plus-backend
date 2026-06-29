@@ -89,6 +89,13 @@ impl ApiState {
 			equipment_persist_rx,
 		));
 
+		let (particle_color_persist_tx, particle_color_persist_rx) =
+			tokio::sync::mpsc::channel(256);
+		tokio::spawn(persist_particle_color_queue(
+			database.clone(),
+			particle_color_persist_rx,
+		));
+
 		// Return final state
 		ApiState {
 			tebex: TebexApiState {
@@ -110,6 +117,7 @@ impl ApiState {
 			asset_cache,
 			realtime: RealtimeState::default(),
 			equipment_persist_tx,
+			particle_color_persist_tx,
 			admin_password: args.admin_password.clone(),
 		}
 	}
@@ -125,6 +133,8 @@ pub(super) struct ApiState {
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
 	pub(super) realtime: RealtimeState,
 	pub(super) equipment_persist_tx: tokio::sync::mpsc::Sender<EquipmentPersistence>,
+	pub(super) particle_color_persist_tx:
+		tokio::sync::mpsc::Sender<ParticleColorPersistence>,
 	pub(super) admin_password: String,
 }
 
@@ -160,6 +170,7 @@ pub(super) struct RealtimeConnection {
 pub(super) struct PlayerRuntimeState {
 	pub(super) equipped: HashMap<BodySlot, i32>,
 	pub(super) active_emote: Option<i32>,
+	pub(super) particle_color: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +178,12 @@ pub(super) struct EquipmentPersistence {
 	pub(super) player: Uuid,
 	pub(super) slot: BodySlot,
 	pub(super) cosmetic_id: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ParticleColorPersistence {
+	pub(super) player: Uuid,
+	pub(super) color: Option<i32>,
 }
 
 async fn persist_equipment_queue(
@@ -219,6 +236,37 @@ async fn persist_equipment_queue(
 
 		if let Err(error) = result {
 			warn!("Unable to persist websocket equipment update: {error}");
+		}
+	}
+}
+
+async fn persist_particle_color_queue(
+	database: DatabaseConnection,
+	mut rx: tokio::sync::mpsc::Receiver<ParticleColorPersistence>,
+) {
+	use entities::{prelude::*, user};
+	use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+
+	while let Some(update) = rx.recv().await {
+		let result = async {
+			let Some(player) = User::find()
+				.filter(user::Column::MinecraftUuid.eq(update.player))
+				.one(&database)
+				.await?
+			else {
+				return Ok::<(), sea_orm::DbErr>(());
+			};
+
+			let mut player: user::ActiveModel = player.into();
+			player.particle_color = Set(update.color);
+			player.update(&database).await?;
+
+			Ok(())
+		}
+		.await;
+
+		if let Err(error) = result {
+			warn!("Unable to persist websocket particle color update: {error}");
 		}
 	}
 }
