@@ -20,6 +20,7 @@ pub struct Model {
 	#[sea_orm(column_type = "Float", nullable)]
 	pub amount: Option<f32>,
 	pub discount_rate: Option<i32>,
+	pub recipient: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -30,12 +31,20 @@ pub enum Relation {
 	PlayerOwnedEmote,
 	#[sea_orm(
 		belongs_to = "super::user::Entity",
+		from = "Column::Recipient",
+		to = "super::user::Column::Id",
+		on_update = "Cascade",
+		on_delete = "SetNull"
+	)]
+	User2,
+	#[sea_orm(
+		belongs_to = "super::user::Entity",
 		from = "Column::PlayerId",
 		to = "super::user::Column::Id",
 		on_update = "NoAction",
 		on_delete = "Cascade"
 	)]
-	User,
+	User1,
 }
 
 impl Related<super::player_owned_cosmetic::Entity> for Entity {
@@ -47,12 +56,6 @@ impl Related<super::player_owned_cosmetic::Entity> for Entity {
 impl Related<super::player_owned_emote::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::PlayerOwnedEmote.def()
-	}
-}
-
-impl Related<super::user::Entity> for Entity {
-	fn to() -> RelationDef {
-		Relation::User.def()
 	}
 }
 

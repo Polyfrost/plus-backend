@@ -28,8 +28,6 @@ pub enum Relation {
 	PlayerOwnedCosmetic,
 	#[sea_orm(has_many = "super::player_owned_emote::Entity")]
 	PlayerOwnedEmote,
-	#[sea_orm(has_many = "super::transaction::Entity")]
-	Transaction,
 }
 
 impl Related<super::daily_playtime::Entity> for Entity {
@@ -59,12 +57,6 @@ impl Related<super::player_owned_cosmetic::Entity> for Entity {
 impl Related<super::player_owned_emote::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::PlayerOwnedEmote.def()
-	}
-}
-
-impl Related<super::transaction::Entity> for Entity {
-	fn to() -> RelationDef {
-		Relation::Transaction.def()
 	}
 }
 
