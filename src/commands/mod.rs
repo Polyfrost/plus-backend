@@ -28,6 +28,18 @@ pub(crate) struct ServeArgs {
 		fallback(SocketAddr::from_str("[::]:8080").expect("This str is always a valid SocketAddr"))
 	)]
 	pub(crate) bind_addr: SocketAddr,
+	/// The Stripe secret API key used to create checkout sessions
+	#[bpaf(long("stripe-secret"), env("STRIPE_SECRET"))]
+	pub(crate) stripe_secret: String,
+	/// The Stripe webhook signing secret used to validate webhook signatures
+	#[bpaf(long("stripe-webhook-secret"), env("STRIPE_WEBHOOK_SECRET"))]
+	pub(crate) stripe_webhook_secret: String,
+	/// The URL Stripe redirects the buyer to after a successful checkout
+	#[bpaf(long("stripe-success-url"), env("STRIPE_SUCCESS_URL"))]
+	pub(crate) stripe_success_url: String,
+	/// The URL Stripe redirects the buyer to if they cancel checkout
+	#[bpaf(long("stripe-cancel-url"), env("STRIPE_CANCEL_URL"))]
+	pub(crate) stripe_cancel_url: String,
 	/// The URL to use for connecting to the database
 	#[bpaf(long("database-url"), env("DATABASE_URL"))]
 	pub(crate) database_url: String,

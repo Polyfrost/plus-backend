@@ -16,6 +16,7 @@ use pasetors::{
 use reqwest::{Client, ClientBuilder};
 use s3::{Bucket, creds::Credentials};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection, EntityTrait};
+use stripe_client::Client as StripeClient;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -102,6 +103,12 @@ impl ApiState {
 
 		// Return final state
 		ApiState {
+			stripe: StripeApiState {
+				client: StripeClient::new(args.stripe_secret.clone()),
+				webhook_secret: args.stripe_webhook_secret.clone(),
+				success_url: args.stripe_success_url.clone(),
+				cancel_url: args.stripe_cancel_url.clone(),
+			},
 			database,
 			client: ClientBuilder::new()
 				.https_only(true)
@@ -122,6 +129,7 @@ impl ApiState {
 
 #[derive(Debug, Clone)]
 pub(super) struct ApiState {
+	pub(super) stripe: StripeApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
@@ -134,6 +142,20 @@ pub(super) struct ApiState {
 	pub(super) admin_password: String,
 }
 
+#[derive(Clone)]
+pub(super) struct StripeApiState {
+	pub(super) client: StripeClient,
+	pub(super) webhook_secret: String,
+	pub(super) success_url: String,
+	pub(super) cancel_url: String,
+}
+
+// i love leaking secrets
+impl std::fmt::Debug for StripeApiState {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("StripeApiState").finish_non_exhaustive()
+	}
+}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct RealtimeState {
