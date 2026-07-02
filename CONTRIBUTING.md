@@ -38,11 +38,6 @@ To interact with the database, [sea-orm] is used with migrations in
 [`./database/entities`](database/entities). The entities directory has its own README with
 information about how to keep it up to date.
 
-All Tebex-related code such as webhook parsing/validating, and API clients is located in
-[`./crates/tebex`](crates/tebex), as it will likely be published to https://crates.io as an
-independent library at some point, so make sure any code in that directory is high-quality enough to
-be published, and doesn't depend on or contain any Poly+ specific code.
-
 ### Database
 
 The backend requires a PostgreSQL database to store data in. A database schema is automatically
