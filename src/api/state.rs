@@ -1,11 +1,9 @@
 use std::{
-	borrow::Cow,
 	collections::{HashMap, HashSet},
 	sync::Arc,
 	time::Duration,
 };
 
-use axum::extract::FromRef;
 use chrono::{DateTime, Utc};
 use entities::prelude::*;
 use entities::sea_orm_active_enums::BodySlot;
@@ -18,7 +16,6 @@ use pasetors::{
 use reqwest::{Client, ClientBuilder};
 use s3::{Bucket, creds::Credentials};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection, EntityTrait};
-use tebex::{apis::plugin::TebexPluginApiClient, webhooks::axum::TebexWebhookState};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -105,13 +102,6 @@ impl ApiState {
 
 		// Return final state
 		ApiState {
-			tebex: TebexApiState {
-				webhook_secret: Box::leak(
-					args.tebex_webhook_secret.clone().into_boxed_str(),
-				),
-				plugin_client: TebexPluginApiClient::new(&args.tebex_game_server_secret)
-					.expect("Unable to construct Tebex plugin API client"),
-			},
 			database,
 			client: ClientBuilder::new()
 				.https_only(true)
@@ -132,7 +122,6 @@ impl ApiState {
 
 #[derive(Debug, Clone)]
 pub(super) struct ApiState {
-	pub(super) tebex: TebexApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
@@ -145,11 +134,6 @@ pub(super) struct ApiState {
 	pub(super) admin_password: String,
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct TebexApiState {
-	webhook_secret: &'static str,
-	pub(super) plugin_client: TebexPluginApiClient,
-}
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct RealtimeState {
@@ -318,14 +302,6 @@ async fn flush_playtime_loop(
 			{
 				warn!("Unable to flush playtime for player {player_id}: {error}");
 			}
-		}
-	}
-}
-
-impl FromRef<ApiState> for TebexWebhookState {
-	fn from_ref(input: &ApiState) -> Self {
-		Self {
-			secret: Cow::Borrowed(input.tebex.webhook_secret),
 		}
 	}
 }

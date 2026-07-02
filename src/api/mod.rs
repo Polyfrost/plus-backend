@@ -2,7 +2,6 @@ mod account;
 pub(crate) mod admin_auth;
 mod analytics;
 mod cosmetics;
-mod payments;
 mod players;
 mod state;
 mod transactions;
@@ -97,7 +96,6 @@ pub(crate) async fn start(args: ServeArgs) {
 	let state = ApiState::new(&args).await;
 
 	let app = ApiRouter::new()
-		.nest("/payments", payments::setup_router().await)
 		.nest("/account", account::setup_router().await)
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
