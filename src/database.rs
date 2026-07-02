@@ -22,7 +22,7 @@ pub(crate) trait DatabaseUserExt {
 }
 
 pub(crate) trait DatabaseTransactionExt {
-	async fn get_or_create_tebex(
+	async fn get_or_create_stripe(
 		db: &impl ConnectionTrait,
 		player_id: i32,
 		transaction_id: &str,
@@ -55,15 +55,15 @@ impl DatabaseUserExt for User {
 }
 
 impl DatabaseTransactionExt for Transaction {
-	async fn get_or_create_tebex(
+	async fn get_or_create_stripe(
 		db: &impl ConnectionTrait,
 		player_id: i32,
-		transaction_id: &str,
+		stripe_payment_id: &str,
 		raw_metadata: serde_json::Value,
 	) -> Result<transaction::Model, DbErr> {
 		if let Some(existing) = Transaction::find()
-			.filter(transaction::Column::Provider.eq(TransactionProvider::Tebex))
-			.filter(transaction::Column::ProviderTransactionId.eq(transaction_id))
+			.filter(transaction::Column::Provider.eq(TransactionProvider::Stripe))
+			.filter(transaction::Column::StripePaymentId.eq(stripe_payment_id))
 			.one(db)
 			.await?
 		{
@@ -72,8 +72,8 @@ impl DatabaseTransactionExt for Transaction {
 
 		Transaction::insert(transaction::ActiveModel {
 			player_id: ActiveValue::Set(player_id),
-			provider: ActiveValue::Set(TransactionProvider::Tebex),
-			provider_transaction_id: ActiveValue::Set(Some(transaction_id.to_string())),
+			provider: ActiveValue::Set(TransactionProvider::Stripe),
+			stripe_payment_id: ActiveValue::Set(Some(stripe_payment_id.to_string())),
 			status: ActiveValue::Set(TransactionStatus::Completed),
 			raw_metadata: ActiveValue::Set(raw_metadata),
 			..Default::default()
@@ -113,10 +113,10 @@ pub(crate) async fn record_monthly_active_login(
 		.value(
 			monthly_active_login::Column::LoginCount,
 			Expr::col((
-					monthly_active_login::Entity,
-					monthly_active_login::Column::LoginCount,
-				))
-				.add(1),
+				monthly_active_login::Entity,
+				monthly_active_login::Column::LoginCount,
+			))
+			.add(1),
 		)
 		.to_owned(),
 	)
