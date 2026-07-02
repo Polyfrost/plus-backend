@@ -1,4 +1,4 @@
-use sea_orm_migration::prelude::{extension::postgres::Type, *};
+use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -6,16 +6,10 @@ pub struct Migration;
 #[derive(DeriveIden)]
 enum Transaction {
 	Table,
-	Id,
-	PlayerId,
-	Provider,
 	ProviderTransactionId,
 	StripePaymentId,
 	Amount,
 	DiscountRate,
-	Status,
-	CreatedAt,
-	RawMetadata,
 }
 
 #[async_trait::async_trait]

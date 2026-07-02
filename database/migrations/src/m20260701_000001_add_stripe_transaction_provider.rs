@@ -11,10 +11,6 @@ enum TransactionProvider {
 	Tebex,
 	#[sea_orm(iden = "stripe")]
 	Stripe,
-	#[sea_orm(iden = "ingame")]
-	Ingame,
-	#[sea_orm(iden = "admin_grant")]
-	AdminGrant,
 }
 
 #[async_trait::async_trait]
