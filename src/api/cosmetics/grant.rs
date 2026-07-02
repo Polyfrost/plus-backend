@@ -87,7 +87,7 @@ async fn endpoint(
 	let transaction = transaction::ActiveModel {
 		player_id: Set(player.id),
 		provider: Set(TransactionProvider::AdminGrant),
-		provider_transaction_id: Set(None),
+		stripe_payment_id: Set(None),
 		status: Set(TransactionStatus::Completed),
 		raw_metadata: Set(serde_json::json!({ "reason": "admin_grant" })),
 		..Default::default()
