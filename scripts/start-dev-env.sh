@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# invalid locale makes psql crash on macos
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+export LANG="${LANG:-en_US.UTF-8}"
+
 # Attempt to find project root
 declare root
 if hash jj 2>/dev/null; then
