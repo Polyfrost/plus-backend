@@ -11,7 +11,7 @@ use axum::{
 };
 use entities::sea_orm_active_enums::{TransactionProvider, TransactionStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Related};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -82,7 +82,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
-async fn endpoint(
+pub(super) async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(authenticated): AuthenticatedPlayer,
 	Query(query): Query<TransactionsQuery>,
@@ -112,6 +112,10 @@ async fn endpoint(
 		.all(&state.database)
 		.await?;
 
+	// this case should never happen since this endpoint is pulling all
+	// transactions made by user
+	// instead: you should be calling on a specific transaction id that you get from
+	// getting your own cosmetics, and fetch that one
 	let transactions = try_join_all(transactions_raw.into_iter().map(|transaction| {
 		let db = &state.database;
 		async move {

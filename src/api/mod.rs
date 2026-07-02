@@ -4,6 +4,7 @@ mod analytics;
 mod cosmetics;
 mod players;
 mod state;
+mod stripe;
 mod transactions;
 mod websocket;
 
@@ -96,10 +97,11 @@ pub(crate) async fn start(args: ServeArgs) {
 	let state = ApiState::new(&args).await;
 
 	let app = ApiRouter::new()
+		.nest("/stripe", stripe::setup_router().await)
 		.nest("/account", account::setup_router().await)
+		.nest("/transactions", transactions::setup_router().await)
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
-		.merge(transactions::setup_router().await)
 		.merge(cosmetics::setup_router().await)
 		.merge(websocket::setup_router().await)
 		.with_state(state);
