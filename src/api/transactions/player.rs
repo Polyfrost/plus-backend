@@ -52,7 +52,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-struct TransactionsQuery {
+pub struct TransactionsQuery {
 	#[serde(default)]
 	player: Option<Uuid>,
 }
@@ -70,15 +70,8 @@ struct TransactionInfo {
 }
 
 #[derive(Debug, Default, Serialize, JsonSchema)]
-struct TransactionsResponse {
+pub struct TransactionsResponse {
 	transactions: Vec<TransactionInfo>,
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route(
-		"/transactions/player",
-		get_with(self::endpoint, self::endpoint_doc),
-	)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -137,10 +130,10 @@ pub(super) async fn endpoint(
 				recipient: recipient.map(|uuid| uuid.hyphenated().to_string()),
 				amount: transaction
 					.amount
-					.filter(|_| transaction.recipient.map_or(true, |id| id == player.id)),
+					.filter(|_| transaction.recipient.is_none_or(|id| id == player.id)),
 				discount_rate: transaction
 					.discount_rate
-					.filter(|_| transaction.recipient.map_or(true, |id| id == player.id)),
+					.filter(|_| transaction.recipient.is_none_or(|id| id == player.id)),
 			})
 		}
 	}))
