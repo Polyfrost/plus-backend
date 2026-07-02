@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use aide::{OperationIo, transform::TransformOperation};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use stripe_checkout::CheckoutSessionMode;
 use stripe_checkout::checkout_session::{
@@ -10,7 +12,7 @@ use uuid::Uuid;
 
 use crate::api::ApiState;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, OperationIo)]
 pub(super) enum CreateError {
 	#[error("Unable to create checkout session: {0}")]
 	Stripe(#[from] stripe_client::StripeError),
@@ -31,7 +33,7 @@ impl IntoResponse for CreateError {
 	}
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct CreateRequest {
 	/// The Minecraft UUID of the receiving player
 	player: Uuid,
@@ -41,12 +43,23 @@ pub(super) struct CreateRequest {
 	prices: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct CreateResponse {
 	/// The Stripe-hosted checkout page url to redirect the buyer to
 	url: String,
 }
 
+pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
+	op.id("createStripeCheckout")
+		.summary("Create a Stripe checkout")
+		.description(concat!(
+			"Creates a Stripe checkout for one or more cosmetics/emotes ",
+			"using their Stripe IDs returned from the list all cosmetics endpoint (not implemented)"
+		))
+		.tag("stripe")
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
 pub(super) async fn endpoint(
 	State(state): State<ApiState>,
 	Json(request): Json<CreateRequest>,

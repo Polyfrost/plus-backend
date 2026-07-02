@@ -1,12 +1,12 @@
 mod create;
 mod webhook;
 
-use aide::axum::ApiRouter;
+use aide::axum::{ApiRouter, routing::post_with};
 
 use crate::api::ApiState;
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.route("/create", axum::routing::post(create::endpoint))
+		.api_route("/create", post_with(create::endpoint, create::endpoint_doc))
 		.route("/webhook", axum::routing::post(webhook::endpoint))
 }

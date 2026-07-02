@@ -1,8 +1,4 @@
-use aide::{
-	OperationIo,
-	axum::{ApiRouter, routing::get_with},
-	transform::TransformOperation,
-};
+use aide::{OperationIo, transform::TransformOperation};
 use axum::{
 	Json,
 	extract::{Query, State},
@@ -44,7 +40,7 @@ impl IntoResponse for TransactionsError {
 	}
 }
 
-fn endpoint_doc(op: TransformOperation) -> TransformOperation {
+pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getPlayerTransactions")
 		.summary("Get player transactions")
 		.description("Lists transactions for the authenticated player or for another player when the caller is elevated.")

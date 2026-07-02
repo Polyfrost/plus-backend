@@ -1,9 +1,10 @@
 mod player;
 
-use aide::axum::ApiRouter;
+use aide::axum::{ApiRouter, routing::get_with};
 
 use crate::api::ApiState;
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().route("/player", axum::routing::get(player::endpoint))
+	ApiRouter::new()
+		.api_route("/player", get_with(player::endpoint, player::endpoint_doc))
 }
