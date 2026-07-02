@@ -11,7 +11,7 @@ use axum::{
 };
 use entities::sea_orm_active_enums::{TransactionProvider, TransactionStatus};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Related};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -61,9 +61,12 @@ struct TransactionsQuery {
 struct TransactionInfo {
 	id: i32,
 	provider: TransactionProvider,
-	provider_transaction_id: Option<String>,
+	stripe_payment_id: Option<String>,
 	status: TransactionStatus,
 	raw_metadata: serde_json::Value,
+	amount: Option<f32>,
+	discount_rate: Option<i32>,
+	recipient: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, JsonSchema)]
@@ -103,19 +106,41 @@ async fn endpoint(
 		return Err(TransactionsError::PlayerMissing);
 	};
 
-	let transactions = Transaction::find()
+	use futures::future::try_join_all;
+	let transactions_raw = Transaction::find()
 		.filter(transaction::Column::PlayerId.eq(player.id))
 		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(|transaction| TransactionInfo {
-			id: transaction.id,
-			provider: transaction.provider,
-			provider_transaction_id: transaction.provider_transaction_id,
-			status: transaction.status,
-			raw_metadata: transaction.raw_metadata,
-		})
-		.collect();
+		.await?;
+
+	let transactions = try_join_all(transactions_raw.into_iter().map(|transaction| {
+		let db = &state.database;
+		async move {
+			let recipient = if let Some(recipient) = transaction.recipient {
+				User::find_by_id(recipient)
+					.one(db)
+					.await?
+					.map(|rec| rec.minecraft_uuid)
+			} else {
+				None
+			};
+
+			Ok::<_, TransactionsError>(TransactionInfo {
+				id: transaction.id,
+				provider: transaction.provider,
+				stripe_payment_id: transaction.stripe_payment_id,
+				status: transaction.status,
+				raw_metadata: transaction.raw_metadata,
+				recipient: recipient.map(|uuid| uuid.hyphenated().to_string()),
+				amount: transaction
+					.amount
+					.filter(|_| transaction.recipient.map_or(true, |id| id == player.id)),
+				discount_rate: transaction
+					.discount_rate
+					.filter(|_| transaction.recipient.map_or(true, |id| id == player.id)),
+			})
+		}
+	}))
+	.await?;
 
 	Ok(Json(TransactionsResponse { transactions }))
 }
