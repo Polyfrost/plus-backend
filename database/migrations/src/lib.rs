@@ -16,6 +16,9 @@ mod m20260625_000004_add_shoulder_cosmetic;
 mod m20260625_000005_create_cosmetic_groups;
 mod m20260628_000000_add_particle_color;
 mod m20260629_000000_create_daily_playtime;
+mod m20260701_000000_add_stripe_price_id;
+mod m20260701_000001_add_stripe_transaction_provider;
+mod m20260701_000001_extend_stripe_transactions;
 
 pub struct Migrator;
 
@@ -39,6 +42,9 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260625_000005_create_cosmetic_groups::Migration),
 			Box::new(m20260628_000000_add_particle_color::Migration),
 			Box::new(m20260629_000000_create_daily_playtime::Migration),
+			Box::new(m20260701_000000_add_stripe_price_id::Migration),
+			Box::new(m20260701_000001_add_stripe_transaction_provider::Migration),
+			Box::new(m20260701_000001_extend_stripe_transactions::Migration),
 		]
 	}
 }
