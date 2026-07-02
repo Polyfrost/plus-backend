@@ -20,7 +20,7 @@ pub struct Model {
 	#[sea_orm(column_type = "Float", nullable)]
 	pub amount: Option<f32>,
 	pub discount_rate: Option<i32>,
-	pub recipient: Option<i32>,
+	pub buyer: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -31,7 +31,7 @@ pub enum Relation {
 	PlayerOwnedEmote,
 	#[sea_orm(
 		belongs_to = "super::user::Entity",
-		from = "Column::Recipient",
+		from = "Column::Buyer",
 		to = "super::user::Column::Id",
 		on_update = "Cascade",
 		on_delete = "SetNull"

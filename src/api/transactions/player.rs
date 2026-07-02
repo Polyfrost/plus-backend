@@ -66,7 +66,7 @@ struct TransactionInfo {
 	raw_metadata: serde_json::Value,
 	amount: Option<f32>,
 	discount_rate: Option<i32>,
-	recipient: Option<String>,
+	buyer: Option<Uuid>,
 }
 
 #[derive(Debug, Default, Serialize, JsonSchema)]
@@ -112,7 +112,7 @@ pub(super) async fn endpoint(
 	let transactions = try_join_all(transactions_raw.into_iter().map(|transaction| {
 		let db = &state.database;
 		async move {
-			let recipient = if let Some(recipient) = transaction.recipient {
+			let buyer = if let Some(recipient) = transaction.buyer {
 				User::find_by_id(recipient)
 					.one(db)
 					.await?
@@ -127,13 +127,13 @@ pub(super) async fn endpoint(
 				stripe_payment_id: transaction.stripe_payment_id,
 				status: transaction.status,
 				raw_metadata: transaction.raw_metadata,
-				recipient: recipient.map(|uuid| uuid.hyphenated().to_string()),
+				buyer,
 				amount: transaction
 					.amount
-					.filter(|_| transaction.recipient.is_none_or(|id| id == player.id)),
+					.filter(|_| transaction.buyer.is_none_or(|id| id == player.id)),
 				discount_rate: transaction
 					.discount_rate
-					.filter(|_| transaction.recipient.is_none_or(|id| id == player.id)),
+					.filter(|_| transaction.buyer.is_none_or(|id| id == player.id)),
 			})
 		}
 	}))

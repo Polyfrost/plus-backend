@@ -33,8 +33,10 @@ impl IntoResponse for CreateError {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct CreateRequest {
-	/// The Minecraft UUID of the purchasing player
+	/// The Minecraft UUID of the receiving player
 	player: Uuid,
+	/// The Minecraft UUID of the buyer, None if player == buyer
+	buyer: Option<Uuid>,
 	/// The Stripe price ids to charge for, one checkout line each
 	prices: Vec<String>,
 }
@@ -49,7 +51,11 @@ pub(super) async fn endpoint(
 	State(state): State<ApiState>,
 	Json(request): Json<CreateRequest>,
 ) -> Result<Json<CreateResponse>, CreateError> {
-	let CreateRequest { player, prices } = request;
+	let CreateRequest {
+		player,
+		prices,
+		buyer,
+	} = request;
 
 	let line_items = prices
 		.iter()
@@ -63,6 +69,10 @@ pub(super) async fn endpoint(
 
 	let metadata = HashMap::from([
 		("player".to_string(), player.to_string()), // minecraft uuid!!
+		(
+			"buyer".to_string(),
+			buyer.map_or_else(|| player.to_string(), |b| b.to_string()),
+		), // minecraft uuid!!
 		("prices".to_string(), prices.join(",")),
 	]);
 

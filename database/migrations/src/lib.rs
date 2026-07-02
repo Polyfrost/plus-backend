@@ -20,6 +20,7 @@ mod m20260701_000000_add_stripe_price_id;
 mod m20260701_000001_add_stripe_transaction_provider;
 mod m20260701_000002_extend_stripe_transactions;
 mod m20260701_000003_add_transaction_recipient;
+mod m20260703_000000_logic_gifts_rewrite;
 
 pub struct Migrator;
 
@@ -47,6 +48,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260701_000001_add_stripe_transaction_provider::Migration),
 			Box::new(m20260701_000002_extend_stripe_transactions::Migration),
 			Box::new(m20260701_000003_add_transaction_recipient::Migration),
+			Box::new(m20260703_000000_logic_gifts_rewrite::Migration),
 		]
 	}
 }

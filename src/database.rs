@@ -25,6 +25,7 @@ pub(crate) trait DatabaseTransactionExt {
 	async fn get_or_create_stripe(
 		db: &impl ConnectionTrait,
 		player_id: i32,
+		buyer_id: Option<i32>,
 		transaction_id: &str,
 		raw_metadata: serde_json::Value,
 	) -> Result<transaction::Model, DbErr>;
@@ -58,6 +59,7 @@ impl DatabaseTransactionExt for Transaction {
 	async fn get_or_create_stripe(
 		db: &impl ConnectionTrait,
 		player_id: i32,
+		buyer_id: Option<i32>,
 		stripe_payment_id: &str,
 		raw_metadata: serde_json::Value,
 	) -> Result<transaction::Model, DbErr> {
@@ -75,6 +77,7 @@ impl DatabaseTransactionExt for Transaction {
 			provider: ActiveValue::Set(TransactionProvider::Stripe),
 			stripe_payment_id: ActiveValue::Set(Some(stripe_payment_id.to_string())),
 			status: ActiveValue::Set(TransactionStatus::Completed),
+			buyer: ActiveValue::Set(buyer_id),
 			raw_metadata: ActiveValue::Set(raw_metadata),
 			..Default::default()
 		})

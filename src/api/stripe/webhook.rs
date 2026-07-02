@@ -85,6 +85,14 @@ pub(super) async fn endpoint(
 		);
 		return StatusCode::BAD_REQUEST;
 	};
+	let Some(buyer) = metadata.get("buyer").and_then(|p| Uuid::parse_str(p).ok()) else {
+		warn!(
+			"Paid checkout session {:?} missing valid buyer metadata",
+			session.id
+		);
+		return StatusCode::BAD_REQUEST;
+	};
+
 	let prices: Vec<String> = metadata
 		.get("prices")
 		.map(|p| {
@@ -101,9 +109,15 @@ pub(super) async fn endpoint(
 		.transaction::<_, OwnershipGrant, DbErr>(|txn| {
 			Box::pin(async move {
 				let user = User::get_or_create(txn, player).await?;
+				let buyer_id = if buyer != player {
+					Some(User::get_or_create(txn, buyer).await?.id)
+				} else {
+					None
+				};
 				let transaction = Transaction::get_or_create_stripe(
 					txn,
 					user.id,
+					buyer_id,
 					&session_id,
 					serde_json::json!({ "session_id": session_id.clone() }),
 				)
@@ -250,6 +264,14 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 		);
 		return StatusCode::BAD_REQUEST;
 	};
+	let Some(buyer) = metadata.get("buyer").and_then(|p| Uuid::parse_str(p).ok()) else {
+		warn!(
+			"Refunded checkout session {:?} missing valid buyer metadata",
+			session.id
+		);
+		return StatusCode::BAD_REQUEST;
+	};
+
 	let session_id = session.id.to_string();
 
 	let revoked = state
@@ -257,9 +279,15 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 		.transaction::<_, (u64, u64), DbErr>(|txn| {
 			Box::pin(async move {
 				let user = User::get_or_create(txn, player).await?;
+				let buyer_id = if buyer != player {
+					Some(User::get_or_create(txn, buyer).await?.id)
+				} else {
+					None
+				};
 				let transaction = Transaction::get_or_create_stripe(
 					txn,
 					user.id,
+					buyer_id,
 					&session_id,
 					serde_json::json!({ "session_id": session_id.clone() }),
 				)
