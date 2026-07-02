@@ -2455,6 +2455,7 @@ dependencies = [
  "bpaf",
  "chrono",
  "entities",
+ "futures",
  "http",
  "migrations",
  "moka",
