@@ -268,18 +268,29 @@ async fn register_connection(
 		);
 	}
 
-	let mut player_runtime = state.realtime.player_runtime.write().await;
-	player_runtime
-		.entry(owner)
-		.and_modify(|runtime| {
-			runtime.equipped = equipped.clone();
-			runtime.particle_color = particle_color;
+	{
+		let mut player_runtime = state.realtime.player_runtime.write().await;
+		player_runtime
+			.entry(owner)
+			.and_modify(|runtime| {
+				runtime.equipped = equipped.clone();
+				runtime.particle_color = particle_color;
+			})
+			.or_insert_with(|| PlayerRuntimeState {
+				equipped,
+				active_emote: None,
+				particle_color,
+			});
+	}
+
+	// Notify anyone already watching this player that they are now online.
+	if is_first_connection {
+		broadcast_to_watchers(state, owner, || ClientBoundPacket::PlayerPresence {
+			player: owner,
+			online: true,
 		})
-		.or_insert_with(|| PlayerRuntimeState {
-			equipped,
-			active_emote: None,
-			particle_color,
-		});
+		.await;
+	}
 
 	connection_id
 }
@@ -340,6 +351,15 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 				warn!("Unable to record playtime on disconnect: {error}");
 			}
 		}
+
+		// Notify anyone watching this player that they are now offline.
+		broadcast_to_watchers(state, connection.owner, || {
+			ClientBoundPacket::PlayerPresence {
+				player: connection.owner,
+				online: false,
+			}
+		})
+		.await;
 	}
 
 	let mut watchers = state.realtime.watchers.write().await;
@@ -366,6 +386,7 @@ async fn subscribe(
 				equipped: HashMap::new(),
 				active_emotes: HashMap::new(),
 				particle_colors: HashMap::new(),
+				users: Vec::new(),
 			});
 		};
 
@@ -390,6 +411,7 @@ async fn subscribe(
 			equipped: HashMap::new(),
 			active_emotes: HashMap::new(),
 			particle_colors: HashMap::new(),
+			users: Vec::new(),
 		});
 	}
 
@@ -443,10 +465,21 @@ async fn subscribe(
 		}
 	}
 
+	// A player is a live PolyPlus user if they currently hold a connection.
+	let users = {
+		let connections_by_owner = state.realtime.connections_by_owner.read().await;
+		newly_subscribed
+			.iter()
+			.copied()
+			.filter(|player| connections_by_owner.contains_key(player))
+			.collect::<Vec<_>>()
+	};
+
 	Ok(ClientBoundPacket::SubscriptionSnapshot {
 		equipped,
 		active_emotes,
 		particle_colors,
+		users,
 	})
 }
 

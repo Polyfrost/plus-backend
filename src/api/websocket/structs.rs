@@ -130,6 +130,14 @@ pub enum ClientBoundPacket {
 		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
 		active_emotes: HashMap<Uuid, i32>,
 		particle_colors: HashMap<Uuid, i32>,
+		/// The subset of subscribed players that currently have a live PolyPlus
+		/// session connected. Used to render a "uses PolyPlus" indicator.
+		users: Vec<Uuid>,
+	},
+	/// A subscribed player's PolyPlus session came online or went offline.
+	PlayerPresence {
+		player: Uuid,
+		online: bool,
 	},
 	PlayerCosmeticEquipped {
 		player: Uuid,
@@ -209,10 +217,26 @@ mod tests {
 			equipped: HashMap::from([(player, HashMap::from([(BodySlot::Cape, 1)]))]),
 			active_emotes: HashMap::from([(player, 6)]),
 			particle_colors: HashMap::from([(player, 0xFF_0000)]),
+			users: vec![player],
 		};
 
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");
 		assert_eq!(serialized["type"], "SubscriptionSnapshot");
 		assert_eq!(serialized["equipped"][player.to_string()]["cape"], 1);
+		assert_eq!(serialized["users"][0], player.to_string());
+	}
+
+	#[test]
+	fn serializes_player_presence_packet() {
+		let player = Uuid::nil();
+		let packet = ClientBoundPacket::PlayerPresence {
+			player,
+			online: true,
+		};
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(serialized["type"], "PlayerPresence");
+		assert_eq!(serialized["player"], player.to_string());
+		assert_eq!(serialized["online"], true);
 	}
 }
