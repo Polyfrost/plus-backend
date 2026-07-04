@@ -76,9 +76,34 @@ pub struct SearchQuery {
 	sort: Sort,
 	/// A substring to match against the name.
 	text: Option<String>,
-	/// Restrict results to a single cosmetic type (including `emote`). Omit to
-	/// return every type.
-	r#type: Option<CosmeticType>,
+	/// Restrict results to one or more cosmetic types (including `emote`),
+	/// comma-separated (e.g. `cape,emote`). Omit to return every type.
+	#[serde(default, deserialize_with = "deserialize_types")]
+	types: Option<Vec<CosmeticType>>,
+}
+
+/// Parses a comma-separated list of cosmetic types (e.g. `cape,emote`),
+/// deferring to each type's own deserialization. Empty segments are ignored,
+/// and an empty list is treated as no filter.
+fn deserialize_types<'de, D>(de: D) -> Result<Option<Vec<CosmeticType>>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	use serde::de::{Error, IntoDeserializer};
+
+	let Some(raw) = Option::<String>::deserialize(de)? else {
+		return Ok(None);
+	};
+
+	let types = raw
+		.split(',')
+		.map(str::trim)
+		.filter(|part| !part.is_empty())
+		.map(|part| CosmeticType::deserialize(part.into_deserializer()))
+		.collect::<Result<Vec<_>, serde::de::value::Error>>()
+		.map_err(Error::custom)?;
+
+	Ok((!types.is_empty()).then_some(types))
 }
 
 /// A single enabled cosmetic or emote in the search results.
@@ -176,8 +201,8 @@ async fn endpoint(
 	if let Some(text) = &query.text {
 		find = find.filter(cosmetic::Column::Name.contains(text.as_str()));
 	}
-	if let Some(kind) = &query.r#type {
-		find = find.filter(cosmetic::Column::Type.eq(kind.clone()));
+	if let Some(kinds) = &query.types {
+		find = find.filter(cosmetic::Column::Type.is_in(kinds.clone()));
 	}
 
 	// Count all matches before paginating so the response can report totals.
