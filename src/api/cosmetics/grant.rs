@@ -127,6 +127,7 @@ async fn endpoint(
 				player: body.player,
 				cosmetic_ids: cosmetic_ids.clone(),
 				emote_ids: Vec::new(),
+				revoked: false,
 			});
 		}
 	}

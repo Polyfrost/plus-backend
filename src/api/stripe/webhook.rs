@@ -11,7 +11,7 @@ use entities::{
 };
 use sea_orm::{
 	ActiveValue, DbErr, PaginatorTrait, QuerySelect, TransactionError, TransactionTrait,
-	prelude::*,
+	prelude::*, sea_query::Query,
 };
 use stripe_checkout::checkout_session::ListCheckoutSession;
 use stripe_shared::{Charge, CheckoutSessionPaymentStatus};
@@ -226,6 +226,7 @@ pub(super) async fn endpoint(
 					player,
 					cosmetic_ids: grant.cosmetic_ids.clone(),
 					emote_ids: grant.emote_ids.clone(),
+					revoked: false,
 				});
 			}
 		}
@@ -286,7 +287,7 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 
 	let revoked = state
 		.database
-		.transaction::<_, u64, DbErr>(|txn| {
+		.transaction::<_, OwnershipGrant, DbErr>(|txn| {
 			Box::pin(async move {
 				let user = User::get_or_create(txn, player).await?;
 				let buyer_id = if buyer != player {
@@ -303,24 +304,51 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 				)
 				.await?;
 
-				let deleted = PlayerOwnedCosmetic::delete_many()
+				// Collect the cosmetics tied to this transaction before deleting
+				// so the client can be told exactly what was revoked.
+				let cosmetics = Cosmetic::find()
+					.filter(
+						cosmetic::Column::Id.in_subquery(
+							Query::select()
+								.column(player_owned_cosmetic::Column::CosmeticId)
+								.from(player_owned_cosmetic::Entity)
+								.and_where(
+									player_owned_cosmetic::Column::TransactionId
+										.eq(transaction.id),
+								)
+								.to_owned(),
+						),
+					)
+					.all(txn)
+					.await?;
+
+				PlayerOwnedCosmetic::delete_many()
 					.filter(
 						player_owned_cosmetic::Column::TransactionId.eq(transaction.id),
 					)
 					.exec(txn)
 					.await?;
 
+				let mut revoked = OwnershipGrant::default();
+				for cosmetic in cosmetics {
+					if matches!(cosmetic.r#type, CosmeticType::Emote) {
+						revoked.emote_ids.push(cosmetic.id);
+					} else {
+						revoked.cosmetic_ids.push(cosmetic.id);
+					}
+				}
+
 				let mut transaction: transaction::ActiveModel = transaction.into();
 				transaction.status = ActiveValue::Set(TransactionStatus::Refunded);
 				transaction.update(txn).await?;
 
-				Ok(deleted.rows_affected)
+				Ok(revoked)
 			})
 		})
 		.await;
 
-	let cosmetics_cnt = match revoked {
-		Ok(counts) => counts,
+	let revoked = match revoked {
+		Ok(revoked) => revoked,
 		Err(error) => {
 			let error = match error {
 				TransactionError::Connection(error) => error,
@@ -332,8 +360,35 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 	};
 
 	info!(
-		"Refunded stripe purchase for player {player}: {cosmetics_cnt} cosmetics revoked"
+		"Refunded stripe purchase for player {player}: {} cosmetics, {} emotes revoked",
+		revoked.cosmetic_ids.len(),
+		revoked.emote_ids.len()
 	);
+
+	if !revoked.cosmetic_ids.is_empty() || !revoked.emote_ids.is_empty() {
+		let connection_ids = state
+			.realtime
+			.connections_by_owner
+			.read()
+			.await
+			.get(&player)
+			.cloned()
+			.unwrap_or_default();
+		if !connection_ids.is_empty() {
+			let connections = state.realtime.connections.read().await;
+			for connection_id in connection_ids {
+				let Some(connection) = connections.get(&connection_id) else {
+					continue;
+				};
+				let _ = connection.tx.send(ClientBoundPacket::OwnershipUpdated {
+					player,
+					cosmetic_ids: revoked.cosmetic_ids.clone(),
+					emote_ids: revoked.emote_ids.clone(),
+					revoked: true,
+				});
+			}
+		}
+	}
 
 	StatusCode::OK
 }

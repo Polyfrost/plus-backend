@@ -151,6 +151,8 @@ pub enum ClientBoundPacket {
 		player: Uuid,
 		cosmetic_ids: Vec<i32>,
 		emote_ids: Vec<i32>,
+		/// are we revoking stuff
+		revoked: bool,
 	},
 	/// An error response from the server
 	Error {
