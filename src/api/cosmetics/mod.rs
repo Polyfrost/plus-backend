@@ -3,8 +3,10 @@ mod grant;
 mod list;
 mod list_capes;
 mod put_player;
+mod search;
 mod set_enabled;
 mod upload_cosmetic;
+mod view;
 
 use std::{
 	collections::{BTreeMap, HashMap},
@@ -363,4 +365,6 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(list_capes::router()),
 		)
 		.merge(list::router())
+		.merge(search::router())
+		.merge(view::router())
 }
