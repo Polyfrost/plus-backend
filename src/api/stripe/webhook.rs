@@ -10,8 +10,7 @@ use entities::{
 	transaction,
 };
 use sea_orm::{
-	ActiveValue, DbErr, PaginatorTrait, QuerySelect, TransactionError, TransactionTrait,
-	prelude::*, sea_query::Query,
+	ActiveValue, DbErr, TransactionError, TransactionTrait, prelude::*, sea_query::Query,
 };
 use stripe_checkout::checkout_session::ListCheckoutSession;
 use stripe_shared::{Charge, CheckoutSessionPaymentStatus};

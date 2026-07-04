@@ -5,14 +5,15 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, Query, State},
+	extract::{Path, State},
 	http::StatusCode,
 	response::IntoResponse,
 };
+use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::ApiState;
 
@@ -37,17 +38,19 @@ impl IntoResponse for ViewError {
 	}
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ViewQuery {
-	/// Restrict the lookup to a single cosmetic type (including `emote`). Omit to
-	/// match any type.
-	r#type: Option<CosmeticType>,
-}
-
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ViewResponse {
 	/// The Stripe price id for this cosmetic, if one is set.
 	stripe_price_id: Option<String>,
+	id: i32,
+	name: String,
+	description: Option<String>,
+	collection: Option<i32>,
+	r#type: CosmeticType,
+	base_price: Option<f32>,
+	discount_rate: Option<i32>,
+	asset_id: Option<i32>,
+	created_at: DateTime<FixedOffset>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -71,21 +74,29 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 async fn endpoint(
 	State(state): State<ApiState>,
 	Path(id): Path<i32>,
-	Query(query): Query<ViewQuery>,
 ) -> Result<Json<ViewResponse>, ViewError> {
 	use entities::{cosmetic, prelude::*};
 
-	// Emotes are cosmetics with type `emote`, so a single cosmetic lookup covers
-	// every type. A `type` filter (including `emote`) narrows the lookup. Only
-	// enabled rows are viewable, mirroring the search endpoint.
-	let mut find = Cosmetic::find_by_id(id).filter(cosmetic::Column::Enabled.eq(true));
-	if let Some(kind) = &query.r#type {
-		find = find.filter(cosmetic::Column::Type.eq(kind.clone()));
+	if let Some(cosmetic) = Cosmetic::find_by_id(id)
+		.filter(cosmetic::Column::Enabled.eq(true))
+		.one(&state.database)
+		.await?
+	{
+		Ok(Json(ViewResponse {
+			stripe_price_id: cosmetic.stripe_price_id,
+			id: cosmetic.id,
+			name: cosmetic
+				.name
+				.unwrap_or_else(|| format!("Cosmetic {}", cosmetic.id)),
+			description: cosmetic.description,
+			collection: cosmetic.collection,
+			r#type: cosmetic.r#type,
+			base_price: cosmetic.base_price,
+			discount_rate: cosmetic.discount_rate,
+			asset_id: cosmetic.asset_id,
+			created_at: cosmetic.created_at,
+		}))
+	} else {
+		Err(ViewError::NotFound)
 	}
-
-	let cosmetic = find.one(&state.database).await?.ok_or(ViewError::NotFound)?;
-
-	Ok(Json(ViewResponse {
-		stripe_price_id: cosmetic.stripe_price_id,
-	}))
 }

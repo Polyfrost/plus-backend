@@ -9,6 +9,7 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
+use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{
@@ -91,6 +92,7 @@ struct CosmeticSearchInfo {
 	base_price: Option<f32>,
 	discount_rate: Option<i32>,
 	asset_id: Option<i32>,
+	created_at: DateTime<FixedOffset>,
 }
 
 impl CosmeticSearchInfo {
@@ -106,6 +108,7 @@ impl CosmeticSearchInfo {
 			base_price: cosmetic.base_price,
 			discount_rate: cosmetic.discount_rate,
 			asset_id: cosmetic.asset_id,
+			created_at: cosmetic.created_at,
 		}
 	}
 }
@@ -141,8 +144,10 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route("/cosmetics/search", get_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new().api_route(
+		"/cosmetics/search",
+		get_with(self::endpoint, self::endpoint_doc),
+	)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -196,5 +201,8 @@ async fn endpoint(
 		total_pages: if nb == 0 { 0 } else { total_items.div_ceil(nb) },
 	};
 
-	Ok(Json(SearchResponse { results, pagination }))
+	Ok(Json(SearchResponse {
+		results,
+		pagination,
+	}))
 }
