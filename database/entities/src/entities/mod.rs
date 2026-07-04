@@ -3,18 +3,18 @@
 pub mod prelude;
 
 pub mod asset;
+pub mod bundles;
+pub mod bundles_cosmetics;
+pub mod collections;
 pub mod cosmetic;
 pub mod cosmetic_allowed_slot;
 pub mod cosmetic_group;
 pub mod cosmetic_group_allowed_slot;
 pub mod cosmetic_package;
 pub mod daily_playtime;
-pub mod emote;
-pub mod emote_package;
 pub mod monthly_active_login;
 pub mod player_equipped_cosmetic;
 pub mod player_owned_cosmetic;
-pub mod player_owned_emote;
 pub mod sea_orm_active_enums;
 pub mod transaction;
 pub mod user;

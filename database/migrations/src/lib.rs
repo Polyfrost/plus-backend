@@ -21,6 +21,11 @@ mod m20260701_000001_add_stripe_transaction_provider;
 mod m20260701_000002_extend_stripe_transactions;
 mod m20260701_000003_add_transaction_recipient;
 mod m20260703_000000_logic_gifts_rewrite;
+mod m20260704_000000_create_collections_table;
+mod m20260704_000001_extend_cosmetics_info;
+mod m20260704_000002_extend_emotes_info;
+mod m20260704_000003_add_bundle_tables;
+mod m20260704_000004_drop_emotes;
 
 pub struct Migrator;
 
@@ -49,6 +54,11 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260701_000002_extend_stripe_transactions::Migration),
 			Box::new(m20260701_000003_add_transaction_recipient::Migration),
 			Box::new(m20260703_000000_logic_gifts_rewrite::Migration),
+			Box::new(m20260704_000000_create_collections_table::Migration),
+			Box::new(m20260704_000001_extend_cosmetics_info::Migration),
+			Box::new(m20260704_000002_extend_emotes_info::Migration),
+			Box::new(m20260704_000003_add_bundle_tables::Migration),
+			Box::new(m20260704_000004_drop_emotes::Migration),
 		]
 	}
 }

@@ -3,7 +3,7 @@
 use super::sea_orm_active_enums::CosmeticType;
 use sea_orm::entity::prelude::*;
 
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "cosmetic")]
 pub struct Model {
 	#[sea_orm(primary_key)]
@@ -23,6 +23,14 @@ pub struct Model {
 	pub variant_order: i32,
 	#[sea_orm(column_type = "Text", nullable)]
 	pub stripe_price_id: Option<String>,
+	#[sea_orm(column_type = "Text", nullable)]
+	pub stripe_product_id: Option<String>,
+	#[sea_orm(column_type = "Float", nullable)]
+	pub base_price: Option<f32>,
+	pub discount_rate: Option<i32>,
+	pub collection: Option<i32>,
+	#[sea_orm(column_type = "Text", nullable)]
+	pub description: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -35,6 +43,16 @@ pub enum Relation {
 		on_delete = "NoAction"
 	)]
 	Asset,
+	#[sea_orm(has_many = "super::bundles_cosmetics::Entity")]
+	BundlesCosmetics,
+	#[sea_orm(
+		belongs_to = "super::collections::Entity",
+		from = "Column::Collection",
+		to = "super::collections::Column::Id",
+		on_update = "Cascade",
+		on_delete = "SetNull"
+	)]
+	Collections,
 	#[sea_orm(has_many = "super::cosmetic_allowed_slot::Entity")]
 	CosmeticAllowedSlot,
 	#[sea_orm(
@@ -56,6 +74,18 @@ pub enum Relation {
 impl Related<super::asset::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::Asset.def()
+	}
+}
+
+impl Related<super::bundles_cosmetics::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::BundlesCosmetics.def()
+	}
+}
+
+impl Related<super::collections::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::Collections.def()
 	}
 }
 
@@ -86,6 +116,15 @@ impl Related<super::player_equipped_cosmetic::Entity> for Entity {
 impl Related<super::player_owned_cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::PlayerOwnedCosmetic.def()
+	}
+}
+
+impl Related<super::bundles::Entity> for Entity {
+	fn to() -> RelationDef {
+		super::bundles_cosmetics::Relation::Bundles.def()
+	}
+	fn via() -> Option<RelationDef> {
+		Some(super::bundles_cosmetics::Relation::Cosmetic.def().rev())
 	}
 }
 
