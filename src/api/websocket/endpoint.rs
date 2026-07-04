@@ -14,19 +14,19 @@ use axum::{
 	routing::get,
 };
 use chrono::Utc;
-use tracing::warn;
 use entities::sea_orm_active_enums::BodySlot;
 use http::{Response, StatusCode};
 use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter};
 use tokio::sync::mpsc;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
 	state::{
-		ConnectionId, EquipmentPersistence, ParticleColorPersistence,
-		PlayerRuntimeState, PlaytimeSession, RealtimeConnection,
+		ConnectionId, EquipmentPersistence, ParticleColorPersistence, PlayerRuntimeState,
+		PlaytimeSession, RealtimeConnection,
 	},
 	websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 };
@@ -36,9 +36,7 @@ const MAX_PLAYERS_PER_REQUEST: usize = 64;
 /// Max distinct players a connection may subscribe to at once (render distance).
 const MAX_PLAYER_SUBSCRIPTIONS: usize = 128;
 
-fn enforce_max_players_per_request(
-	players: &[Uuid],
-) -> Result<(), WebsocketError> {
+fn enforce_max_players_per_request(players: &[Uuid]) -> Result<(), WebsocketError> {
 	if players.len() > MAX_PLAYERS_PER_REQUEST {
 		return Err(WebsocketError::TooManyPlayersInRequest {
 			limit: MAX_PLAYERS_PER_REQUEST,
@@ -215,11 +213,15 @@ async fn validate_emote(
 	player_id: i32,
 	emote_id: i32,
 ) -> Result<(), WebsocketError> {
-	use entities::{player_owned_emote, prelude::*};
+	use entities::{
+		cosmetic, player_owned_cosmetic, prelude::*, sea_orm_active_enums::CosmeticType,
+	};
 
-	let owned = PlayerOwnedEmote::find()
-		.filter(player_owned_emote::Column::PlayerId.eq(player_id))
-		.filter(player_owned_emote::Column::EmoteId.eq(emote_id))
+	let owned = PlayerOwnedCosmetic::find()
+		.filter(player_owned_cosmetic::Column::PlayerId.eq(player_id))
+		.filter(player_owned_cosmetic::Column::CosmeticId.eq(emote_id))
+		.inner_join(Cosmetic)
+		.filter(cosmetic::Column::Type.eq(CosmeticType::Emote))
 		.one(&state.database)
 		.await?
 		.is_some();
@@ -249,8 +251,7 @@ async fn register_connection(
 		},
 	);
 	let is_first_connection = {
-		let mut connections_by_owner =
-			state.realtime.connections_by_owner.write().await;
+		let mut connections_by_owner = state.realtime.connections_by_owner.write().await;
 		let owner_connections = connections_by_owner.entry(owner).or_default();
 		let was_empty = owner_connections.is_empty();
 		owner_connections.insert(connection_id);
@@ -319,7 +320,12 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 			runtime.active_emote = None;
 		}
 
-		let session = state.realtime.playtime.write().await.remove(&connection.owner);
+		let session = state
+			.realtime
+			.playtime
+			.write()
+			.await
+			.remove(&connection.owner);
 		if let Some(session) = session {
 			let now = Utc::now();
 			if let Err(error) = crate::database::accrue_playtime(
@@ -416,7 +422,8 @@ async fn subscribe(
 	}
 
 	let loaded_equipped = load_equipped_for_players(state, &missing).await?;
-	let loaded_particle_colors = load_particle_colors_for_players(state, &missing).await?;
+	let loaded_particle_colors =
+		load_particle_colors_for_players(state, &missing).await?;
 	{
 		let mut player_runtime = state.realtime.player_runtime.write().await;
 		for (player, equipped) in &loaded_equipped {
@@ -564,10 +571,12 @@ async fn handle_msg(
 					.or_default()
 					.particle_color = color;
 			}
-			let _ = state.particle_color_persist_tx.try_send(ParticleColorPersistence {
-				player: player.minecraft_uuid,
-				color,
-			});
+			let _ = state
+				.particle_color_persist_tx
+				.try_send(ParticleColorPersistence {
+					player: player.minecraft_uuid,
+					color,
+				});
 			broadcast_to_watchers(state, player.minecraft_uuid, || {
 				ClientBoundPacket::PlayerParticleColorChanged {
 					player: player.minecraft_uuid,

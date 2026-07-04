@@ -1,13 +1,10 @@
 mod get_player;
 mod grant;
-mod grant_emote;
 mod list;
 mod list_capes;
-mod list_emotes;
 mod put_player;
 mod set_enabled;
 mod upload_cosmetic;
-mod upload_emote;
 
 use std::{
 	collections::{BTreeMap, HashMap},
@@ -251,7 +248,7 @@ impl EmoteInfo {
 		skip(cache, s3_bucket)
 	)]
 	pub async fn from_db_model(
-		value: &entities::emote::Model,
+		value: &cosmetic::Model,
 		asset: Option<&asset::Model>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
@@ -260,7 +257,10 @@ impl EmoteInfo {
 			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
 		Ok(Self {
 			id: value.id,
-			name: value.name.clone(),
+			name: value
+				.name
+				.clone()
+				.unwrap_or_else(|| format!("Emote {}", value.id)),
 			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
 			cached_info,
 		})
@@ -358,12 +358,9 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(get_player::router())
 				.merge(put_player::router())
 				.merge(upload_cosmetic::router())
-				.merge(upload_emote::router())
 				.merge(set_enabled::router())
 				.merge(grant::router())
-				.merge(grant_emote::router())
 				.merge(list_capes::router()),
 		)
-		.merge(list_emotes::router())
 		.merge(list::router())
 }

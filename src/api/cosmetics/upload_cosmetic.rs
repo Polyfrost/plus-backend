@@ -76,6 +76,7 @@ fn parse_cosmetic_type(value: &str) -> Option<CosmeticType> {
 		"aura" => Some(CosmeticType::Aura),
 		"boots" => Some(CosmeticType::Boots),
 		"shoulder" => Some(CosmeticType::Shoulder),
+		"emote" => Some(CosmeticType::Emote),
 		_ => None,
 	}
 }
@@ -130,9 +131,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("uploadCosmetic")
 		.summary("Upload a new cosmetic")
 		.description(
-			"Uploads a new image cosmetic (cape, backpack, glasses, wings, or \
-			 glove) to S3 and registers it in the database with its allowed body \
-			 slots. Emotes are uploaded via the dedicated /emote endpoint.",
+			"Uploads a new cosmetic to S3 and registers it in the database with its \
+			 allowed body slots. Emotes (type `emote`) are stored as bundles and take \
+			 no body slots.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<CosmeticInfo>, _>(|res| {
@@ -144,8 +145,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route("/upload", post_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new().api_route("/upload", post_with(self::endpoint, self::endpoint_doc))
 }
 
 struct FileUpload(Multipart);
@@ -170,11 +170,13 @@ where
 struct CosmeticUploadRequest {
 	#[schemars(with = "String")]
 	file: String,
-	/// The cosmetic type: one of `cape`, `backpack`, `glasses`, `wings`, `glove`.
+	/// The cosmetic type: one of `cape`, `backpack`, `glasses`, `wings`, `glove`,
+	/// `hat`, `aura`, `boots`, `shoulder`, `emote`.
 	r#type: String,
 	/// Optional display name; defaults to the type name.
 	name: Option<String>,
 	/// One or more allowed body slots (repeat the field for multiple).
+	/// not required for emotes
 	slots: Vec<String>,
 	/// Optional group name. When set, this cosmetic becomes a variant of the
 	/// (find-or-created) group of the same name and type, so the player buys
@@ -256,8 +258,7 @@ async fn endpoint(
 			Some("type") => {
 				let value = field.text().await?;
 				cosmetic_type = Some(
-					parse_cosmetic_type(value.trim())
-						.ok_or(UploadError::InvalidType)?,
+					parse_cosmetic_type(value.trim()).ok_or(UploadError::InvalidType)?,
 				);
 			}
 			Some("name") => {
@@ -269,9 +270,8 @@ async fn endpoint(
 			}
 			Some("slots") => {
 				let value = field.text().await?;
-				slots.push(
-					parse_body_slot(value.trim()).ok_or(UploadError::InvalidSlot)?,
-				);
+				slots
+					.push(parse_body_slot(value.trim()).ok_or(UploadError::InvalidSlot)?);
 			}
 			Some("group") => {
 				let value = field.text().await?;
@@ -308,7 +308,9 @@ async fn endpoint(
 		return Err(UploadError::MissingFile);
 	};
 	let cosmetic_type = cosmetic_type.ok_or(UploadError::InvalidType)?;
-	if slots.is_empty() {
+
+	let is_emote = matches!(cosmetic_type, CosmeticType::Emote);
+	if !is_emote && slots.is_empty() {
 		return Err(UploadError::MissingSlots);
 	}
 
@@ -318,12 +320,19 @@ async fn endpoint(
 	} else {
 		data.to_vec()
 	};
-	let asset_kind = if is_bundle {
+	if is_bundle {
 		extension = "zip".to_string();
 		content_type = Some("application/zip".to_string());
+	}
+	let asset_kind = if is_emote || is_bundle {
 		AssetKind::Bundle
 	} else {
 		AssetKind::Image
+	};
+	let default_content_type = if is_emote {
+		"application/zip"
+	} else {
+		"image/png"
 	};
 
 	let path = format!(
@@ -338,7 +347,7 @@ async fn endpoint(
 		.put_object_with_content_type(
 			&path,
 			&data,
-			content_type.as_deref().unwrap_or("image/png"),
+			content_type.as_deref().unwrap_or(default_content_type),
 		)
 		.await?;
 
@@ -351,7 +360,7 @@ async fn endpoint(
 		storage_path: Set(Some(path)),
 		url: Set(None),
 		asset_kind: Set(asset_kind),
-		content_type: Set(content_type.or_else(|| Some("image/png".to_string()))),
+		content_type: Set(content_type.or_else(|| Some(default_content_type.to_string()))),
 		hash: Set(Some(sha256_hex(&data))),
 		..Default::default()
 	}
@@ -367,24 +376,28 @@ async fn endpoint(
 				.await?;
 			let group = match existing {
 				Some(group) => group,
-				None => cosmetic_group::ActiveModel {
-					name: Set(group_name),
-					r#type: Set(cosmetic_type.clone()),
-					enabled: Set(true),
-					..Default::default()
+				None => {
+					cosmetic_group::ActiveModel {
+						name: Set(group_name),
+						r#type: Set(cosmetic_type.clone()),
+						enabled: Set(true),
+						..Default::default()
+					}
+					.insert(&state.database)
+					.await?
 				}
-				.insert(&state.database)
-				.await?,
 			};
-			cosmetic_group_allowed_slot::Entity::insert_many(slots.iter().map(|slot| {
-				cosmetic_group_allowed_slot::ActiveModel {
-					group_id: Set(group.id),
-					slot: Set(slot.clone()),
-				}
-			}))
-			.on_conflict_do_nothing()
-			.exec(&state.database)
-			.await?;
+			if !slots.is_empty() {
+				cosmetic_group_allowed_slot::Entity::insert_many(slots.iter().map(
+					|slot| cosmetic_group_allowed_slot::ActiveModel {
+						group_id: Set(group.id),
+						slot: Set(slot.clone()),
+					},
+				))
+				.on_conflict_do_nothing()
+				.exec(&state.database)
+				.await?;
+			}
 			Some(group)
 		}
 		None => None,
@@ -406,14 +419,16 @@ async fn endpoint(
 	.insert(&state.database)
 	.await?;
 
-	cosmetic_allowed_slot::Entity::insert_many(slots.iter().map(|slot| {
-		cosmetic_allowed_slot::ActiveModel {
-			cosmetic_id: Set(model.id),
-			slot: Set(slot.clone()),
-		}
-	}))
-	.exec(&state.database)
-	.await?;
+	if !slots.is_empty() {
+		cosmetic_allowed_slot::Entity::insert_many(slots.iter().map(|slot| {
+			cosmetic_allowed_slot::ActiveModel {
+				cosmetic_id: Set(model.id),
+				slot: Set(slot.clone()),
+			}
+		}))
+		.exec(&state.database)
+		.await?;
+	}
 
 	let info = crate::api::cosmetics::CachedAssetInfo::from_db_model(
 		&asset,

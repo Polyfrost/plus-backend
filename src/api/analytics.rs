@@ -12,8 +12,8 @@ use axum::{
 };
 use chrono::{Days, Utc};
 use entities::{
-	daily_playtime, monthly_active_login, player_owned_cosmetic, player_owned_emote,
-	prelude::*, sea_orm_active_enums::PlayerRole,
+	daily_playtime, monthly_active_login, player_owned_cosmetic, prelude::*,
+	sea_orm_active_enums::PlayerRole,
 };
 use schemars::JsonSchema;
 use sea_orm::{
@@ -259,17 +259,9 @@ async fn endpoint(
 		.into_model::<PlayerOwnedCount>()
 		.all(&state.database)
 		.await?;
-	let emote_counts = PlayerOwnedEmote::find()
-		.select_only()
-		.column(player_owned_emote::Column::PlayerId)
-		.column_as(player_owned_emote::Column::EmoteId.count(), "count")
-		.group_by(player_owned_emote::Column::PlayerId)
-		.into_model::<PlayerOwnedCount>()
-		.all(&state.database)
-		.await?;
 
 	let mut owned_by_player = std::collections::HashMap::new();
-	for count in cosmetic_counts.into_iter().chain(emote_counts) {
+	for count in cosmetic_counts {
 		*owned_by_player.entry(count.player_id).or_insert(0) += count.count;
 	}
 	let owned_counts = OwnedItemsCounts::from_player_counts(

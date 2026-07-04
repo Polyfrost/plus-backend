@@ -103,8 +103,8 @@ async fn endpoint(
 
 	{
 		use entities::{
-			player_equipped_cosmetic, player_owned_cosmetic, player_owned_emote,
-			prelude::*, user,
+			player_equipped_cosmetic, player_owned_cosmetic, prelude::*,
+			sea_orm_active_enums::CosmeticType, user,
 		};
 
 		let Some(player) = User::find()
@@ -117,20 +117,41 @@ async fn endpoint(
 
 		response.particle_color = player.particle_color;
 
-		let cosmetics = PlayerOwnedCosmetic::find()
+		let owned = PlayerOwnedCosmetic::find()
 			.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
 			.find_also_related(Cosmetic)
 			.all(&state.database)
 			.await?;
 
 		let mut rows = Vec::new();
-		for cosmetic in cosmetics.into_iter().filter_map(|(_, c)| c).filter(|c| c.enabled) {
+		let mut emote_tasks = JoinSet::new();
+		for cosmetic in owned
+			.into_iter()
+			.filter_map(|(_, c)| c)
+			.filter(|c| c.enabled)
+		{
 			let asset = match cosmetic.asset_id {
 				Some(asset_id) => {
 					Asset::find_by_id(asset_id).one(&state.database).await?
 				}
 				None => None,
 			};
+
+			if matches!(cosmetic.r#type, CosmeticType::Emote) {
+				let asset_cache = state.asset_cache.clone();
+				let s3_bucket = state.s3_bucket.clone();
+				emote_tasks.spawn(async move {
+					EmoteInfo::from_db_model(
+						&cosmetic,
+						asset.as_ref(),
+						asset_cache,
+						s3_bucket,
+					)
+					.await
+				});
+				continue;
+			}
+
 			let allowed_slots = cosmetic
 				.find_related(CosmeticAllowedSlot)
 				.all(&state.database)
@@ -150,29 +171,8 @@ async fn endpoint(
 		)
 		.await?;
 
-		let emotes = PlayerOwnedEmote::find()
-			.filter(player_owned_emote::Column::PlayerId.eq(player.id))
-			.find_also_related(Emote)
-			.all(&state.database)
-			.await?;
-
-		let mut tasks = JoinSet::new();
-		for emote in emotes.into_iter().filter_map(|(_, e)| e) {
-			let asset = match emote.asset_id {
-				Some(asset_id) => {
-					Asset::find_by_id(asset_id).one(&state.database).await?
-				}
-				None => None,
-			};
-			let asset_cache = state.asset_cache.clone();
-			let s3_bucket = state.s3_bucket.clone();
-			tasks.spawn(async move {
-				EmoteInfo::from_db_model(&emote, asset.as_ref(), asset_cache, s3_bucket)
-					.await
-			});
-		}
 		response.emotes.extend(
-			tasks
+			emote_tasks
 				.join_all()
 				.await
 				.into_iter()

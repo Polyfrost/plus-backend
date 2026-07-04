@@ -4,12 +4,14 @@ use axum::{
 	http::{HeaderMap, StatusCode},
 };
 use entities::{
-	cosmetic, emote, player_owned_cosmetic, player_owned_emote,
+	cosmetic, player_owned_cosmetic,
 	prelude::*,
-	sea_orm_active_enums::{TransactionProvider, TransactionStatus},
+	sea_orm_active_enums::{CosmeticType, TransactionProvider, TransactionStatus},
 	transaction,
 };
-use sea_orm::{ActiveValue, DbErr, TransactionError, TransactionTrait, prelude::*};
+use sea_orm::{
+	ActiveValue, DbErr, PaginatorTrait, TransactionError, TransactionTrait, prelude::*,
+};
 use stripe_checkout::checkout_session::ListCheckoutSession;
 use stripe_shared::{Charge, CheckoutSessionPaymentStatus};
 use stripe_webhook::{EventObject, Webhook};
@@ -144,33 +146,13 @@ pub(super) async fn endpoint(
 						.on_conflict_do_nothing()
 						.exec(txn)
 						.await?;
-						grant
-							.cosmetic_ids
-							.extend(cosmetics.into_iter().map(|cosmetic| cosmetic.id));
-					}
-
-					let emotes = Emote::find()
-						.filter(emote::Column::StripePriceId.eq(price.as_str()))
-						.all(txn)
-						.await?;
-					if !emotes.is_empty() {
-						PlayerOwnedEmote::insert_many(emotes.iter().map(|emote| {
-							player_owned_emote::ActiveModel {
-								player_id: ActiveValue::Set(user.id),
-								emote_id: ActiveValue::Set(emote.id),
-								acquired_via: ActiveValue::Set(
-									TransactionProvider::Stripe,
-								),
-								transaction_id: ActiveValue::Set(Some(transaction.id)),
-								..Default::default()
+						for cosmetic in cosmetics {
+							if matches!(cosmetic.r#type, CosmeticType::Emote) {
+								grant.emote_ids.push(cosmetic.id);
+							} else {
+								grant.cosmetic_ids.push(cosmetic.id);
 							}
-						}))
-						.on_conflict_do_nothing()
-						.exec(txn)
-						.await?;
-						grant
-							.emote_ids
-							.extend(emotes.into_iter().map(|emote| emote.id));
+						}
 					}
 				}
 
@@ -293,15 +275,18 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 				)
 				.await?;
 
-				// Revoke every cosmetic and emote this transaction granted.
-				let cosmetics = PlayerOwnedCosmetic::delete_many()
+				let emotes = PlayerOwnedCosmetic::find()
 					.filter(
 						player_owned_cosmetic::Column::TransactionId.eq(transaction.id),
 					)
-					.exec(txn)
+					.inner_join(Cosmetic)
+					.filter(cosmetic::Column::Type.eq(CosmeticType::Emote))
+					.count(txn)
 					.await?;
-				let emotes = PlayerOwnedEmote::delete_many()
-					.filter(player_owned_emote::Column::TransactionId.eq(transaction.id))
+				let deleted = PlayerOwnedCosmetic::delete_many()
+					.filter(
+						player_owned_cosmetic::Column::TransactionId.eq(transaction.id),
+					)
 					.exec(txn)
 					.await?;
 
@@ -309,7 +294,7 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 				transaction.status = ActiveValue::Set(TransactionStatus::Refunded);
 				transaction.update(txn).await?;
 
-				Ok((cosmetics.rows_affected, emotes.rows_affected))
+				Ok((deleted.rows_affected - emotes, emotes))
 			})
 		})
 		.await;
