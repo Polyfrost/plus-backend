@@ -2,10 +2,9 @@ mod get_player;
 mod grant;
 mod list;
 mod list_capes;
+mod manage;
 mod put_player;
 mod search;
-mod set_enabled;
-mod upload_cosmetic;
 mod view;
 
 use std::{
@@ -359,8 +358,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			ApiRouter::new()
 				.merge(get_player::router())
 				.merge(put_player::router())
-				.merge(upload_cosmetic::router())
-				.merge(set_enabled::router())
+				.merge(manage::router())
 				.merge(grant::router())
 				.merge(list_capes::router()),
 		)

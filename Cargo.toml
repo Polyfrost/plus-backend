@@ -69,7 +69,9 @@ async-stripe-webhook = { version = "1.0.0-rc.6", features = [
   "async-stripe-core",
 ] }
 async-stripe-checkout = { version = "1.0.0-rc.6", features = ["checkout_session"] }
+async-stripe-product = { version = "1.0.0-rc.6", features = ["product", "price"] }
 async-stripe-shared = { version = "1.0.0-rc.6" }
+async-stripe-types = { version = "1.0.0-rc.6" }
 # Normal dependencies
 tokio.workspace = true
 tower = "0.5.2"

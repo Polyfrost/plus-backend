@@ -33,10 +33,14 @@ pub enum UploadError {
 	MissingSlots,
 	#[error("Invalid body slot")]
 	InvalidSlot,
+	#[error("A base price is required to create a new Stripe product")]
+	MissingPrice,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("S3 error: {0}")]
 	S3(#[from] s3::error::S3Error),
+	#[error("Stripe error: {0}")]
+	Stripe(#[from] stripe_client::StripeError),
 	#[error("Multipart error: {0}")]
 	Multipart(#[from] axum::extract::multipart::MultipartError),
 	#[error("Multipart rejection: {0}")]
@@ -53,8 +57,10 @@ impl IntoResponse for UploadError {
 				| Self::InvalidType
 				| Self::MissingSlots
 				| Self::InvalidSlot
+				| Self::MissingPrice
 				| Self::Zip(_)
 				| Self::Rejection(_) => StatusCode::BAD_REQUEST,
+				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) | Self::S3(_) | Self::Multipart(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
@@ -128,16 +134,17 @@ fn storage_prefix(cosmetic_type: &CosmeticType) -> &'static str {
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
-	op.id("uploadCosmetic")
-		.summary("Upload a new cosmetic")
+	op.id("createCosmetic")
+		.summary("Create a new cosmetic")
 		.description(
 			"Uploads a new cosmetic to S3 and registers it in the database with its \
-			 allowed body slots. Emotes (type `emote`) are stored as bundles and take \
-			 no body slots.",
+			 allowed body slots, then provisions a Stripe product and price for it. \
+			 A cosmetic joining an existing group reuses that group's Stripe ids. \
+			 Emotes (type `emote`) are stored as bundles and take no body slots.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<CosmeticInfo>, _>(|res| {
-			res.description("The uploaded cosmetic info")
+			res.description("The created cosmetic info")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
 			res.description("Invalid or missing admin password")
@@ -145,7 +152,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route("/upload", post_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new().api_route("/create", post_with(self::endpoint, self::endpoint_doc))
 }
 
 struct FileUpload(Multipart);
@@ -175,6 +182,13 @@ struct CosmeticUploadRequest {
 	r#type: String,
 	/// Optional display name; defaults to the type name.
 	name: Option<String>,
+	/// Optional long-form description for the catalog and Stripe product.
+	description: Option<String>,
+	/// Optional id of the collection this cosmetic belongs to.
+	collection: Option<i32>,
+	/// The price in USD major units (e.g. `4.99`). Required when a new Stripe
+	/// product must be created; ignored when reusing an existing group's price.
+	base_price: Option<f32>,
 	/// One or more allowed body slots (repeat the field for multiple).
 	/// not required for emotes
 	slots: Vec<String>,
@@ -238,6 +252,9 @@ async fn endpoint(
 	let mut extension = "png".to_string();
 	let mut cosmetic_type = None;
 	let mut name = None;
+	let mut description = None;
+	let mut collection = None;
+	let mut base_price = None;
 	let mut slots = Vec::new();
 	let mut group_name = None;
 	let mut variant_name = None;
@@ -266,6 +283,25 @@ async fn endpoint(
 				let trimmed = value.trim();
 				if !trimmed.is_empty() {
 					name = Some(trimmed.to_string());
+				}
+			}
+			Some("description") => {
+				let value = field.text().await?;
+				let trimmed = value.trim();
+				if !trimmed.is_empty() {
+					description = Some(trimmed.to_string());
+				}
+			}
+			Some("collection") => {
+				let value = field.text().await?;
+				if let Ok(parsed) = value.trim().parse::<i32>() {
+					collection = Some(parsed);
+				}
+			}
+			Some("base_price") => {
+				let value = field.text().await?;
+				if let Ok(parsed) = value.trim().parse::<f32>() {
+					base_price = Some(parsed);
 				}
 			}
 			Some("slots") => {
@@ -403,17 +439,68 @@ async fn endpoint(
 		None => None,
 	};
 
+	let resolved_name = name.unwrap_or_else(|| default_name(&cosmetic_type).to_string());
+
+	// Resolve the Stripe product/price: variants share one product and price, so
+	// reuse an existing group sibling's ids when present, otherwise create them.
+	let sibling = match &group {
+		Some(group) => {
+			Cosmetic::find()
+				.filter(cosmetic::Column::GroupId.eq(group.id))
+				.filter(cosmetic::Column::StripeProductId.is_not_null())
+				.filter(cosmetic::Column::StripePriceId.is_not_null())
+				.one(&state.database)
+				.await?
+		}
+		None => None,
+	};
+
+	let (stripe_product_id, stripe_price_id, price_value, discount_rate) = match sibling {
+		Some(sibling) => (
+			sibling.stripe_product_id,
+			sibling.stripe_price_id,
+			sibling.base_price,
+			sibling.discount_rate,
+		),
+		None => {
+			let base_price = base_price.ok_or(UploadError::MissingPrice)?;
+			let product_name = group
+				.as_ref()
+				.map(|g| g.name.as_str())
+				.unwrap_or(resolved_name.as_str());
+			let product_id = super::create_product(
+				&state.stripe.client,
+				product_name,
+				description.as_deref(),
+			)
+			.await?;
+			let price_id = super::create_price(
+				&state.stripe.client,
+				&product_id,
+				super::to_cents(base_price),
+			)
+			.await?;
+			super::set_default_price(&state.stripe.client, &product_id, &price_id)
+				.await?;
+			(Some(product_id), Some(price_id), Some(base_price), None)
+		}
+	};
+
 	let model = cosmetic::ActiveModel {
 		asset_id: Set(Some(asset.id)),
-		name: Set(Some(
-			name.unwrap_or_else(|| default_name(&cosmetic_type).to_string()),
-		)),
+		name: Set(Some(resolved_name)),
 		r#type: Set(cosmetic_type),
 		enabled: Set(true),
 		group_id: Set(group.as_ref().map(|g| g.id)),
 		variant_name: Set(variant_name),
 		model_variant: Set(model_variant),
 		variant_order: Set(variant_order),
+		stripe_product_id: Set(stripe_product_id),
+		stripe_price_id: Set(stripe_price_id),
+		base_price: Set(price_value),
+		discount_rate: Set(discount_rate),
+		collection: Set(collection),
+		description: Set(description),
 		..Default::default()
 	}
 	.insert(&state.database)
