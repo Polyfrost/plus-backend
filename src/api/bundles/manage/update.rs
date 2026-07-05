@@ -14,11 +14,11 @@ use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor, stripe::pro
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum UpdateError {
-	#[error("The requested cosmetic does not exist")]
-	MissingCosmetic,
-	#[error("The cosmetic has no Stripe product to price")]
+	#[error("The requested bundle does not exist")]
+	MissingBundle,
+	#[error("The bundle has no Stripe product to price")]
 	MissingProduct,
-	#[error("The cosmetic has no base price to discount from")]
+	#[error("The bundle has no base price to discount from")]
 	MissingBasePrice,
 	#[error("A discount requires either a discount rate or a new price")]
 	InvalidDiscount,
@@ -32,7 +32,7 @@ impl IntoResponse for UpdateError {
 	fn into_response(self) -> axum::response::Response {
 		(
 			match self {
-				Self::MissingCosmetic => StatusCode::NOT_FOUND,
+				Self::MissingBundle => StatusCode::NOT_FOUND,
 				Self::MissingProduct
 				| Self::MissingBasePrice
 				| Self::InvalidDiscount => StatusCode::BAD_REQUEST,
@@ -45,7 +45,7 @@ impl IntoResponse for UpdateError {
 	}
 }
 
-/// The pricing columns a request resolves to, applied to every affected row.
+/// The pricing columns a request resolves to.
 struct PriceUpdate {
 	stripe_price_id: String,
 	/// Set only on a silent increase; left untouched for a discount.
@@ -56,18 +56,20 @@ struct PriceUpdate {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct UpdateRequest {
-	/// The id of the cosmetic (or any of its variants) to update.
-	cosmetic_id: i32,
-	/// When set, toggles the enabled flag (of the group when grouped).
+	/// The id of the bundle to update.
+	bundle_id: i32,
+	/// When set, toggles the enabled flag.
 	enabled: Option<bool>,
-	/// When set, renames the cosmetic (the group when grouped).
+	/// When set, renames the bundle.
 	name: Option<String>,
-	/// When present, sets (or clears with null) the collection on every variant.
+	/// When present, sets (or clears with null) the collection.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	collection: Option<Option<i32>>,
-	/// When present, sets (or clears with null) the description on every variant.
+	/// When present, sets (or clears with null) the description.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	description: Option<Option<String>>,
+	/// When present, replaces the bundle's contained cosmetics with this set.
+	cosmetic_ids: Option<Vec<i32>>,
 	/// A new price in USD major units. Without `discount` this is a silent
 	/// increase; with `discount` it is the discounted price.
 	new_price: Option<f32>,
@@ -80,22 +82,20 @@ struct UpdateRequest {
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
-	op.id("updateCosmetic")
-		.summary("Update a cosmetic")
+	op.id("updateBundle")
+		.summary("Update a bundle")
 		.description(
-			"Updates a cosmetic's metadata (enabled, name, collection, \
-			 description) and drives its Stripe pricing. A silent price increase \
-			 creates a new default price; a discount creates a non-default price \
-			 and records the rate. For a grouped cosmetic, name/enabled apply to \
-			 the group and price changes propagate to every variant. Admin \
-			 password required.",
+			"Updates a bundle's metadata (enabled, name, collection, description), \
+			 optionally replaces its contained cosmetics, and drives its Stripe \
+			 pricing. A silent price increase creates a new default price; a discount \
+			 creates a non-default price and records the rate. Admin password required.",
 		)
-		.tag("cosmetics")
+		.tag("bundles")
 		.response_with::<{ StatusCode::NO_CONTENT.as_u16() }, (), _>(|res| {
-			res.description("The cosmetic was updated")
+			res.description("The bundle was updated")
 		})
 		.response_with::<{ StatusCode::NOT_FOUND.as_u16() }, String, _>(|res| {
-			res.description("No cosmetic exists with the given id")
+			res.description("No bundle exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
 			res.description("Invalid or missing admin password")
@@ -112,25 +112,25 @@ async fn endpoint(
 	_auth: AdminAuthenticationExtractor,
 	Json(body): Json<UpdateRequest>,
 ) -> Result<StatusCode, UpdateError> {
-	use entities::{cosmetic, cosmetic_group, prelude::*};
+	use entities::{bundles, bundles_cosmetics, prelude::*};
 
-	let Some(cosmetic) = Cosmetic::find_by_id(body.cosmetic_id)
+	let Some(bundle) = Bundles::find_by_id(body.bundle_id)
 		.one(&state.database)
 		.await?
 	else {
-		return Err(UpdateError::MissingCosmetic);
+		return Err(UpdateError::MissingBundle);
 	};
 
 	// Resolve the pricing change (if any) against Stripe before touching the
-	// database. Variants share one product and price, so this runs once.
+	// database.
 	let price_update = if body.new_price.is_some() || body.discount {
-		let product_id = cosmetic
+		let product_id = bundle
 			.stripe_product_id
 			.as_deref()
 			.ok_or(UpdateError::MissingProduct)?;
 
 		if body.discount {
-			let base = cosmetic.base_price.ok_or(UpdateError::MissingBasePrice)?;
+			let base = bundle.base_price.ok_or(UpdateError::MissingBasePrice)?;
 			let (discounted, rate) = match (body.discount_rate, body.new_price) {
 				(Some(rate), _) => (base * (1.0 - rate as f32 / 100.0), rate),
 				(None, Some(new_price)) => {
@@ -161,8 +161,7 @@ async fn endpoint(
 				products::to_cents(new_price),
 			)
 			.await?;
-			products::set_default_price(&state.stripe.client, product_id, &price_id)
-				.await?;
+			products::set_default_price(&state.stripe.client, product_id, &price_id).await?;
 
 			Some(PriceUpdate {
 				stripe_price_id: price_id,
@@ -176,70 +175,57 @@ async fn endpoint(
 
 	let txn = state.database.begin().await?;
 
-	// Grouped cosmetics carry name/enabled on the group; ungrouped ones on the
-	// row itself (handled below with the other row-level columns).
-	if let Some(group_id) = cosmetic.group_id
-		&& (body.name.is_some() || body.enabled.is_some())
-		&& let Some(group) = CosmeticGroup::find_by_id(group_id).one(&txn).await?
-	{
-		let mut active: cosmetic_group::ActiveModel = group.into();
-		if let Some(name) = &body.name {
-			active.name = Set(name.clone());
+	let mut active: bundles::ActiveModel = bundle.into();
+	let mut changed = false;
+
+	if let Some(name) = &body.name {
+		active.name = Set(name.clone());
+		changed = true;
+	}
+	if let Some(enabled) = body.enabled {
+		active.enabled = Set(enabled);
+		changed = true;
+	}
+	if let Some(collection) = &body.collection {
+		active.collection = Set(*collection);
+		changed = true;
+	}
+	if let Some(description) = &body.description {
+		active.description = Set(description.clone());
+		changed = true;
+	}
+	if let Some(price) = &price_update {
+		active.stripe_price_id = Set(Some(price.stripe_price_id.clone()));
+		if let Some(base) = price.base_price {
+			active.base_price = Set(Some(base));
 		}
-		if let Some(enabled) = body.enabled {
-			active.enabled = Set(enabled);
+		if let Some(rate) = price.discount_rate {
+			active.discount_rate = Set(Some(rate));
 		}
+		changed = true;
+	}
+
+	if changed {
 		active.update(&txn).await?;
 	}
 
-	// Apply collection/description/price to every affected row, plus name/enabled
-	// for ungrouped cosmetics.
-	let rows = match cosmetic.group_id {
-		Some(group_id) => {
-			Cosmetic::find()
-				.filter(cosmetic::Column::GroupId.eq(group_id))
-				.all(&txn)
-				.await?
-		}
-		None => vec![cosmetic.clone()],
-	};
+	// Replace the bundle's contents when a new set was provided.
+	if let Some(cosmetic_ids) = &body.cosmetic_ids {
+		BundlesCosmetics::delete_many()
+			.filter(bundles_cosmetics::Column::BundleId.eq(body.bundle_id))
+			.exec(&txn)
+			.await?;
 
-	for row in rows {
-		let is_grouped = row.group_id.is_some();
-		let mut active: cosmetic::ActiveModel = row.into();
-		let mut changed = false;
-
-		if let Some(collection) = &body.collection {
-			active.collection = Set(*collection);
-			changed = true;
-		}
-		if let Some(description) = &body.description {
-			active.description = Set(description.clone());
-			changed = true;
-		}
-		if let Some(price) = &price_update {
-			active.stripe_price_id = Set(Some(price.stripe_price_id.clone()));
-			if let Some(base) = price.base_price {
-				active.base_price = Set(Some(base));
-			}
-			if let Some(rate) = price.discount_rate {
-				active.discount_rate = Set(Some(rate));
-			}
-			changed = true;
-		}
-		if !is_grouped {
-			if let Some(name) = &body.name {
-				active.name = Set(Some(name.clone()));
-				changed = true;
-			}
-			if let Some(enabled) = body.enabled {
-				active.enabled = Set(enabled);
-				changed = true;
-			}
-		}
-
-		if changed {
-			active.update(&txn).await?;
+		if !cosmetic_ids.is_empty() {
+			BundlesCosmetics::insert_many(cosmetic_ids.iter().map(|cosmetic_id| {
+				bundles_cosmetics::ActiveModel {
+					bundle_id: Set(body.bundle_id),
+					cosmetic_id: Set(*cosmetic_id),
+				}
+			}))
+			.on_conflict_do_nothing()
+			.exec(&txn)
+			.await?;
 		}
 	}
 

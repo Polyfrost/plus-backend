@@ -1,4 +1,5 @@
 mod create;
+pub(in crate::api) mod products;
 mod webhook;
 
 use aide::axum::{ApiRouter, routing::post_with};

@@ -21,6 +21,7 @@ use crate::api::{
 	ApiState,
 	admin_auth::AdminAuthenticationExtractor,
 	cosmetics::{CosmeticInfo, group_cosmetics},
+	stripe::products,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -468,19 +469,19 @@ async fn endpoint(
 				.as_ref()
 				.map(|g| g.name.as_str())
 				.unwrap_or(resolved_name.as_str());
-			let product_id = super::create_product(
+			let product_id = products::create_product(
 				&state.stripe.client,
 				product_name,
 				description.as_deref(),
 			)
 			.await?;
-			let price_id = super::create_price(
+			let price_id = products::create_price(
 				&state.stripe.client,
 				&product_id,
-				super::to_cents(base_price),
+				products::to_cents(base_price),
 			)
 			.await?;
-			super::set_default_price(&state.stripe.client, &product_id, &price_id)
+			products::set_default_price(&state.stripe.client, &product_id, &price_id)
 				.await?;
 			(Some(product_id), Some(price_id), Some(base_price), None)
 		}
