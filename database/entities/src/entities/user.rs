@@ -14,6 +14,7 @@ pub struct Model {
 	pub blacklisted: bool,
 	pub role: PlayerRole,
 	pub particle_color: Option<i32>,
+	pub refund_count: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

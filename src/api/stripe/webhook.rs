@@ -7,7 +7,7 @@ use entities::{
 	bundles, bundles_cosmetics, cosmetic, player_owned_cosmetic,
 	prelude::*,
 	sea_orm_active_enums::{CosmeticType, TransactionProvider, TransactionStatus},
-	transaction,
+	transaction, user,
 };
 use sea_orm::{
 	ActiveValue, DbErr, TransactionError, TransactionTrait, prelude::*, sea_query::Query,
@@ -292,7 +292,7 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 				let buyer_id = if buyer != player {
 					Some(User::get_or_create(txn, buyer).await?.id)
 				} else {
-					None
+					Some(user.id)
 				};
 				let transaction = Transaction::get_or_create_stripe(
 					txn,
@@ -340,6 +340,15 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 				let mut transaction: transaction::ActiveModel = transaction.into();
 				transaction.status = ActiveValue::Set(TransactionStatus::Refunded);
 				transaction.update(txn).await?;
+
+				User::update_many()
+					.col_expr(
+						user::Column::RefundCount,
+						Expr::column(user::Column::RefundCount).add(1),
+					)
+					.filter(user::Column::Id.eq(buyer_id))
+					.exec(txn)
+					.await?;
 
 				Ok(revoked)
 			})
