@@ -12,7 +12,7 @@ use axum::{
 use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::Serialize;
 
 use crate::api::{
@@ -55,13 +55,30 @@ pub struct ViewResponse {
 	asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
 	tags: CosmeticTags,
+	/// The enabled sibling variants of this cosmetic (those sharing its group),
+	/// if any. Present only for a grouped cosmetic and never includes the
+	/// cosmetic itself. Price and Stripe price id are omitted as they are shared
+	/// across every variant.
+	variants: Option<Vec<VariantView>>,
+}
+
+/// A sibling variant of the viewed cosmetic.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct VariantView {
+	id: i32,
+	variant_name: Option<String>,
+	model_variant: Option<String>,
+	variant_order: i32,
+	asset_id: Option<i32>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("viewCosmetic")
 		.summary("View a cosmetic")
 		.description(
-			"Returns the Stripe price id of an enabled cosmetic (including emotes).",
+			"Returns the Stripe price id of an enabled cosmetic (including \
+			 emotes). For a grouped cosmetic, `variants` lists its other enabled \
+			 siblings (price and price id omitted, as they are shared).",
 		)
 		.tag("cosmetics")
 }
@@ -90,6 +107,33 @@ async fn endpoint(
 			.remove(&cosmetic.id)
 			.unwrap_or_default();
 
+		// Grouped cosmetics carry sibling variants; load the others in the group.
+		let variants = if let Some(group_id) = cosmetic.group_id {
+			let siblings = Cosmetic::find()
+				.filter(cosmetic::Column::GroupId.eq(group_id))
+				.filter(cosmetic::Column::Id.ne(cosmetic.id))
+				.filter(cosmetic::Column::Enabled.eq(true))
+				.order_by_asc(cosmetic::Column::VariantOrder)
+				.order_by_asc(cosmetic::Column::Id)
+				.all(&state.database)
+				.await?;
+
+			Some(
+				siblings
+					.into_iter()
+					.map(|s| VariantView {
+						id: s.id,
+						variant_name: s.variant_name,
+						model_variant: s.model_variant,
+						variant_order: s.variant_order,
+						asset_id: s.asset_id,
+					})
+					.collect(),
+			)
+		} else {
+			None
+		};
+
 		Ok(Json(ViewResponse {
 			stripe_price_id: cosmetic.stripe_price_id,
 			id: cosmetic.id,
@@ -104,6 +148,7 @@ async fn endpoint(
 			asset_id: cosmetic.asset_id,
 			created_at: cosmetic.created_at,
 			tags,
+			variants,
 		}))
 	} else {
 		Err(ViewError::NotFound)

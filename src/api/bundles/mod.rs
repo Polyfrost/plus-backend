@@ -41,6 +41,8 @@ impl From<bundles::Model> for BundleInfo {
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new().nest(
 		"/bundles",
-		search::router().merge(view::router()).merge(manage::router()),
+		search::router()
+			.merge(view::router())
+			.merge(manage::router()),
 	)
 }
