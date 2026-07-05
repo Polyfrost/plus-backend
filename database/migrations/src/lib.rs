@@ -28,6 +28,7 @@ mod m20260704_000003_add_bundle_tables;
 mod m20260704_000004_drop_emotes;
 mod m20260705_000000_create_tags_tables;
 mod m20260705_000001_extend_user_payment_info;
+mod m20260705_000002_extend_collections;
 
 pub struct Migrator;
 
@@ -63,6 +64,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260704_000004_drop_emotes::Migration),
 			Box::new(m20260705_000000_create_tags_tables::Migration),
 			Box::new(m20260705_000001_extend_user_payment_info::Migration),
+			Box::new(m20260705_000002_extend_collections::Migration),
 		]
 	}
 }

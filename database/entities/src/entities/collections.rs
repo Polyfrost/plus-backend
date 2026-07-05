@@ -12,14 +12,29 @@ pub struct Model {
 	#[sea_orm(column_type = "Text", nullable)]
 	pub description: Option<String>,
 	pub created_at: DateTimeWithTimeZone,
+	pub asset_id: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+	#[sea_orm(
+		belongs_to = "super::asset::Entity",
+		from = "Column::AssetId",
+		to = "super::asset::Column::Id",
+		on_update = "NoAction",
+		on_delete = "NoAction"
+	)]
+	Asset,
 	#[sea_orm(has_many = "super::bundles::Entity")]
 	Bundles,
 	#[sea_orm(has_many = "super::cosmetic::Entity")]
 	Cosmetic,
+}
+
+impl Related<super::asset::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::Asset.def()
+	}
 }
 
 impl Related<super::bundles::Entity> for Entity {

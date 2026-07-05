@@ -3,6 +3,7 @@ pub(crate) mod admin_auth;
 mod analytics;
 mod assets;
 mod bundles;
+mod collections;
 mod cosmetics;
 mod players;
 mod state;
@@ -105,6 +106,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.nest("/transactions", transactions::setup_router().await)
 		.merge(assets::setup_router().await)
 		.merge(bundles::setup_router().await)
+		.merge(collections::setup_router().await)
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
