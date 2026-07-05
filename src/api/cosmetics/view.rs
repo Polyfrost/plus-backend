@@ -15,7 +15,10 @@ use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 
-use crate::api::ApiState;
+use crate::api::{
+	ApiState,
+	tags::{CosmeticTags, tags_for_cosmetics},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ViewError {
@@ -51,14 +54,14 @@ pub struct ViewResponse {
 	discount_rate: Option<i32>,
 	asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
+	tags: CosmeticTags,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("viewCosmetic")
 		.summary("View a cosmetic")
 		.description(
-			"Returns the Stripe price id of an enabled cosmetic (including emotes). \
-			 Use `type` to restrict the lookup to a single cosmetic type.",
+			"Returns the Stripe price id of an enabled cosmetic (including emotes).",
 		)
 		.tag("cosmetics")
 }
@@ -82,6 +85,11 @@ async fn endpoint(
 		.one(&state.database)
 		.await?
 	{
+		let tags = tags_for_cosmetics(&state.database, &[cosmetic.id])
+			.await?
+			.remove(&cosmetic.id)
+			.unwrap_or_default();
+
 		Ok(Json(ViewResponse {
 			stripe_price_id: cosmetic.stripe_price_id,
 			id: cosmetic.id,
@@ -95,6 +103,7 @@ async fn endpoint(
 			discount_rate: cosmetic.discount_rate,
 			asset_id: cosmetic.asset_id,
 			created_at: cosmetic.created_at,
+			tags,
 		}))
 	} else {
 		Err(ViewError::NotFound)

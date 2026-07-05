@@ -126,7 +126,8 @@ impl MigrationTrait for Migration {
 							.from_tbl(BundlesCosmetics::Table)
 							.from_col(BundlesCosmetics::BundleId)
 							.to_tbl(Bundles::Table)
-							.to_col(Bundles::Id),
+							.to_col(Bundles::Id)
+							.on_delete(ForeignKeyAction::Cascade),
 					)
 					.foreign_key(
 						ForeignKeyCreateStatement::new()
@@ -134,7 +135,8 @@ impl MigrationTrait for Migration {
 							.from_tbl(BundlesCosmetics::Table)
 							.from_col(BundlesCosmetics::CosmeticId)
 							.to_tbl(Cosmetic::Table)
-							.to_col(Cosmetic::Id),
+							.to_col(Cosmetic::Id)
+							.on_delete(ForeignKeyAction::Cascade),
 					)
 					.primary_key(
 						Index::create()

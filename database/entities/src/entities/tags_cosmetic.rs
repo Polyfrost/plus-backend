@@ -3,24 +3,16 @@
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
-#[sea_orm(table_name = "bundles_cosmetics")]
+#[sea_orm(table_name = "tags_cosmetic")]
 pub struct Model {
 	#[sea_orm(primary_key, auto_increment = false)]
-	pub bundle_id: i32,
+	pub tag_id: i32,
 	#[sea_orm(primary_key, auto_increment = false)]
 	pub cosmetic_id: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-	#[sea_orm(
-		belongs_to = "super::bundles::Entity",
-		from = "Column::BundleId",
-		to = "super::bundles::Column::Id",
-		on_update = "NoAction",
-		on_delete = "Cascade"
-	)]
-	Bundles,
 	#[sea_orm(
 		belongs_to = "super::cosmetic::Entity",
 		from = "Column::CosmeticId",
@@ -29,17 +21,25 @@ pub enum Relation {
 		on_delete = "Cascade"
 	)]
 	Cosmetic,
-}
-
-impl Related<super::bundles::Entity> for Entity {
-	fn to() -> RelationDef {
-		Relation::Bundles.def()
-	}
+	#[sea_orm(
+		belongs_to = "super::tags::Entity",
+		from = "Column::TagId",
+		to = "super::tags::Column::Id",
+		on_update = "NoAction",
+		on_delete = "Cascade"
+	)]
+	Tags,
 }
 
 impl Related<super::cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::Cosmetic.def()
+	}
+}
+
+impl Related<super::tags::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::Tags.def()
 	}
 }
 

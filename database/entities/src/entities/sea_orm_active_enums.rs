@@ -128,6 +128,26 @@ pub enum PlayerRole {
 	serde :: Serialize,
 	Hash,
 )]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "tag_type")]
+#[serde(rename_all = "snake_case")]
+pub enum TagType {
+	#[sea_orm(string_value = "custom")]
+	Custom,
+	#[sea_orm(string_value = "color")]
+	Color,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
 #[sea_orm(
 	rs_type = "String",
 	db_type = "Enum",

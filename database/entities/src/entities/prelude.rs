@@ -13,5 +13,7 @@ pub use super::daily_playtime::Entity as DailyPlaytime;
 pub use super::monthly_active_login::Entity as MonthlyActiveLogin;
 pub use super::player_equipped_cosmetic::Entity as PlayerEquippedCosmetic;
 pub use super::player_owned_cosmetic::Entity as PlayerOwnedCosmetic;
+pub use super::tags::Entity as Tags;
+pub use super::tags_cosmetic::Entity as TagsCosmetic;
 pub use super::transaction::Entity as Transaction;
 pub use super::user::Entity as User;

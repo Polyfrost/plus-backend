@@ -69,6 +69,8 @@ pub enum Relation {
 	PlayerEquippedCosmetic,
 	#[sea_orm(has_many = "super::player_owned_cosmetic::Entity")]
 	PlayerOwnedCosmetic,
+	#[sea_orm(has_many = "super::tags_cosmetic::Entity")]
+	TagsCosmetic,
 }
 
 impl Related<super::asset::Entity> for Entity {
@@ -119,12 +121,27 @@ impl Related<super::player_owned_cosmetic::Entity> for Entity {
 	}
 }
 
+impl Related<super::tags_cosmetic::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::TagsCosmetic.def()
+	}
+}
+
 impl Related<super::bundles::Entity> for Entity {
 	fn to() -> RelationDef {
 		super::bundles_cosmetics::Relation::Bundles.def()
 	}
 	fn via() -> Option<RelationDef> {
 		Some(super::bundles_cosmetics::Relation::Cosmetic.def().rev())
+	}
+}
+
+impl Related<super::tags::Entity> for Entity {
+	fn to() -> RelationDef {
+		super::tags_cosmetic::Relation::Tags.def()
+	}
+	fn via() -> Option<RelationDef> {
+		Some(super::tags_cosmetic::Relation::Cosmetic.def().rev())
 	}
 }
 

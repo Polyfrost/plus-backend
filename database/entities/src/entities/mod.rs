@@ -16,5 +16,7 @@ pub mod monthly_active_login;
 pub mod player_equipped_cosmetic;
 pub mod player_owned_cosmetic;
 pub mod sea_orm_active_enums;
+pub mod tags;
+pub mod tags_cosmetic;
 pub mod transaction;
 pub mod user;

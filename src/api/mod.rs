@@ -7,6 +7,7 @@ mod cosmetics;
 mod players;
 mod state;
 mod stripe;
+mod tags;
 mod transactions;
 mod websocket;
 
@@ -107,6 +108,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
+		.merge(tags::setup_router().await)
 		.merge(websocket::setup_router().await)
 		.with_state(state);
 

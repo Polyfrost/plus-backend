@@ -13,11 +13,15 @@ use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait, EntityTrait, Order, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect,
+	ColumnTrait, EntityTrait, Order, PaginatorTrait, QueryFilter, QueryOrder,
+	QuerySelect, sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::api::ApiState;
+use crate::api::{
+	ApiState,
+	tags::{CosmeticTags, tags_for_cosmetics},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum SearchError {
@@ -80,6 +84,30 @@ pub struct SearchQuery {
 	/// comma-separated (e.g. `cape,emote`). Omit to return every type.
 	#[serde(default, deserialize_with = "deserialize_types")]
 	types: Option<Vec<CosmeticType>>,
+	/// Restrict results to cosmetics carrying at least one of these tag names,
+	/// comma-separated (e.g. `red,limited`). Omit to ignore tags.
+	#[serde(default, deserialize_with = "deserialize_tags")]
+	tags: Option<Vec<String>>,
+}
+
+/// Parses a comma-separated list of tag names. Empty segments are ignored, and
+/// an empty list is treated as no filter.
+fn deserialize_tags<'de, D>(de: D) -> Result<Option<Vec<String>>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let Some(raw) = Option::<String>::deserialize(de)? else {
+		return Ok(None);
+	};
+
+	let tags: Vec<String> = raw
+		.split(',')
+		.map(str::trim)
+		.filter(|part| !part.is_empty())
+		.map(str::to_owned)
+		.collect();
+
+	Ok((!tags.is_empty()).then_some(tags))
 }
 
 /// Parses a comma-separated list of cosmetic types (e.g. `cape,emote`),
@@ -106,7 +134,7 @@ where
 	Ok((!types.is_empty()).then_some(types))
 }
 
-/// A single enabled cosmetic or emote in the search results.
+/// cosmetic info, doesn't contain price id
 #[derive(Debug, Serialize, JsonSchema)]
 struct CosmeticSearchInfo {
 	id: i32,
@@ -118,10 +146,11 @@ struct CosmeticSearchInfo {
 	discount_rate: Option<i32>,
 	asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
+	tags: CosmeticTags,
 }
 
 impl CosmeticSearchInfo {
-	fn from_cosmetic(cosmetic: entities::cosmetic::Model) -> Self {
+	fn from_cosmetic(cosmetic: entities::cosmetic::Model, tags: CosmeticTags) -> Self {
 		CosmeticSearchInfo {
 			id: cosmetic.id,
 			name: cosmetic
@@ -134,6 +163,7 @@ impl CosmeticSearchInfo {
 			discount_rate: cosmetic.discount_rate,
 			asset_id: cosmetic.asset_id,
 			created_at: cosmetic.created_at,
+			tags,
 		}
 	}
 }
@@ -180,9 +210,8 @@ async fn endpoint(
 	State(state): State<ApiState>,
 	Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, SearchError> {
-	use entities::{cosmetic, prelude::*};
+	use entities::{cosmetic, prelude::*, tags, tags_cosmetic};
 
-	// Return results in the range [nb * (page - 1); nb * page).
 	let nb = query.nb.min(MAX_NB);
 	let offset = nb.saturating_mul(query.page.saturating_sub(1));
 
@@ -193,8 +222,6 @@ async fn endpoint(
 		Sort::Descending => (cosmetic::Column::BasePrice, Order::Desc),
 	};
 
-	// Emotes are cosmetics with type `emote`, so a single cosmetic query covers
-	// every type. A `type` filter (including `emote`) narrows the results.
 	let mut find = Cosmetic::find()
 		.filter(cosmetic::Column::Enabled.eq(true))
 		.filter(cosmetic::Column::BasePrice.is_not_null());
@@ -204,19 +231,42 @@ async fn endpoint(
 	if let Some(kinds) = &query.types {
 		find = find.filter(cosmetic::Column::Type.is_in(kinds.clone()));
 	}
+	if let Some(names) = &query.tags {
+		find = find.filter(
+			cosmetic::Column::Id.in_subquery(
+				sea_orm::sea_query::Query::select()
+					.column(tags_cosmetic::Column::CosmeticId)
+					.from(tags_cosmetic::Entity)
+					.inner_join(
+						tags::Entity,
+						Expr::col((tags_cosmetic::Entity, tags_cosmetic::Column::TagId))
+							.equals((tags::Entity, tags::Column::Id)),
+					)
+					.and_where(tags::Column::Name.is_in(names.clone()))
+					.to_owned(),
+			),
+		);
+	}
 
-	// Count all matches before paginating so the response can report totals.
 	let total_items = find.clone().count(&state.database).await?;
 
-	let results: Vec<CosmeticSearchInfo> = find
+	let cosmetics = find
 		.order_by(column, order)
 		.order_by(cosmetic::Column::Id, Order::Asc)
 		.offset(offset)
 		.limit(nb)
 		.all(&state.database)
-		.await?
+		.await?;
+
+	let cosmetic_ids: Vec<i32> = cosmetics.iter().map(|cosmetic| cosmetic.id).collect();
+	let mut tags = tags_for_cosmetics(&state.database, &cosmetic_ids).await?;
+
+	let results: Vec<CosmeticSearchInfo> = cosmetics
 		.into_iter()
-		.map(CosmeticSearchInfo::from_cosmetic)
+		.map(|cosmetic| {
+			let tags = tags.remove(&cosmetic.id).unwrap_or_default();
+			CosmeticSearchInfo::from_cosmetic(cosmetic, tags)
+		})
 		.collect();
 
 	let pagination = Pagination {
