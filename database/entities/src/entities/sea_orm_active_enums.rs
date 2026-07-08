@@ -135,6 +135,8 @@ pub enum TagType {
 	Custom,
 	#[sea_orm(string_value = "color")]
 	Color,
+	#[sea_orm(string_value = "category")]
+	Category,
 }
 #[derive(
 	Debug,

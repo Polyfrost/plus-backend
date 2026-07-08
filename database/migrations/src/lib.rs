@@ -29,7 +29,8 @@ mod m20260704_000004_drop_emotes;
 mod m20260705_000000_create_tags_tables;
 mod m20260705_000001_extend_user_payment_info;
 mod m20260705_000002_extend_collections;
-
+mod m20260708_000000_extend_tags_type;
+mod m20260708_000001_extend_tags_table;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -65,6 +66,8 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260705_000000_create_tags_tables::Migration),
 			Box::new(m20260705_000001_extend_user_payment_info::Migration),
 			Box::new(m20260705_000002_extend_collections::Migration),
+			Box::new(m20260708_000000_extend_tags_type::Migration),
+			Box::new(m20260708_000001_extend_tags_table::Migration),
 		]
 	}
 }

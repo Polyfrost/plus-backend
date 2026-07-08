@@ -14,6 +14,8 @@ pub struct Model {
 	pub description: Option<String>,
 	pub tag_type: TagType,
 	pub created_at: DateTimeWithTimeZone,
+	#[sea_orm(column_type = "Text", nullable)]
+	pub display_name: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
