@@ -60,9 +60,9 @@ pub struct ListResponse {
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
-	op.id("listTags")
-		.summary("List all tags")
-		.description("Lists every tag.")
+	op.id("listCategory")
+		.summary("List all categories")
+		.description("Lists every category.")
 		.tag("tags")
 }
 
@@ -77,7 +77,7 @@ async fn endpoint(
 	use entities::prelude::*;
 
 	let tags = Tags::find()
-		.filter(entities::tags::Column::TagType.ne(TagType::Category))
+		.filter(entities::tags::Column::TagType.eq(TagType::Category))
 		.all(&state.database)
 		.await?
 		.into_iter()

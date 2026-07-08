@@ -33,6 +33,7 @@ impl IntoResponse for CreateError {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CreateRequest {
 	name: String,
+	display_name: Option<String>,
 	description: Option<String>,
 	tag_type: TagType,
 }
@@ -42,6 +43,7 @@ struct CreateRequest {
 pub struct CreateResponse {
 	id: i32,
 	name: String,
+	display_name: Option<String>,
 	description: Option<String>,
 	tag_type: TagType,
 	created_at: DateTime<FixedOffset>,
@@ -50,7 +52,7 @@ pub struct CreateResponse {
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("createTag")
 		.summary("Create a tag")
-		.description("Creates a new color or custom tag. Admin role required.")
+		.description("Creates a new color or custom tag. Also use to create categories with type = category. Admin role required.")
 		.tag("tags")
 }
 
@@ -68,6 +70,7 @@ async fn endpoint(
 
 	let tag = tags::ActiveModel {
 		name: Set(body.name),
+		display_name: Set(body.display_name),
 		description: Set(body.description),
 		tag_type: Set(body.tag_type),
 		..Default::default()
@@ -80,6 +83,7 @@ async fn endpoint(
 		Json(CreateResponse {
 			id: tag.id,
 			name: tag.name,
+			display_name: tag.display_name,
 			description: tag.description,
 			tag_type: tag.tag_type,
 			created_at: tag.created_at,

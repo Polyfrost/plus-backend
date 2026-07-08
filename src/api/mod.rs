@@ -3,6 +3,7 @@ pub(crate) mod admin_auth;
 mod analytics;
 mod assets;
 mod bundles;
+mod category;
 mod collections;
 mod cosmetics;
 mod players;
@@ -11,7 +12,6 @@ mod stripe;
 mod tags;
 mod transactions;
 mod websocket;
-
 use aide::{
 	axum::ApiRouter,
 	openapi::{
@@ -111,6 +111,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
 		.merge(tags::setup_router().await)
+		.merge(category::setup_router().await)
 		.merge(websocket::setup_router().await)
 		.with_state(state);
 

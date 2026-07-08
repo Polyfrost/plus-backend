@@ -35,6 +35,7 @@ pub(crate) async fn tags_for_cosmetics(
 	}
 
 	let rows = TagsCosmetic::find()
+		.filter(entities::tags::Column::TagType.ne(TagType::Category))
 		.filter(tags_cosmetic::Column::CosmeticId.is_in(cosmetic_ids.iter().copied()))
 		.find_also_related(Tags)
 		.all(db)
@@ -50,6 +51,7 @@ pub(crate) async fn tags_for_cosmetics(
 		match tag.tag_type {
 			TagType::Color => entry.colors.push(tag.name),
 			TagType::Custom => entry.custom.push(tag.name),
+			TagType::Category => {}
 		}
 	}
 
