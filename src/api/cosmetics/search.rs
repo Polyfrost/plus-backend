@@ -88,6 +88,8 @@ pub struct SearchQuery {
 	/// comma-separated (e.g. `red,limited`). Omit to ignore tags.
 	#[serde(default, deserialize_with = "deserialize_tags")]
 	tags: Option<Vec<String>>,
+	/// the collection id to search for
+	collection: Option<i32>,
 }
 
 /// Parses a comma-separated list of tag names. Empty segments are ignored, and
@@ -231,6 +233,10 @@ async fn endpoint(
 	if let Some(kinds) = &query.types {
 		find = find.filter(cosmetic::Column::Type.is_in(kinds.clone()));
 	}
+	if let Some(collection_id) = &query.collection {
+		find = find.filter(cosmetic::Column::Collection.eq(collection_id.to_owned()))
+	}
+
 	if let Some(names) = &query.tags {
 		find = find.filter(
 			cosmetic::Column::Id.in_subquery(
