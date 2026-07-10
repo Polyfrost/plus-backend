@@ -64,7 +64,7 @@ async fn endpoint(
 
 	let url = match (&asset.url, &asset.storage_path) {
 		(Some(url), _) => url.clone(),
-		(None, Some(path)) => state.s3_bucket.presign_get(path, 604800, None).await?, // 7d
+		(None, Some(path)) => state.s3_bucket.presign_get(path, 86400, None).await?, // 24h
 		(None, None) => return Err(AssetError::NotFound),
 	};
 
