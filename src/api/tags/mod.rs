@@ -18,6 +18,8 @@ pub(crate) struct CosmeticTags {
 	colors: Vec<String>,
 	/// The names of the `custom` tags applied to this cosmetic.
 	custom: Vec<String>,
+	/// pretty self explanatory huh?
+	category: Vec<String>,
 }
 
 /// Fetches the tags for each of the given cosmetic ids, grouped by type.
@@ -51,7 +53,7 @@ pub(crate) async fn tags_for_cosmetics(
 		match tag.tag_type {
 			TagType::Color => entry.colors.push(tag.name),
 			TagType::Custom => entry.custom.push(tag.name),
-			TagType::Category => {}
+			TagType::Category => entry.category.push(tag.name),
 		}
 	}
 
