@@ -31,6 +31,7 @@ pub struct Model {
 	pub collection: Option<i32>,
 	#[sea_orm(column_type = "Text", nullable)]
 	pub description: Option<String>,
+	pub purchase_count: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

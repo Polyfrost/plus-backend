@@ -54,6 +54,8 @@ pub enum Sort {
 	Ascending,
 	/// Most expensive first (by base price).
 	Descending,
+	/// the popularity is massive
+	Popularity,
 }
 
 /// The maximum number of results allowed per page.
@@ -222,6 +224,7 @@ async fn endpoint(
 		Sort::Newest => (cosmetic::Column::CreatedAt, Order::Desc),
 		Sort::Ascending => (cosmetic::Column::BasePrice, Order::Asc),
 		Sort::Descending => (cosmetic::Column::BasePrice, Order::Desc),
+		Sort::Popularity => (cosmetic::Column::PurchaseCount, Order::Asc),
 	};
 
 	let mut find = Cosmetic::find()

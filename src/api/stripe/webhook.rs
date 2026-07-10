@@ -159,6 +159,9 @@ pub(super) async fn endpoint(
 						cosmetics
 					};
 					if !cosmetics.is_empty() {
+						let cosmetic_ids: Vec<_> =
+							cosmetics.iter().map(|cosmetic| cosmetic.id).collect();
+
 						PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(
 							|cosmetic| player_owned_cosmetic::ActiveModel {
 								player_id: ActiveValue::Set(user.id),
@@ -173,6 +176,15 @@ pub(super) async fn endpoint(
 						.on_conflict_do_nothing()
 						.exec(txn)
 						.await?;
+
+						Cosmetic::update_many()
+							.col_expr(
+								cosmetic::Column::PurchaseCount,
+								Expr::col(cosmetic::Column::PurchaseCount).add(1),
+							)
+							.filter(cosmetic::Column::Id.is_in(cosmetic_ids))
+							.exec(txn)
+							.await?;
 						for cosmetic in cosmetics {
 							if matches!(cosmetic.r#type, CosmeticType::Emote) {
 								grant.emote_ids.push(cosmetic.id);
