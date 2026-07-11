@@ -539,7 +539,13 @@ async fn handle_msg(
 ) -> Result<(), WebsocketError> {
 	let msg = msg?;
 
-	if matches!(msg, Message::Close(_)) {
+	// Ignore control/keepalive frames. Ping/Pong carry an opaque payload (Ktor
+	// sends a Ping every pingInterval) that is not a serializable request, and
+	// Close needs no response.
+	if matches!(
+		msg,
+		Message::Close(_) | Message::Ping(_) | Message::Pong(_)
+	) {
 		return Ok(());
 	}
 
