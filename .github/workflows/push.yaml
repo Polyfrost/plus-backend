@@ -35,8 +35,12 @@ jobs:
             - name: Build with nix
               id: build
               run: |
-                  OUT_PATHS="$(nix build --print-out-paths)"
-                  echo "OUT_PATHS=${OUT_PATHS}" >> $GITHUB_OUTPUT
+                  OUT_PATHS="$(nix build --print-out-paths .#plus-backend .#render-service)"
+                  {
+                      echo 'OUT_PATHS<<EOF'
+                      echo "${OUT_PATHS}"
+                      echo 'EOF'
+                  } >> "$GITHUB_OUTPUT"
 
             - uses: cachix/cachix-action@v15
               with:
