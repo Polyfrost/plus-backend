@@ -186,7 +186,9 @@ async fn endpoint(
 		.ok_or(EditError::NotFound)?;
 
 	let asset_id = match file_data {
-		Some(data) => Some(store_asset(&state, &data, content_type, &extension).await?),
+		Some(data) => {
+			Some(store_asset(&state, &data, content_type, &extension, "collections").await?)
+		}
 		None => None,
 	};
 

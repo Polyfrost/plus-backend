@@ -67,4 +67,10 @@ pub(crate) struct ServeArgs {
 	/// Password for admin operations
 	#[bpaf(long("admin-password"), env("ADMIN_PASSWORD"))]
 	pub(crate) admin_password: String,
+	#[bpaf(
+		long("render-service-url"),
+		env("RENDER_SERVICE_URL"),
+		fallback(String::new())
+	)]
+	pub(crate) render_service_url: String,
 }

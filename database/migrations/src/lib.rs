@@ -32,6 +32,7 @@ mod m20260705_000002_extend_collections;
 mod m20260708_000000_extend_tags_type;
 mod m20260708_000001_extend_tags_table;
 mod m20260710_000000_extend_cosmetics_info;
+mod m20260711_000000_add_cosmetic_cover;
 
 pub struct Migrator;
 
@@ -71,6 +72,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260708_000000_extend_tags_type::Migration),
 			Box::new(m20260708_000001_extend_tags_table::Migration),
 			Box::new(m20260710_000000_extend_cosmetics_info::Migration),
+			Box::new(m20260711_000000_add_cosmetic_cover::Migration),
 		]
 	}
 }

@@ -404,6 +404,42 @@ async fn endpoint(
 	.insert(&state.database)
 	.await?;
 
+	let cover_asset_id = if state.render_service_url.is_empty() {
+		None
+	} else {
+		match crate::api::cosmetics::cover::render_cover(
+			&state.render_client,
+			&state.render_service_url,
+			&cosmetic_type,
+			&slots,
+			model_variant.as_deref(),
+			is_bundle,
+			&data,
+		)
+		.await
+		{
+			Ok(png) => match crate::api::collections::store_asset(
+				&state,
+				&png,
+				Some("image/png".to_string()),
+				"png",
+				"covers",
+			)
+			.await
+			{
+				Ok(id) => Some(id),
+				Err(error) => {
+					tracing::warn!("Unable to store cosmetic cover asset: {error}");
+					None
+				}
+			},
+			Err(error) => {
+				tracing::warn!("Unable to render cosmetic cover: {error}");
+				None
+			}
+		}
+	};
+
 	let group = match group_name {
 		Some(group_name) => {
 			let existing = CosmeticGroup::find()
@@ -489,6 +525,7 @@ async fn endpoint(
 
 	let model = cosmetic::ActiveModel {
 		asset_id: Set(Some(asset.id)),
+		cover_asset_id: Set(cover_asset_id),
 		name: Set(Some(resolved_name)),
 		r#type: Set(cosmetic_type),
 		enabled: Set(true),
@@ -539,8 +576,15 @@ async fn endpoint(
 		None => HashMap::new(),
 	};
 
+	let cover_asset = match cover_asset_id {
+		Some(cover_asset_id) => {
+			Asset::find_by_id(cover_asset_id).one(&state.database).await?
+		}
+		None => None,
+	};
+
 	let mut infos = group_cosmetics(
-		vec![(model, Some(asset), slots)],
+		vec![(model, Some(asset), cover_asset, slots)],
 		groups,
 		state.asset_cache.clone(),
 		state.s3_bucket.clone(),

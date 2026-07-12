@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::api::ApiState;
 
 #[derive(thiserror::Error, Debug)]
-pub(super) enum StoreAssetError {
+pub(crate) enum StoreAssetError {
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("S3 error: {0}")]
@@ -26,16 +26,16 @@ fn sha256_hex(data: &[u8]) -> String {
 		.collect()
 }
 
-/// Uploads a file to S3 and records it as an asset, returning the new asset id.
-pub(super) async fn store_asset(
+pub(crate) async fn store_asset(
 	state: &ApiState,
 	data: &[u8],
 	content_type: Option<String>,
 	extension: &str,
+	prefix: &str,
 ) -> Result<i32, StoreAssetError> {
 	use entities::asset;
 
-	let path = format!("collections/{}.{}", Uuid::now_v7(), extension);
+	let path = format!("{}/{}.{}", prefix, Uuid::now_v7(), extension);
 	state
 		.s3_bucket
 		.put_object_with_content_type(

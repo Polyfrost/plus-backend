@@ -177,7 +177,9 @@ async fn endpoint(
 	let name = name.ok_or(CreateError::MissingName)?;
 
 	let asset_id = match file_data {
-		Some(data) => Some(store_asset(&state, &data, content_type, &extension).await?),
+		Some(data) => {
+			Some(store_asset(&state, &data, content_type, &extension, "collections").await?)
+		}
 		None => None,
 	};
 

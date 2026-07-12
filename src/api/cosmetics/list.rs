@@ -79,8 +79,12 @@ async fn endpoint(
 				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
 				None => None,
 			};
+			let cover_asset = match cosmetic.cover_asset_id {
+				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
+				None => None,
+			};
 			let allowed_slots = allowed.into_iter().map(|s| s.slot).collect();
-			rows.push((cosmetic, asset, allowed_slots));
+			rows.push((cosmetic, asset, cover_asset, allowed_slots));
 		}
 
 		let groups = load_groups(&state.database).await?;

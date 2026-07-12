@@ -75,10 +75,14 @@ async fn endpoint(
 			.all(&state.database)
 			.await?;
 
-		let rows = cosmetics
-			.into_iter()
-			.map(|(cosmetic, asset)| (cosmetic, asset, vec![BodySlot::Cape]))
-			.collect();
+		let mut rows = Vec::with_capacity(cosmetics.len());
+		for (cosmetic, asset) in cosmetics {
+			let cover_asset = match cosmetic.cover_asset_id {
+				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
+				None => None,
+			};
+			rows.push((cosmetic, asset, cover_asset, vec![BodySlot::Cape]));
+		}
 
 		let groups = load_groups(&state.database).await?;
 		response.capes = group_cosmetics(

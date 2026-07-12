@@ -53,6 +53,7 @@ pub struct ViewResponse {
 	base_price: Option<f32>,
 	discount_rate: Option<i32>,
 	asset_id: Option<i32>,
+	cover_asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
 	tags: CosmeticTags,
 	/// The enabled sibling variants of this cosmetic (those sharing its group),
@@ -70,6 +71,7 @@ pub struct VariantView {
 	model_variant: Option<String>,
 	variant_order: i32,
 	asset_id: Option<i32>,
+	cover_asset_id: Option<i32>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -127,6 +129,7 @@ async fn endpoint(
 						model_variant: s.model_variant,
 						variant_order: s.variant_order,
 						asset_id: s.asset_id,
+						cover_asset_id: s.cover_asset_id,
 					})
 					.collect(),
 			)
@@ -146,6 +149,7 @@ async fn endpoint(
 			base_price: cosmetic.base_price,
 			discount_rate: cosmetic.discount_rate,
 			asset_id: cosmetic.asset_id,
+			cover_asset_id: cosmetic.cover_asset_id,
 			created_at: cosmetic.created_at,
 			tags,
 			variants,

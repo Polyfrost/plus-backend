@@ -115,6 +115,10 @@ impl ApiState {
 				.user_agent("PolyPlus Backend")
 				.build()
 				.expect("Unable to build reqwest HTTPS client"),
+			render_client: ClientBuilder::new()
+				.user_agent("PolyPlus Backend")
+				.build()
+				.expect("Unable to build reqwest render client"),
 			paseto_key: SymmetricKey::generate()
 				.expect("Unable to generate paseto signing key"),
 			s3_bucket,
@@ -123,6 +127,7 @@ impl ApiState {
 			equipment_persist_tx,
 			particle_color_persist_tx,
 			admin_password: args.admin_password.clone(),
+			render_service_url: args.render_service_url.clone(),
 		}
 	}
 }
@@ -132,6 +137,7 @@ pub(super) struct ApiState {
 	pub(super) stripe: StripeApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
+	pub(super) render_client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
@@ -140,6 +146,7 @@ pub(super) struct ApiState {
 	pub(super) particle_color_persist_tx:
 		tokio::sync::mpsc::Sender<ParticleColorPersistence>,
 	pub(super) admin_password: String,
+	pub(super) render_service_url: String,
 }
 
 #[derive(Clone)]

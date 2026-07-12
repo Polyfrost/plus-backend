@@ -1,3 +1,4 @@
+mod cover;
 mod get_player;
 mod grant;
 mod list;
@@ -107,6 +108,8 @@ pub(super) struct VariantInfo {
 	/// The media url for this variant
 	#[serde(skip_serializing_if = "Option::is_none")]
 	url: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	cover_url: Option<String>,
 	#[serde(flatten)]
 	cached_info: CachedAssetInfo,
 }
@@ -141,6 +144,7 @@ impl VariantInfo {
 	async fn from_db_model(
 		value: &cosmetic::Model,
 		asset: Option<&asset::Model>,
+		cover_asset: Option<&asset::Model>,
 		allowed_slots: Vec<BodySlot>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
@@ -156,7 +160,8 @@ impl VariantInfo {
 				.or_else(|| value.name.clone())
 				.unwrap_or_else(|| format!("Cosmetic {}", value.id)),
 			model: value.model_variant.clone(),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, s3_bucket.clone()).await?,
+			cover_url: CachedAssetInfo::asset_url(cover_asset, s3_bucket).await?,
 			cached_info,
 		})
 	}
@@ -179,8 +184,11 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 		.collect())
 }
 
+pub(super) type CosmeticRow =
+	(cosmetic::Model, Option<asset::Model>, Option<asset::Model>, Vec<BodySlot>);
+
 pub(super) async fn group_cosmetics(
-	cosmetics: Vec<(cosmetic::Model, Option<asset::Model>, Vec<BodySlot>)>,
+	cosmetics: Vec<CosmeticRow>,
 	groups: HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>,
 	cache: Cache<i32, CachedAssetInfo>,
 	s3_bucket: Arc<Bucket>,
@@ -188,10 +196,11 @@ pub(super) async fn group_cosmetics(
 	let mut buckets: BTreeMap<i32, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
 		BTreeMap::new();
 
-	for (cosmetic, asset, allowed_slots) in cosmetics {
+	for (cosmetic, asset, cover_asset, allowed_slots) in cosmetics {
 		let variant = VariantInfo::from_db_model(
 			&cosmetic,
 			asset.as_ref(),
+			cover_asset.as_ref(),
 			allowed_slots.clone(),
 			cache.clone(),
 			s3_bucket.clone(),

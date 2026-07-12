@@ -63,6 +63,36 @@
                         };
                     }
                 );
+                # The skinview3d cover render sidecar (render-service/). Pure-JS
+                # runtime deps (puppeteer + fflate) installed from the committed
+                # lockfile via importNpmLock (no vendored hash to maintain). The
+                # skinview3d fork is pre-bundled into render-service/vendor, so the
+                # Nix build never touches the git dependency or a JS build step.
+                # Puppeteer's Chromium download is skipped; the nixpkgs chromium is
+                # wired in at runtime instead.
+                render-service = pkgs.buildNpmPackage {
+                    pname = "plus-render-service";
+                    version = "0.1.0";
+                    src = lib.cleanSourceWith {
+                        src = ./render-service;
+                        # Keep the local node_modules out of the store; npm ci
+                        # reinstalls from the lockfile in the build sandbox.
+                        filter = path: _type: baseNameOf path != "node_modules";
+                    };
+                    npmDeps = pkgs.importNpmLock { npmRoot = ./render-service; };
+                    inherit (pkgs.importNpmLock) npmConfigHook;
+                    dontNpmBuild = true;
+                    # Skip Puppeteer's Chromium download during the build; the
+                    # nixpkgs chromium is wired in at runtime below.
+                    PUPPETEER_SKIP_DOWNLOAD = "1";
+                    nativeBuildInputs = [ pkgs.makeWrapper ];
+                    postInstall = ''
+                        makeWrapper ${pkgs.nodejs}/bin/node $out/bin/plus-render-service \
+                            --add-flags $out/lib/node_modules/plus-render-service/src/server.js \
+                            --set PUPPETEER_EXECUTABLE_PATH ${pkgs.chromium}/bin/chromium
+                    '';
+                    meta.mainProgram = "plus-render-service";
+                };
                 # Setup treefmt-nix
                 treefmtModule = import ./treefmt.nix { inherit rust'; };
                 treefmtEval = treefmt-nix.lib.evalModule pkgs treefmtModule;
@@ -82,6 +112,11 @@
                 packages = {
                     default = self.packages.${system}.plus-backend;
                     plus-backend = cranePackage;
+                    inherit render-service;
+                };
+                apps.render-service = {
+                    type = "app";
+                    program = "${render-service}/bin/plus-render-service";
                 };
                 formatter = treefmtEval.config.build.wrapper;
                 devShells.default =
@@ -110,6 +145,10 @@
                                     self.formatter.${system}
                                     # s3
                                     s3cmd
+                                    # Node runtime for the skinview3d cover render sidecar
+                                    # (render-service/). It is installed and run via npm;
+                                    # Puppeteer provides its own headless Chromium.
+                                    nodejs
                                 ]);
 
                             env = {

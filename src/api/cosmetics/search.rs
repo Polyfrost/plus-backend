@@ -149,6 +149,7 @@ struct CosmeticSearchInfo {
 	base_price: Option<f32>,
 	discount_rate: Option<i32>,
 	asset_id: Option<i32>,
+	cover_asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
 	tags: CosmeticTags,
 }
@@ -166,6 +167,7 @@ impl CosmeticSearchInfo {
 			base_price: cosmetic.base_price,
 			discount_rate: cosmetic.discount_rate,
 			asset_id: cosmetic.asset_id,
+			cover_asset_id: cosmetic.cover_asset_id,
 			created_at: cosmetic.created_at,
 			tags,
 		}
