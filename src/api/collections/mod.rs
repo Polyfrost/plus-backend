@@ -2,6 +2,7 @@ mod create;
 mod delete;
 mod edit;
 mod list;
+mod view;
 
 use aide::axum::ApiRouter;
 use entities::sea_orm_active_enums::AssetKind;
@@ -66,6 +67,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			.merge(list::router())
 			.merge(create::router())
 			.merge(edit::router())
-			.merge(delete::router()),
+			.merge(delete::router())
+			.merge(view::router()),
 	)
 }
