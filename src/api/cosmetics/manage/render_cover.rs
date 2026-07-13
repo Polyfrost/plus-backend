@@ -72,9 +72,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			 unless `force` is set. Admin password required.",
 		)
 		.tag("cosmetics")
-		.response_with::<{ StatusCode::OK.as_u16() }, Json<RenderCoverResponse>, _>(|res| {
-			res.description("The cover was rendered and stored")
-		})
+		.response_with::<{ StatusCode::OK.as_u16() }, Json<RenderCoverResponse>, _>(
+			|res| res.description("The cover was rendered and stored"),
+		)
 		.response_with::<{ StatusCode::NOT_FOUND.as_u16() }, String, _>(|res| {
 			res.description("No cosmetic exists with the given id")
 		})
@@ -133,16 +133,16 @@ async fn endpoint(
 		.into_iter()
 		.map(|row| row.slot)
 		.collect();
-	if slots.is_empty() {
-		if let Some(group_id) = cosmetic.group_id {
-			slots = CosmeticGroupAllowedSlot::find()
-				.filter(cosmetic_group_allowed_slot::Column::GroupId.eq(group_id))
-				.all(&state.database)
-				.await?
-				.into_iter()
-				.map(|row| row.slot)
-				.collect();
-		}
+	if let Some(group_id) = cosmetic.group_id
+		&& slots.is_empty()
+	{
+		slots = CosmeticGroupAllowedSlot::find()
+			.filter(cosmetic_group_allowed_slot::Column::GroupId.eq(group_id))
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|row| row.slot)
+			.collect();
 	}
 
 	let is_bundle = asset.asset_kind == AssetKind::Bundle;
