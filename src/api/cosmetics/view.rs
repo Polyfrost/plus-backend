@@ -56,10 +56,11 @@ pub struct ViewResponse {
 	cover_asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
 	tags: CosmeticTags,
-	/// The enabled sibling variants of this cosmetic (those sharing its group),
-	/// if any. Present only for a grouped cosmetic and never includes the
-	/// cosmetic itself. Price and Stripe price id are omitted as they are shared
-	/// across every variant.
+	/// Every enabled variant of this cosmetic's group, ordered by
+	/// `variant_order`, including the cosmetic asked for — so this is the whole
+	/// swatch list and does not shift depending on which variant is viewed. Null,
+	/// not empty, for an ungrouped cosmetic. Price and Stripe price id are
+	/// omitted from each entry as they are shared across every variant.
 	variants: Option<Vec<VariantView>>,
 }
 
@@ -92,8 +93,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("View a cosmetic")
 		.description(
 			"Returns the Stripe price id of an enabled cosmetic (including \
-			 emotes). For a grouped cosmetic, `variants` lists its other enabled \
-			 siblings (price and price id omitted, as they are shared).",
+			 emotes). For a grouped cosmetic, `variants` lists every enabled \
+			 variant of its group, this one included (price and price id omitted \
+			 from each, as they are shared).",
 		)
 		.tag("cosmetics")
 }
@@ -122,23 +124,18 @@ async fn endpoint(
 			.remove(&cosmetic.id)
 			.unwrap_or_default();
 
-		// Grouped cosmetics carry sibling variants; load the others in the group.
+		// Grouped cosmetics carry variants; load the whole group, this one
+		// included, so the list is the same whichever variant was asked for.
 		let variants = if let Some(group_id) = cosmetic.group_id {
-			let siblings = Cosmetic::find()
+			let group = Cosmetic::find()
 				.filter(cosmetic::Column::GroupId.eq(group_id))
-				.filter(cosmetic::Column::Id.ne(cosmetic.id))
 				.filter(cosmetic::Column::Enabled.eq(true))
 				.order_by_asc(cosmetic::Column::VariantOrder)
 				.order_by_asc(cosmetic::Column::Id)
 				.all(&state.database)
 				.await?;
 
-			Some(
-				siblings
-					.into_iter()
-					.map(VariantView::from_cosmetic)
-					.collect(),
-			)
+			Some(group.into_iter().map(VariantView::from_cosmetic).collect())
 		} else {
 			None
 		};

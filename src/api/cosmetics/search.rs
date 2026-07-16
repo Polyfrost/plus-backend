@@ -170,10 +170,9 @@ struct CosmeticSearchInfo {
 	/// The entry at `id` is the first element. Null, not empty, for an ungrouped
 	/// cosmetic, which has no variants to pick between.
 	///
-	/// This differs from `/cosmetics/view/{id}`, which lists only the *siblings*
-	/// of the cosmetic asked for. It also lists only buyable variants: where
-	/// `/cosmetics/view/{id}` filters on `enabled` alone, this omits unpriced
-	/// variants too, as they have nothing to show in the store.
+	/// `/cosmetics/view/{id}` returns the same list, except that it filters on
+	/// `enabled` alone where this also omits unpriced variants, which have
+	/// nothing to show in the store.
 	variants: Option<Vec<VariantView>>,
 }
 
