@@ -62,7 +62,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route("/view/{}", get_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new().api_route("/view/{id}", get_with(self::endpoint, self::endpoint_doc))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
