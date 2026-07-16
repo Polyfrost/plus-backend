@@ -47,6 +47,7 @@ impl IntoResponse for UpdateError {
 
 /// The pricing columns a request resolves to, applied to every affected row.
 struct PriceUpdate {
+	stripe_product_id: String,
 	stripe_price_id: String,
 	/// Set only on a silent increase; left untouched for a discount.
 	base_price: Option<f32>,
@@ -85,10 +86,12 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Updates a cosmetic's metadata (enabled, name, collection, \
 			 description) and drives its Stripe pricing. A silent price increase \
-			 creates a new default price; a discount creates a non-default price \
-			 and records the rate. For a grouped cosmetic, name/enabled apply to \
-			 the group and price changes propagate to every variant. Admin \
-			 password required.",
+			 creates a new default price, provisioning the Stripe product first \
+			 when the cosmetic was uploaded without a price; a discount creates a \
+			 non-default price and records the rate, and requires an already \
+			 priced cosmetic. For a grouped cosmetic, name/enabled apply to the \
+			 group and price changes propagate to every variant. Admin password \
+			 required.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::NO_CONTENT.as_u16() }, (), _>(|res| {
@@ -121,15 +124,24 @@ async fn endpoint(
 		return Err(UpdateError::MissingCosmetic);
 	};
 
+	let existing_product = match cosmetic.stripe_product_id.clone() {
+		Some(product_id) => Some(product_id),
+		None => match cosmetic.group_id {
+			Some(group_id) => Cosmetic::find()
+				.filter(cosmetic::Column::GroupId.eq(group_id))
+				.filter(cosmetic::Column::StripeProductId.is_not_null())
+				.one(&state.database)
+				.await?
+				.and_then(|sibling| sibling.stripe_product_id),
+			None => None,
+		},
+	};
+
 	// Resolve the pricing change (if any) against Stripe before touching the
 	// database. Variants share one product and price, so this runs once.
 	let price_update = if body.new_price.is_some() || body.discount {
-		let product_id = cosmetic
-			.stripe_product_id
-			.as_deref()
-			.ok_or(UpdateError::MissingProduct)?;
-
 		if body.discount {
+			let product_id = existing_product.ok_or(UpdateError::MissingProduct)?;
 			let base = cosmetic.base_price.ok_or(UpdateError::MissingBasePrice)?;
 			let (discounted, rate) = match (body.discount_rate, body.new_price) {
 				(Some(rate), _) => (base * (1.0 - rate as f32 / 100.0), rate),
@@ -142,12 +154,13 @@ async fn endpoint(
 
 			let price_id = products::create_price(
 				&state.stripe.client,
-				product_id,
+				&product_id,
 				products::to_cents(discounted),
 			)
 			.await?;
 
 			Some(PriceUpdate {
+				stripe_product_id: product_id,
 				stripe_price_id: price_id,
 				base_price: None,
 				discount_rate: Some(rate),
@@ -155,16 +168,48 @@ async fn endpoint(
 		} else {
 			// Silent increase: new_price is guaranteed present by the guard above.
 			let new_price = body.new_price.ok_or(UpdateError::InvalidDiscount)?;
+
+			let product_id = match existing_product {
+				Some(product_id) => product_id,
+				None => {
+					let group_name = match cosmetic.group_id {
+						Some(group_id) => CosmeticGroup::find_by_id(group_id)
+							.one(&state.database)
+							.await?
+							.map(|group| group.name),
+						None => None,
+					};
+					let product_name = body
+						.name
+						.clone()
+						.or(group_name)
+						.or_else(|| cosmetic.name.clone())
+						.ok_or(UpdateError::MissingProduct)?;
+					let description = match &body.description {
+						Some(description) => description.clone(),
+						None => cosmetic.description.clone(),
+					};
+
+					products::create_product(
+						&state.stripe.client,
+						&product_name,
+						description.as_deref(),
+					)
+					.await?
+				}
+			};
+
 			let price_id = products::create_price(
 				&state.stripe.client,
-				product_id,
+				&product_id,
 				products::to_cents(new_price),
 			)
 			.await?;
-			products::set_default_price(&state.stripe.client, product_id, &price_id)
+			products::set_default_price(&state.stripe.client, &product_id, &price_id)
 				.await?;
 
 			Some(PriceUpdate {
+				stripe_product_id: product_id,
 				stripe_price_id: price_id,
 				base_price: Some(new_price),
 				discount_rate: None,
@@ -218,6 +263,7 @@ async fn endpoint(
 			changed = true;
 		}
 		if let Some(price) = &price_update {
+			active.stripe_product_id = Set(Some(price.stripe_product_id.clone()));
 			active.stripe_price_id = Set(Some(price.stripe_price_id.clone()));
 			if let Some(base) = price.base_price {
 				active.base_price = Set(Some(base));
