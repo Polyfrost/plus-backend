@@ -13,13 +13,15 @@ use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait, EntityTrait, Order, PaginatorTrait, QueryFilter, QueryOrder,
-	QuerySelect, sea_query::Expr,
+	ColumnTrait, Condition, ConnectionTrait, EntityTrait, FromQueryResult, Order,
+	QueryFilter, QueryOrder, QuerySelect, QueryTrait, Select,
+	sea_query::{Alias, Asterisk, Expr, SimpleExpr},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
 	ApiState,
+	cosmetics::view::VariantView,
 	tags::{CosmeticTags, tags_for_cosmetics},
 };
 
@@ -138,10 +140,20 @@ where
 	Ok((!types.is_empty()).then_some(types))
 }
 
-/// cosmetic info, doesn't contain price id
+/// A single store entry, doesn't contain price id.
+///
+/// A grouped cosmetic collapses into one entry: the fields describe its
+/// representative variant (the lowest `variant_order`, ties broken by id),
+/// except `name`, which is the group's name. Price, description and tags are
+/// shared across a group, so the representative's stand for the whole entry.
+/// Every variant, the representative included, is listed in `variants`.
 #[derive(Debug, Serialize, JsonSchema)]
 struct CosmeticSearchInfo {
+	/// The id of the representative variant, not of the group. Pass this to
+	/// `/cosmetics/view/{id}`.
 	id: i32,
+	/// The group's name for a grouped cosmetic, the cosmetic's own name
+	/// otherwise.
 	name: String,
 	description: Option<String>,
 	collection: Option<i32>,
@@ -151,16 +163,30 @@ struct CosmeticSearchInfo {
 	asset_id: Option<i32>,
 	cover_asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
+	/// The representative variant's tags.
 	tags: CosmeticTags,
+	/// Every variant in this cosmetic's group, ordered by `variant_order`, so
+	/// this is the whole swatch list rather than something to append to `id`.
+	/// The entry at `id` is the first element. Null, not empty, for an ungrouped
+	/// cosmetic, which has no variants to pick between.
+	///
+	/// This differs from `/cosmetics/view/{id}`, which lists only the *siblings*
+	/// of the cosmetic asked for. It also lists only buyable variants: where
+	/// `/cosmetics/view/{id}` filters on `enabled` alone, this omits unpriced
+	/// variants too, as they have nothing to show in the store.
+	variants: Option<Vec<VariantView>>,
 }
 
 impl CosmeticSearchInfo {
-	fn from_cosmetic(cosmetic: entities::cosmetic::Model, tags: CosmeticTags) -> Self {
+	fn from_cosmetic(
+		cosmetic: entities::cosmetic::Model,
+		name: String,
+		tags: CosmeticTags,
+		variants: Option<Vec<VariantView>>,
+	) -> Self {
 		CosmeticSearchInfo {
 			id: cosmetic.id,
-			name: cosmetic
-				.name
-				.unwrap_or_else(|| format!("Cosmetic {}", cosmetic.id)),
+			name,
 			description: cosmetic.description,
 			collection: cosmetic.collection,
 			r#type: cosmetic.r#type,
@@ -170,6 +196,7 @@ impl CosmeticSearchInfo {
 			cover_asset_id: cosmetic.cover_asset_id,
 			created_at: cosmetic.created_at,
 			tags,
+			variants,
 		}
 	}
 }
@@ -199,41 +226,66 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Lists enabled cosmetics and emotes, paginated by `nb` per page and \
 			 1-indexed `page`, optionally filtered by a `text` substring of the name \
-			 and a `type`.",
+			 and a `type`. Variants of the same cosmetic collapse into one result \
+			 listing every variant in `variants`, so `nb` and the pagination counts \
+			 are in whole cosmetics, not variants. A group matches if any of its \
+			 variants does.",
 		)
 		.tag("cosmetics")
 }
 
-pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route(
-		"/cosmetics/search",
-		get_with(self::endpoint, self::endpoint_doc),
-	)
+type BucketKey = (Option<i32>, Option<i32>);
+
+#[derive(Debug, FromQueryResult)]
+struct BucketRow {
+	group_id: Option<i32>,
+	solo_id: Option<i32>,
 }
 
-#[tracing::instrument(level = "debug", skip(state))]
-async fn endpoint(
-	State(state): State<ApiState>,
-	Query(query): Query<SearchQuery>,
-) -> Result<Json<SearchResponse>, SearchError> {
-	use entities::{cosmetic, prelude::*, tags, tags_cosmetic};
+impl BucketRow {
+	fn key(&self) -> BucketKey {
+		(self.group_id, self.solo_id)
+	}
+}
 
-	let nb = query.nb.min(MAX_NB);
-	let offset = nb.saturating_mul(query.page.saturating_sub(1));
+fn bucket_key_of(cosmetic: &entities::cosmetic::Model) -> BucketKey {
+	match cosmetic.group_id {
+		Some(group_id) => (Some(group_id), None),
+		None => (None, Some(cosmetic.id)),
+	}
+}
 
-	let (column, order) = match query.sort {
-		Sort::Oldest => (cosmetic::Column::CreatedAt, Order::Asc),
-		Sort::Newest => (cosmetic::Column::CreatedAt, Order::Desc),
-		Sort::Ascending => (cosmetic::Column::BasePrice, Order::Asc),
-		Sort::Descending => (cosmetic::Column::BasePrice, Order::Desc),
-		Sort::Popularity => (cosmetic::Column::PurchaseCount, Order::Asc),
-	};
+fn solo_id_expr() -> SimpleExpr {
+	use entities::cosmetic;
+
+	Expr::case(
+		Expr::col((cosmetic::Entity, cosmetic::Column::GroupId)).is_null(),
+		Expr::col((cosmetic::Entity, cosmetic::Column::Id)),
+	)
+	.into()
+}
+
+fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
+	use entities::{cosmetic, cosmetic_group, prelude::*, tags, tags_cosmetic};
 
 	let mut find = Cosmetic::find()
 		.filter(cosmetic::Column::Enabled.eq(true))
 		.filter(cosmetic::Column::BasePrice.is_not_null());
+
 	if let Some(text) = &query.text {
-		find = find.filter(cosmetic::Column::Name.contains(text.as_str()));
+		find = find.filter(
+			Condition::any()
+				.add(cosmetic::Column::Name.contains(text.as_str()))
+				.add(
+					cosmetic::Column::GroupId.in_subquery(
+						sea_orm::sea_query::Query::select()
+							.column(cosmetic_group::Column::Id)
+							.from(cosmetic_group::Entity)
+							.and_where(cosmetic_group::Column::Name.contains(text.as_str()))
+							.to_owned(),
+					),
+				),
+		);
 	}
 	if let Some(kinds) = &query.types {
 		find = find.filter(cosmetic::Column::Type.is_in(kinds.clone()));
@@ -259,26 +311,166 @@ async fn endpoint(
 		);
 	}
 
-	let total_items = find.clone().count(&state.database).await?;
+	find
+}
 
-	let cosmetics = find
-		.order_by(column, order)
-		.order_by(cosmetic::Column::Id, Order::Asc)
+pub(super) fn router() -> ApiRouter<ApiState> {
+	ApiRouter::new().api_route(
+		"/cosmetics/search",
+		get_with(self::endpoint, self::endpoint_doc),
+	)
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn endpoint(
+	State(state): State<ApiState>,
+	Query(query): Query<SearchQuery>,
+) -> Result<Json<SearchResponse>, SearchError> {
+	use std::collections::HashMap;
+
+	use entities::{cosmetic, cosmetic_group, prelude::*};
+
+	let nb = query.nb.min(MAX_NB);
+	let offset = nb.saturating_mul(query.page.saturating_sub(1));
+
+	let (sort_key, order) = match query.sort {
+		Sort::Oldest => (
+			Expr::col((cosmetic::Entity, cosmetic::Column::CreatedAt)).min(),
+			Order::Asc,
+		),
+		Sort::Newest => (
+			Expr::col((cosmetic::Entity, cosmetic::Column::CreatedAt)).max(),
+			Order::Desc,
+		),
+		Sort::Ascending => (
+			Expr::col((cosmetic::Entity, cosmetic::Column::BasePrice)).min(),
+			Order::Asc,
+		),
+		Sort::Descending => (
+			Expr::col((cosmetic::Entity, cosmetic::Column::BasePrice)).max(),
+			Order::Desc,
+		),
+		Sort::Popularity => (
+			Expr::col((cosmetic::Entity, cosmetic::Column::PurchaseCount)).sum(),
+			Order::Asc,
+		),
+	};
+
+	let buckets = filtered(&query)
+		.select_only()
+		.column(cosmetic::Column::GroupId)
+		.expr_as(solo_id_expr(), "solo_id")
+		.group_by(Expr::col((cosmetic::Entity, cosmetic::Column::GroupId)))
+		.group_by(solo_id_expr());
+
+	let total_items = {
+		let count = sea_orm::sea_query::Query::select()
+			.expr(Expr::col(Asterisk).count())
+			.from_subquery(buckets.clone().into_query(), Alias::new("buckets"))
+			.to_owned();
+		let backend = state.database.get_database_backend();
+
+		state
+			.database
+			.query_one(backend.build(&count))
+			.await?
+			.map(|row| row.try_get_by_index::<i64>(0))
+			.transpose()?
+			.unwrap_or(0)
+			.max(0) as u64
+	};
+
+	let page: Vec<BucketRow> = buckets
+		.order_by(sort_key, order)
+		.order_by(
+			Expr::col((cosmetic::Entity, cosmetic::Column::Id)).min(),
+			Order::Asc,
+		)
 		.offset(offset)
 		.limit(nb)
+		.into_model()
 		.all(&state.database)
 		.await?;
 
-	let cosmetic_ids: Vec<i32> = cosmetics.iter().map(|cosmetic| cosmetic.id).collect();
-	let mut tags = tags_for_cosmetics(&state.database, &cosmetic_ids).await?;
+	let group_ids: Vec<i32> = page.iter().filter_map(|row| row.group_id).collect();
+	let solo_ids: Vec<i32> = page.iter().filter_map(|row| row.solo_id).collect();
 
-	let results: Vec<CosmeticSearchInfo> = cosmetics
-		.into_iter()
-		.map(|cosmetic| {
-			let tags = tags.remove(&cosmetic.id).unwrap_or_default();
-			CosmeticSearchInfo::from_cosmetic(cosmetic, tags)
-		})
+	let mut members: HashMap<BucketKey, Vec<cosmetic::Model>> = HashMap::new();
+	if !page.is_empty() {
+		let mut belongs = Condition::any();
+		if !group_ids.is_empty() {
+			belongs = belongs.add(cosmetic::Column::GroupId.is_in(group_ids.clone()));
+		}
+		if !solo_ids.is_empty() {
+			belongs = belongs.add(cosmetic::Column::Id.is_in(solo_ids));
+		}
+
+		let cosmetics = Cosmetic::find()
+			.filter(cosmetic::Column::Enabled.eq(true))
+			.filter(cosmetic::Column::BasePrice.is_not_null())
+			.filter(belongs)
+			.order_by_asc(cosmetic::Column::VariantOrder)
+			.order_by_asc(cosmetic::Column::Id)
+			.all(&state.database)
+			.await?;
+
+		for cosmetic in cosmetics {
+			members
+				.entry(bucket_key_of(&cosmetic))
+				.or_default()
+				.push(cosmetic);
+		}
+	}
+
+	let group_names: HashMap<i32, String> = if group_ids.is_empty() {
+		HashMap::new()
+	} else {
+		CosmeticGroup::find()
+			.filter(cosmetic_group::Column::Id.is_in(group_ids))
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|group| (group.id, group.name))
+			.collect()
+	};
+
+	let representative_ids: Vec<i32> = page
+		.iter()
+		.filter_map(|row| members.get(&row.key())?.first().map(|c| c.id))
 		.collect();
+	let mut tags = tags_for_cosmetics(&state.database, &representative_ids).await?;
+
+	let mut results: Vec<CosmeticSearchInfo> = Vec::with_capacity(page.len());
+	for row in &page {
+		let Some(members) = members.remove(&row.key()) else {
+			continue;
+		};
+
+		let variants = row
+			.group_id
+			.map(|_| members.iter().cloned().map(VariantView::from_cosmetic).collect());
+
+		let mut members = members.into_iter();
+		let Some(representative) = members.next() else {
+			continue;
+		};
+
+		let name = match row.group_id.and_then(|id| group_names.get(&id)) {
+			Some(name) => name.clone(),
+			None => representative
+				.name
+				.clone()
+				.unwrap_or_else(|| format!("Cosmetic {}", representative.id)),
+		};
+		let tags = tags.remove(&representative.id).unwrap_or_default();
+
+		results.push(CosmeticSearchInfo::from_cosmetic(
+			representative,
+			name,
+			tags,
+			variants,
+		));
+	}
 
 	let pagination = Pagination {
 		page: query.page,

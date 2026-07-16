@@ -74,6 +74,19 @@ pub struct VariantView {
 	cover_asset_id: Option<i32>,
 }
 
+impl VariantView {
+	pub(super) fn from_cosmetic(cosmetic: entities::cosmetic::Model) -> Self {
+		Self {
+			id: cosmetic.id,
+			variant_name: cosmetic.variant_name,
+			model_variant: cosmetic.model_variant,
+			variant_order: cosmetic.variant_order,
+			asset_id: cosmetic.asset_id,
+			cover_asset_id: cosmetic.cover_asset_id,
+		}
+	}
+}
+
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("viewCosmetic")
 		.summary("View a cosmetic")
@@ -123,14 +136,7 @@ async fn endpoint(
 			Some(
 				siblings
 					.into_iter()
-					.map(|s| VariantView {
-						id: s.id,
-						variant_name: s.variant_name,
-						model_variant: s.model_variant,
-						variant_order: s.variant_order,
-						asset_id: s.asset_id,
-						cover_asset_id: s.cover_asset_id,
-					})
+					.map(VariantView::from_cosmetic)
 					.collect(),
 			)
 		} else {
