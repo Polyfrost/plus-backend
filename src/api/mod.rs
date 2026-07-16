@@ -161,14 +161,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.layer(TraceLayer::new_for_http())
 		.layer(
 			CorsLayer::new()
-				.allow_origin([
-					"https://plus-admin.polyfrost.org"
-						.parse::<header::HeaderValue>()
-						.expect("Unable to parse allowed CORS origin"),
-					"http://localhost:3000"
-						.parse::<header::HeaderValue>()
-						.expect("Unable to parse allowed CORS origin"),
-				])
+				.allow_origin(args.cors_origins)
 				.allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
 				.allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
 		);

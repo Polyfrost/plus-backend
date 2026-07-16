@@ -2,6 +2,7 @@ use std::{net::SocketAddr, str::FromStr};
 
 use axum_client_ip::ClientIpSource;
 use bpaf::Bpaf;
+use http::{HeaderValue, header::InvalidHeaderValue};
 
 #[derive(Clone, Debug, Bpaf)]
 #[bpaf(options, version)]
@@ -73,4 +74,27 @@ pub(crate) struct ServeArgs {
 		fallback(String::new())
 	)]
 	pub(crate) render_service_url: String,
+	/// The origins allowed to make cross-origin requests to the API, comma
+	/// seperated.
+	#[bpaf(
+		long("cors-origins"),
+		env("CORS_ORIGINS"),
+		argument::<String>("ORIGINS"),
+		parse(parse_cors_origins),
+		fallback_with(default_cors_origins)
+	)]
+	pub(crate) cors_origins: Vec<HeaderValue>,
+}
+
+fn parse_cors_origins(value: String) -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
+	value
+		.split(',')
+		.map(str::trim)
+		.filter(|origin| !origin.is_empty())
+		.map(HeaderValue::from_str)
+		.collect()
+}
+
+fn default_cors_origins() -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
+	parse_cors_origins("https://plus-admin.polyfrost.org,http://localhost:3000".to_owned())
 }
