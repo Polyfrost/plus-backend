@@ -13,8 +13,8 @@ use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait, Condition, ConnectionTrait, EntityTrait, FromQueryResult, Order,
-	QueryFilter, QueryOrder, QuerySelect, QueryTrait, Select,
+	ColumnTrait, Condition, ConnectionTrait, EntityTrait, FromQueryResult, JoinType, Order,
+	QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait, Select,
 	sea_query::{Alias, Asterisk, Expr, SimpleExpr},
 };
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,11 @@ pub enum Sort {
 
 /// The maximum number of results allowed per page.
 const MAX_NB: u64 = 100;
+
+/// Minimum trigram `word_similarity` a name must reach against the search text
+/// to be considered a fuzzy match. Higher = stricter. 0.3 tolerates typos and
+/// partial words without drowning results in noise.
+const SIMILARITY_THRESHOLD: f64 = 0.3;
 
 fn default_nb() -> u64 {
 	50
@@ -265,26 +270,40 @@ fn solo_id_expr() -> SimpleExpr {
 }
 
 fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
-	use entities::{cosmetic, cosmetic_group, prelude::*, tags, tags_cosmetic};
+	use entities::{cosmetic, prelude::*, tags, tags_cosmetic};
 
 	let mut find = Cosmetic::find()
 		.filter(cosmetic::Column::Enabled.eq(true))
 		.filter(cosmetic::Column::BasePrice.is_not_null());
 
 	if let Some(text) = &query.text {
-		find = find.filter(
-			Condition::any()
-				.add(cosmetic::Column::Name.contains(text.as_str()))
-				.add(
-					cosmetic::Column::GroupId.in_subquery(
-						sea_orm::sea_query::Query::select()
-							.column(cosmetic_group::Column::Id)
-							.from(cosmetic_group::Entity)
-							.and_where(cosmetic_group::Column::Name.contains(text.as_str()))
-							.to_owned(),
-					),
-				),
-		);
+		// Match against both the variant's own name and its group's name. The
+		// left join makes `cosmetic_group.name` available (NULL for ungrouped
+		// cosmetics); the same join is reused for relevance ranking.
+		let pattern = format!("%{}%", text);
+		find = find
+			.join(JoinType::LeftJoin, cosmetic::Relation::CosmeticGroup.def())
+			.filter(
+				Condition::any()
+					// Case-insensitive substring: exact "cape" inside "Red Cape".
+					.add(Expr::cust_with_values("cosmetic.name ILIKE ?", [pattern.clone()]))
+					.add(Expr::cust_with_values("cosmetic_group.name ILIKE ?", [pattern]))
+					// Trigram fuzzy: tolerates typos ("caep") and word order.
+					.add(Expr::cust_with_values(
+						"word_similarity(?, cosmetic.name) >= ?",
+						[
+							sea_orm::Value::from(text.clone()),
+							sea_orm::Value::from(SIMILARITY_THRESHOLD),
+						],
+					))
+					.add(Expr::cust_with_values(
+						"word_similarity(?, cosmetic_group.name) >= ?",
+						[
+							sea_orm::Value::from(text.clone()),
+							sea_orm::Value::from(SIMILARITY_THRESHOLD),
+						],
+					)),
+			);
 	}
 	if let Some(kinds) = &query.types {
 		find = find.filter(cosmetic::Column::Type.is_in(kinds.clone()));
@@ -355,7 +374,7 @@ async fn endpoint(
 		),
 	};
 
-	let buckets = filtered(&query)
+	let mut buckets = filtered(&query)
 		.select_only()
 		.column(cosmetic::Column::GroupId)
 		.expr_as(solo_id_expr(), "solo_id")
@@ -378,6 +397,22 @@ async fn endpoint(
 			.unwrap_or(0)
 			.max(0) as u64
 	};
+
+	// With a search text, best matches lead; the requested `sort` only breaks
+	// ties between equally-relevant results. Without text, `sort` drives fully.
+	if let Some(text) = &query.text {
+		let relevance = Expr::cust_with_values(
+			"GREATEST(\
+				MAX(word_similarity(?, cosmetic.name)), \
+				MAX(COALESCE(word_similarity(?, cosmetic_group.name), 0))\
+			)",
+			[
+				sea_orm::Value::from(text.clone()),
+				sea_orm::Value::from(text.clone()),
+			],
+		);
+		buckets = buckets.order_by(relevance, Order::Desc);
+	}
 
 	let page: Vec<BucketRow> = buckets
 		.order_by(sort_key, order)
