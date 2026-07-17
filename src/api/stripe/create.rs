@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use aide::{OperationIo, transform::TransformOperation};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use entities::{player_owned_cosmetic, prelude::*, user};
 use schemars::JsonSchema;
+use sea_orm::{DbErr, prelude::*};
 use serde::{Deserialize, Serialize};
 use stripe_checkout::CheckoutSessionMode;
 use stripe_checkout::checkout_session::{
@@ -10,7 +12,10 @@ use stripe_checkout::checkout_session::{
 };
 use uuid::Uuid;
 
-use crate::api::ApiState;
+use crate::api::{
+	ApiState,
+	stripe::pricing::{cosmetics_for_price, display_name},
+};
 
 #[derive(Debug, thiserror::Error, OperationIo)]
 pub(super) enum CreateError {
@@ -18,6 +23,10 @@ pub(super) enum CreateError {
 	Stripe(#[from] stripe_client::StripeError),
 	#[error("Stripe did not return a checkout url")]
 	MissingUrl,
+	#[error("Player already owns {0}")]
+	AlreadyOwned(String),
+	#[error("Unable to check existing ownership: {0}")]
+	Database(#[from] DbErr),
 }
 
 impl IntoResponse for CreateError {
@@ -25,7 +34,10 @@ impl IntoResponse for CreateError {
 		(
 			match self {
 				CreateError::Stripe(_) => StatusCode::BAD_GATEWAY,
-				CreateError::MissingUrl => StatusCode::INTERNAL_SERVER_ERROR,
+				CreateError::MissingUrl | CreateError::Database(_) => {
+					StatusCode::INTERNAL_SERVER_ERROR
+				}
+				CreateError::AlreadyOwned(_) => StatusCode::CONFLICT,
 			},
 			self.to_string(),
 		)
@@ -54,7 +66,8 @@ pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Create a Stripe checkout")
 		.description(concat!(
 			"Creates a Stripe checkout for one or more cosmetics/emotes ",
-			"using their Stripe IDs returned from the list all cosmetics endpoint (not implemented)"
+			"using their Stripe IDs returned from the list all cosmetics endpoint (not implemented). ",
+			"Responds 409 naming the cosmetics if the receiving player already owns any of them."
 		))
 		.tag("stripe")
 }
@@ -69,6 +82,41 @@ pub(super) async fn endpoint(
 		prices,
 		buyer,
 	} = request;
+
+	let mut cosmetics = Vec::new();
+	for price in &prices {
+		cosmetics.extend(cosmetics_for_price(&state.database, price).await?);
+	}
+
+	if !cosmetics.is_empty()
+		&& let Some(user) = User::find()
+			.filter(user::Column::MinecraftUuid.eq(player))
+			.one(&state.database)
+			.await?
+	{
+		let owned: Vec<i32> = PlayerOwnedCosmetic::find()
+			.filter(player_owned_cosmetic::Column::PlayerId.eq(user.id))
+			.filter(
+				player_owned_cosmetic::Column::CosmeticId
+					.is_in(cosmetics.iter().map(|cosmetic| cosmetic.id)),
+			)
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|owned| owned.cosmetic_id)
+			.collect();
+
+		if !owned.is_empty() {
+			return Err(CreateError::AlreadyOwned(
+				cosmetics
+					.iter()
+					.filter(|cosmetic| owned.contains(&cosmetic.id))
+					.map(display_name)
+					.collect::<Vec<_>>()
+					.join(", "),
+			));
+		}
+	}
 
 	let line_items = prices
 		.iter()

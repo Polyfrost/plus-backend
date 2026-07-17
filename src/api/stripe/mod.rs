@@ -1,4 +1,5 @@
 mod create;
+mod pricing;
 pub(in crate::api) mod products;
 mod webhook;
 

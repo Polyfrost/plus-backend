@@ -4,13 +4,14 @@ use axum::{
 	http::{HeaderMap, StatusCode},
 };
 use entities::{
-	bundles, bundles_cosmetics, cosmetic, player_owned_cosmetic,
+	cosmetic, player_owned_cosmetic,
 	prelude::*,
 	sea_orm_active_enums::{CosmeticType, TransactionProvider, TransactionStatus},
 	transaction, user,
 };
 use sea_orm::{
-	ActiveValue, DbErr, TransactionError, TransactionTrait, prelude::*, sea_query::Query,
+	ActiveValue, DbErr, TransactionError, TransactionTrait, TryInsertResult, prelude::*,
+	sea_query::Query,
 };
 use stripe_checkout::checkout_session::ListCheckoutSession;
 use stripe_shared::{Charge, CheckoutSessionPaymentStatus};
@@ -19,7 +20,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
-	api::{ApiState, websocket::structs::ClientBoundPacket},
+	api::{
+		ApiState, stripe::pricing::cosmetics_for_price,
+		websocket::structs::ClientBoundPacket,
+	},
 	database::{DatabaseTransactionExt, DatabaseUserExt},
 };
 
@@ -127,70 +131,51 @@ pub(super) async fn endpoint(
 
 				let mut grant = OwnershipGrant::default();
 				for price in &prices {
-					let mut cosmetics = Cosmetic::find()
-						.filter(cosmetic::Column::StripePriceId.eq(price.as_str()))
-						.all(txn)
-						.await?;
-					cosmetics = if cosmetics.is_empty() {
-						if let Some(bundle) = Bundles::find()
-							.filter(bundles::Column::StripePriceId.eq(price.as_str()))
-							.one(txn)
-							.await?
-						{
-							Cosmetic::find()
-								.filter(
-									cosmetic::Column::Id.in_subquery(
-										Query::select()
-											.column(bundles_cosmetics::Column::CosmeticId)
-											.from(bundles_cosmetics::Entity)
-											.and_where(
-												bundles_cosmetics::Column::BundleId
-													.eq(bundle.id),
-											)
-											.to_owned(),
-									),
-								)
-								.all(txn)
-								.await?
-						} else {
-							cosmetics
-						}
-					} else {
-						cosmetics
-					};
-					if !cosmetics.is_empty() {
-						let cosmetic_ids: Vec<_> =
-							cosmetics.iter().map(|cosmetic| cosmetic.id).collect();
+					let cosmetics = cosmetics_for_price(txn, price).await?;
+					if cosmetics.is_empty() {
+						continue;
+					}
 
-						PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(
-							|cosmetic| player_owned_cosmetic::ActiveModel {
-								player_id: ActiveValue::Set(user.id),
-								cosmetic_id: ActiveValue::Set(cosmetic.id),
-								acquired_via: ActiveValue::Set(
-									TransactionProvider::Stripe,
-								),
-								transaction_id: ActiveValue::Set(Some(transaction.id)),
-								..Default::default()
-							},
-						))
-						.on_conflict_do_nothing()
+					let inserted = PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(
+						|cosmetic| player_owned_cosmetic::ActiveModel {
+							player_id: ActiveValue::Set(user.id),
+							cosmetic_id: ActiveValue::Set(cosmetic.id),
+							acquired_via: ActiveValue::Set(TransactionProvider::Stripe),
+							transaction_id: ActiveValue::Set(Some(transaction.id)),
+							..Default::default()
+						},
+					))
+					.on_conflict_do_nothing()
+					.exec_with_returning_many(txn)
+					.await?;
+
+					let granted_ids: Vec<i32> = match inserted {
+						TryInsertResult::Inserted(rows) => {
+							rows.into_iter().map(|row| row.cosmetic_id).collect()
+						}
+						TryInsertResult::Empty | TryInsertResult::Conflicted => continue,
+					};
+					if granted_ids.is_empty() {
+						continue;
+					}
+
+					Cosmetic::update_many()
+						.col_expr(
+							cosmetic::Column::PurchaseCount,
+							Expr::col(cosmetic::Column::PurchaseCount).add(1),
+						)
+						.filter(cosmetic::Column::Id.is_in(granted_ids.clone()))
 						.exec(txn)
 						.await?;
 
-						Cosmetic::update_many()
-							.col_expr(
-								cosmetic::Column::PurchaseCount,
-								Expr::col(cosmetic::Column::PurchaseCount).add(1),
-							)
-							.filter(cosmetic::Column::Id.is_in(cosmetic_ids))
-							.exec(txn)
-							.await?;
-						for cosmetic in cosmetics {
-							if matches!(cosmetic.r#type, CosmeticType::Emote) {
-								grant.emote_ids.push(cosmetic.id);
-							} else {
-								grant.cosmetic_ids.push(cosmetic.id);
-							}
+					for cosmetic in cosmetics {
+						if !granted_ids.contains(&cosmetic.id) {
+							continue;
+						}
+						if matches!(cosmetic.r#type, CosmeticType::Emote) {
+							grant.emote_ids.push(cosmetic.id);
+						} else {
+							grant.cosmetic_ids.push(cosmetic.id);
 						}
 					}
 				}
