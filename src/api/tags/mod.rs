@@ -1,12 +1,16 @@
+mod apply;
 mod create;
 mod list;
+mod remove;
 
 use std::collections::HashMap;
 
 use aide::axum::ApiRouter;
 use entities::sea_orm_active_enums::TagType;
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter};
+use sea_orm::{
+	ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter,
+};
 use serde::Serialize;
 
 use crate::api::ApiState;
@@ -60,11 +64,46 @@ pub(crate) async fn tags_for_cosmetics(
 	Ok(grouped)
 }
 
+async fn expand_groups<C: ConnectionTrait>(
+	db: &C,
+	cosmetic_ids: &[i32],
+) -> Result<Option<Vec<i32>>, DbErr> {
+	use std::collections::HashSet;
+
+	use entities::{cosmetic, prelude::*};
+
+	let requested: HashSet<i32> = cosmetic_ids.iter().copied().collect();
+	let cosmetics = Cosmetic::find()
+		.filter(cosmetic::Column::Id.is_in(requested.iter().copied()))
+		.all(db)
+		.await?;
+	if cosmetics.len() != requested.len() {
+		return Ok(None);
+	}
+
+	let group_ids: Vec<i32> = cosmetics.iter().filter_map(|c| c.group_id).collect();
+	let mut expanded: HashSet<i32> = requested;
+	if !group_ids.is_empty() {
+		expanded.extend(
+			Cosmetic::find()
+				.filter(cosmetic::Column::GroupId.is_in(group_ids))
+				.all(db)
+				.await?
+				.into_iter()
+				.map(|c| c.id),
+		);
+	}
+
+	Ok(Some(expanded.into_iter().collect()))
+}
+
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new().nest(
 		"/tags",
 		ApiRouter::new()
 			.merge(list::router())
-			.merge(create::router()),
+			.merge(create::router())
+			.merge(apply::router())
+			.merge(remove::router()),
 	)
 }

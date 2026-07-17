@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, Set};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ApiState, account::AdminPlayer};
+use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum CreateError {
@@ -52,7 +52,7 @@ pub struct CreateResponse {
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("createTag")
 		.summary("Create a tag")
-		.description("Creates a new color or custom tag. Also use to create categories with type = category. Admin role required.")
+		.description("Creates a new color or custom tag. Also use to create categories with type = category. Admin password required.")
 		.tag("tags")
 }
 
@@ -60,10 +60,10 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new().api_route("/create", post_with(self::endpoint, self::endpoint_doc))
 }
 
-#[tracing::instrument(level = "debug", skip(state))]
+#[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	AdminPlayer(_admin): AdminPlayer,
+	_auth: AdminAuthenticationExtractor,
 	Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<CreateResponse>), CreateError> {
 	use entities::tags;
