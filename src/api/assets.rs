@@ -4,11 +4,14 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{
+	Json,
 	extract::{Path, State},
 	http::StatusCode,
 	response::{IntoResponse, Redirect},
 };
+use schemars::JsonSchema;
 use sea_orm::EntityTrait;
+use serde::Serialize;
 
 use crate::api::ApiState;
 
@@ -35,26 +38,16 @@ impl IntoResponse for AssetError {
 	}
 }
 
-fn endpoint_doc(op: TransformOperation) -> TransformOperation {
-	op.id("getAsset")
-		.summary("Get an asset")
-		.description(
-			"Redirects to the S3 url for the given asset. Returns 404 when no asset \
-			 with that id has a resolvable url.",
-		)
-		.tag("assets")
+/// The resolvable url for an asset.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssetUrlResponse {
+	/// The direct (possibly presigned) url the asset can be fetched from.
+	url: String,
 }
 
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route("/asset/{id}", get_with(self::endpoint, self::endpoint_doc))
-}
-
-#[tracing::instrument(level = "debug", skip(state))]
-async fn endpoint(
-	State(state): State<ApiState>,
-	Path(id): Path<i32>,
-) -> Result<Redirect, AssetError> {
+/// Resolve the direct url for the asset with the given id, presigning an S3
+/// object url when the asset is backed by object storage.
+async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 	use entities::prelude::*;
 
 	let asset = Asset::find_by_id(id)
@@ -62,11 +55,59 @@ async fn endpoint(
 		.await?
 		.ok_or(AssetError::NotFound)?;
 
-	let url = match (&asset.url, &asset.storage_path) {
-		(Some(url), _) => url.clone(),
-		(None, Some(path)) => state.s3_bucket.presign_get(path, 86400, None).await?, // 24h
-		(None, None) => return Err(AssetError::NotFound),
-	};
+	match (&asset.url, &asset.storage_path) {
+		(Some(url), _) => Ok(url.clone()),
+		(None, Some(path)) => Ok(state.s3_bucket.presign_get(path, 86400, None).await?), // 24h
+		(None, None) => Err(AssetError::NotFound),
+	}
+}
 
-	Ok(Redirect::temporary(&url))
+fn redirect_doc(op: TransformOperation) -> TransformOperation {
+	op.id("getAsset")
+		.summary("Get an asset")
+		.description(
+			"Redirects to the resolved url for the given asset. Prefer `/asset/{id}/url` \
+			 from browser JavaScript, since following this redirect to object storage is \
+			 subject to CORS. Returns 404 when no asset with that id has a resolvable url.",
+		)
+		.tag("assets")
+}
+
+fn url_doc(op: TransformOperation) -> TransformOperation {
+	op.id("getAssetUrl")
+		.summary("Get an asset's url")
+		.description(
+			"Returns the resolved url for the given asset as JSON, without redirecting. \
+			 Use this from browser JavaScript to fetch the asset directly and avoid the \
+			 CORS pitfalls of a cross-origin redirect. Returns 404 when no asset with \
+			 that id has a resolvable url.",
+		)
+		.tag("assets")
+}
+
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.api_route("/asset/{id}", get_with(self::redirect_endpoint, self::redirect_doc))
+		.api_route(
+			"/asset/{id}/url",
+			get_with(self::url_endpoint, self::url_doc),
+		)
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn redirect_endpoint(
+	State(state): State<ApiState>,
+	Path(id): Path<i32>,
+) -> Result<Redirect, AssetError> {
+	Ok(Redirect::temporary(&resolve_url(&state, id).await?))
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn url_endpoint(
+	State(state): State<ApiState>,
+	Path(id): Path<i32>,
+) -> Result<Json<AssetUrlResponse>, AssetError> {
+	Ok(Json(AssetUrlResponse {
+		url: resolve_url(&state, id).await?,
+	}))
 }
