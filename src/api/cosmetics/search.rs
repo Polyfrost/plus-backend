@@ -286,18 +286,18 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 			.filter(
 				Condition::any()
 					// Case-insensitive substring: exact "cape" inside "Red Cape".
-					.add(Expr::cust_with_values("cosmetic.name ILIKE ?", [pattern.clone()]))
-					.add(Expr::cust_with_values("cosmetic_group.name ILIKE ?", [pattern]))
+					.add(Expr::cust_with_values("cosmetic.name ILIKE $1", [pattern.clone()]))
+					.add(Expr::cust_with_values("cosmetic_group.name ILIKE $1", [pattern]))
 					// Trigram fuzzy: tolerates typos ("caep") and word order.
 					.add(Expr::cust_with_values(
-						"word_similarity(?, cosmetic.name) >= ?",
+						"word_similarity($1, cosmetic.name) >= $2",
 						[
 							sea_orm::Value::from(text.clone()),
 							sea_orm::Value::from(SIMILARITY_THRESHOLD),
 						],
 					))
 					.add(Expr::cust_with_values(
-						"word_similarity(?, cosmetic_group.name) >= ?",
+						"word_similarity($1, cosmetic_group.name) >= $2",
 						[
 							sea_orm::Value::from(text.clone()),
 							sea_orm::Value::from(SIMILARITY_THRESHOLD),
@@ -403,8 +403,8 @@ async fn endpoint(
 	if let Some(text) = &query.text {
 		let relevance = Expr::cust_with_values(
 			"GREATEST(\
-				MAX(word_similarity(?, cosmetic.name)), \
-				MAX(COALESCE(word_similarity(?, cosmetic_group.name), 0))\
+				MAX(word_similarity($1, cosmetic.name)), \
+				MAX(COALESCE(word_similarity($2, cosmetic_group.name), 0))\
 			)",
 			[
 				sea_orm::Value::from(text.clone()),
