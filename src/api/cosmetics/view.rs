@@ -126,7 +126,7 @@ async fn endpoint(
 
 		// Grouped cosmetics carry variants; load the whole group, this one
 		// included, so the list is the same whichever variant was asked for.
-		let variants = if let Some(group_id) = cosmetic.group_id {
+		let (variants, group_name) = if let Some(group_id) = cosmetic.group_id {
 			let group = Cosmetic::find()
 				.filter(cosmetic::Column::GroupId.eq(group_id))
 				.filter(cosmetic::Column::Enabled.eq(true))
@@ -135,16 +135,32 @@ async fn endpoint(
 				.all(&state.database)
 				.await?;
 
-			Some(group.into_iter().map(VariantView::from_cosmetic).collect())
+			let group_name = CosmeticGroup::find_by_id(group_id)
+				.one(&state.database)
+				.await?
+				.map(|group| group.name);
+
+			(
+				Some(
+					group
+						.into_iter()
+						.filter(|c| {
+							!super::is_redundant_variant(c.variant_name.as_deref())
+						})
+						.map(VariantView::from_cosmetic)
+						.collect(),
+				),
+				group_name,
+			)
 		} else {
-			None
+			(None, None)
 		};
 
 		Ok(Json(ViewResponse {
 			stripe_price_id: cosmetic.stripe_price_id,
 			id: cosmetic.id,
-			name: cosmetic
-				.name
+			name: group_name
+				.or(cosmetic.name)
 				.unwrap_or_else(|| format!("Cosmetic {}", cosmetic.id)),
 			description: cosmetic.description,
 			collection: cosmetic.collection,

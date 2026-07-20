@@ -187,16 +187,31 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 pub(super) type CosmeticRow =
 	(cosmetic::Model, Option<asset::Model>, Option<asset::Model>, Vec<BodySlot>);
 
+pub(super) fn is_redundant_variant(variant_name: Option<&str>) -> bool {
+	let Some(name) = variant_name else {
+		return false;
+	};
+	let lower = name.to_ascii_lowercase();
+	lower.contains("reversed") || lower.contains("fold")
+}
+
 pub(super) async fn group_cosmetics(
 	cosmetics: Vec<CosmeticRow>,
 	groups: HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>,
 	cache: Cache<i32, CachedAssetInfo>,
 	s3_bucket: Arc<Bucket>,
+	hide_redundant_variants: bool,
 ) -> Result<Vec<CosmeticInfo>, S3Error> {
 	let mut buckets: BTreeMap<i32, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
 		BTreeMap::new();
 
 	for (cosmetic, asset, cover_asset, allowed_slots) in cosmetics {
+		if hide_redundant_variants
+			&& is_redundant_variant(cosmetic.variant_name.as_deref())
+		{
+			continue;
+		}
+
 		let variant = VariantInfo::from_db_model(
 			&cosmetic,
 			asset.as_ref(),

@@ -588,6 +588,7 @@ async fn endpoint(
 		groups,
 		state.asset_cache.clone(),
 		state.s3_bucket.clone(),
+		false,
 	)
 	.await?;
 

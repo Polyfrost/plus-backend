@@ -449,6 +449,9 @@ async fn endpoint(
 			.await?;
 
 		for cosmetic in cosmetics {
+			if super::is_redundant_variant(cosmetic.variant_name.as_deref()) {
+				continue;
+			}
 			members
 				.entry(bucket_key_of(&cosmetic))
 				.or_default()
