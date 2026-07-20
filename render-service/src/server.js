@@ -42,8 +42,18 @@ const FOCUS_BY_TYPE = {
 	glasses: { anchor: "head", fit: ["head", "cosmetic"], margin: 1.3 },
 	boots: { anchor: "cosmetic", fit: ["cosmetic"], margin: 1.6 },
 	shoulder: { anchor: "cosmetic", fit: ["cosmetic", "head"], margin: 1.35 },
-	wings: { anchor: "cosmetic", fit: ["cosmetic"], margin: 1.2 },
+	wings: {
+		anchor: "body",
+		fit: ["cosmetic", "body"],
+		margin: 1.6,
+		recenter: false,
+		centerXShift: 0.25,
+	},
 	backpack: { anchor: "cosmetic", fit: ["cosmetic"], margin: 1.25 },
+};
+const ANIMATE_SECONDS_BY_TYPE = {
+	aura: 0.9,
+	wings: 1.0,
 };
 const BUNDLE_PATH = path.join(here, "..", "vendor", "skinview3d.bundle.js");
 const DEFAULT_SKIN_PATH =
@@ -212,8 +222,13 @@ async function renderInPage(params) {
 						const zoom = Math.max(0.5, Math.min(2.6, Math.min(zoomH, zoomW)));
 
 						// Center the anchor region at the origin (the camera target).
-						player.position.x -= (anchorBox.minX + anchorBox.maxX) / 2;
-						player.position.y -= (anchorBox.minY + anchorBox.maxY) / 2;
+						if (focus.recenter !== false) {
+							player.position.x -= (anchorBox.minX + anchorBox.maxX) / 2;
+							player.position.y -= (anchorBox.minY + anchorBox.maxY) / 2;
+						} else if (focus.centerXShift) {
+							const fitCX = (fitBox.minX + fitBox.maxX) / 2;
+							player.position.x -= fitCX * focus.centerXShift;
+						}
 						viewer.zoom = zoom;
 					}
 				}
@@ -307,7 +322,7 @@ async function main() {
 			height: RENDER_HEIGHT,
 			yaw: BACK_WORN_TYPES.has(type) ? BACK_YAW : PLAYER_YAW,
 			focus: FOCUS_BY_TYPE[type] ?? null,
-			animateSeconds: type === "aura" ? 0.9 : 0,
+			animateSeconds: ANIMATE_SECONDS_BY_TYPE[type] ?? 0,
 			skinDataUrl,
 			model,
 			kind,
