@@ -51,7 +51,8 @@ struct PriceUpdate {
 	stripe_price_id: String,
 	/// Set only on a silent increase; left untouched for a discount.
 	base_price: Option<f32>,
-	/// Set only for a discount; left untouched for a silent increase.
+	/// Always written: the rate for a discount, `None` to clear the discount on
+	/// a silent increase (which restores the full default price).
 	discount_rate: Option<i32>,
 }
 
@@ -268,9 +269,7 @@ async fn endpoint(
 			if let Some(base) = price.base_price {
 				active.base_price = Set(Some(base));
 			}
-			if let Some(rate) = price.discount_rate {
-				active.discount_rate = Set(Some(rate));
-			}
+			active.discount_rate = Set(price.discount_rate);
 			changed = true;
 		}
 		if !is_grouped {
