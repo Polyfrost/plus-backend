@@ -15,5 +15,7 @@ pub use super::player_equipped_cosmetic::Entity as PlayerEquippedCosmetic;
 pub use super::player_owned_cosmetic::Entity as PlayerOwnedCosmetic;
 pub use super::tags::Entity as Tags;
 pub use super::tags_cosmetic::Entity as TagsCosmetic;
+pub use super::tracked_link_hits::Entity as TrackedLinkHits;
+pub use super::tracked_links::Entity as TrackedLinks;
 pub use super::transaction::Entity as Transaction;
 pub use super::user::Entity as User;

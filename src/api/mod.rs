@@ -6,6 +6,7 @@ mod bundles;
 mod category;
 mod collections;
 mod cosmetics;
+mod links;
 mod players;
 mod state;
 mod stripe;
@@ -107,6 +108,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.merge(assets::setup_router().await)
 		.merge(bundles::setup_router().await)
 		.merge(collections::setup_router().await)
+		.merge(links::setup_router().await)
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)

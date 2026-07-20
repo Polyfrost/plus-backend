@@ -18,5 +18,7 @@ pub mod player_owned_cosmetic;
 pub mod sea_orm_active_enums;
 pub mod tags;
 pub mod tags_cosmetic;
+pub mod tracked_link_hits;
+pub mod tracked_links;
 pub mod transaction;
 pub mod user;

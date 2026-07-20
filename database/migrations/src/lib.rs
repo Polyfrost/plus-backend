@@ -34,6 +34,7 @@ mod m20260708_000001_extend_tags_table;
 mod m20260710_000000_extend_cosmetics_info;
 mod m20260711_000000_add_cosmetic_cover;
 mod m20260717_000000_add_cosmetic_trigram_search;
+mod m20260720_000000_create_tracked_links;
 
 pub struct Migrator;
 
@@ -75,6 +76,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260710_000000_extend_cosmetics_info::Migration),
 			Box::new(m20260711_000000_add_cosmetic_cover::Migration),
 			Box::new(m20260717_000000_add_cosmetic_trigram_search::Migration),
+			Box::new(m20260720_000000_create_tracked_links::Migration),
 		]
 	}
 }
