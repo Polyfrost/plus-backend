@@ -120,9 +120,15 @@ impl MigrationTrait for Migration {
 			.alter_table(
 				Table::alter()
 					.table(Cosmetic::Table)
-					.add_column_if_not_exists(ColumnDef::new(Cosmetic::GroupId).integer().null())
-					.add_column_if_not_exists(ColumnDef::new(Cosmetic::VariantName).text().null())
-					.add_column_if_not_exists(ColumnDef::new(Cosmetic::ModelVariant).text().null())
+					.add_column_if_not_exists(
+						ColumnDef::new(Cosmetic::GroupId).integer().null(),
+					)
+					.add_column_if_not_exists(
+						ColumnDef::new(Cosmetic::VariantName).text().null(),
+					)
+					.add_column_if_not_exists(
+						ColumnDef::new(Cosmetic::ModelVariant).text().null(),
+					)
 					.add_column_if_not_exists(
 						ColumnDef::new(Cosmetic::VariantOrder)
 							.integer()
@@ -183,7 +189,11 @@ impl MigrationTrait for Migration {
 			.await?;
 
 		manager
-			.drop_table(Table::drop().table(CosmeticGroupAllowedSlot::Table).to_owned())
+			.drop_table(
+				Table::drop()
+					.table(CosmeticGroupAllowedSlot::Table)
+					.to_owned(),
+			)
 			.await?;
 
 		manager

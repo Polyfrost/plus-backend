@@ -582,7 +582,9 @@ async fn endpoint(
 
 	let cover_asset = match cover_asset_id {
 		Some(cover_asset_id) => {
-			Asset::find_by_id(cover_asset_id).one(&state.database).await?
+			Asset::find_by_id(cover_asset_id)
+				.one(&state.database)
+				.await?
 		}
 		None => None,
 	};

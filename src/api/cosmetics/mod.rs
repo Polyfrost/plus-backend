@@ -179,13 +179,20 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 		.await?
 		.into_iter()
 		.map(|(group, slots)| {
-			(group.id, (group, slots.into_iter().map(|s| s.slot).collect()))
+			(
+				group.id,
+				(group, slots.into_iter().map(|s| s.slot).collect()),
+			)
 		})
 		.collect())
 }
 
-pub(super) type CosmeticRow =
-	(cosmetic::Model, Option<asset::Model>, Option<asset::Model>, Vec<BodySlot>);
+pub(super) type CosmeticRow = (
+	cosmetic::Model,
+	Option<asset::Model>,
+	Option<asset::Model>,
+	Vec<BodySlot>,
+);
 
 pub(super) fn is_redundant_variant(variant_name: Option<&str>) -> bool {
 	let Some(name) = variant_name else {
@@ -222,7 +229,9 @@ pub(super) async fn group_cosmetics(
 		)
 		.await?;
 
-		let group = cosmetic.group_id.and_then(|id| groups.get(&id).map(|g| (id, g)));
+		let group = cosmetic
+			.group_id
+			.and_then(|id| groups.get(&id).map(|g| (id, g)));
 		let (bucket_id, entry) = match group {
 			Some((group_id, (group, group_slots))) => (
 				group_id,

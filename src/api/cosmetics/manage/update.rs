@@ -33,9 +33,9 @@ impl IntoResponse for UpdateError {
 		(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
-				Self::MissingProduct
-				| Self::MissingBasePrice
-				| Self::InvalidDiscount => StatusCode::BAD_REQUEST,
+				Self::MissingProduct | Self::MissingBasePrice | Self::InvalidDiscount => {
+					StatusCode::BAD_REQUEST
+				}
 				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},

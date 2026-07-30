@@ -87,7 +87,10 @@ fn url_doc(op: TransformOperation) -> TransformOperation {
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.api_route("/asset/{id}", get_with(self::redirect_endpoint, self::redirect_doc))
+		.api_route(
+			"/asset/{id}",
+			get_with(self::redirect_endpoint, self::redirect_doc),
+		)
 		.api_route(
 			"/asset/{id}/url",
 			get_with(self::url_endpoint, self::url_doc),

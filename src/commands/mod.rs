@@ -111,5 +111,7 @@ fn parse_cors_origins(value: String) -> Result<Vec<HeaderValue>, InvalidHeaderVa
 }
 
 fn default_cors_origins() -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
-	parse_cors_origins("https://plus-admin.polyfrost.org,http://localhost:3000".to_owned())
+	parse_cors_origins(
+		"https://plus-admin.polyfrost.org,http://localhost:3000".to_owned(),
+	)
 }

@@ -214,7 +214,9 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 fn delete_doc(op: TransformOperation) -> TransformOperation {
 	op.id("deleteTrackedLink")
 		.summary("Delete a tracked link")
-		.description("Deletes the tracked link with the given slug. Admin password required.")
+		.description(
+			"Deletes the tracked link with the given slug. Admin password required.",
+		)
 		.tag("links")
 }
 
@@ -330,7 +332,9 @@ async fn delete(
 ) -> Result<StatusCode, LinksError> {
 	use entities::prelude::*;
 
-	let result = TrackedLinks::delete_by_id(slug).exec(&state.database).await?;
+	let result = TrackedLinks::delete_by_id(slug)
+		.exec(&state.database)
+		.await?;
 
 	if result.rows_affected == 0 {
 		return Err(LinksError::NotFound);
@@ -375,14 +379,18 @@ mod tests {
 		assert!(!valid_target("/projects/oneclient"));
 		assert!(!valid_target("javascript:alert(1)"));
 		assert!(!valid_target("data:text/html,x"));
-		assert!(!valid_target(&format!("https://x.com/{}", "a".repeat(2048))));
+		assert!(!valid_target(&format!(
+			"https://x.com/{}",
+			"a".repeat(2048)
+		)));
 	}
 
 	#[test]
 	fn browser_user_agents_are_not_bots() {
 		let chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 			AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
-		let firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0";
+		let firefox =
+			"Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0";
 		assert!(!is_bot(chrome));
 		assert!(!is_bot(firefox));
 	}

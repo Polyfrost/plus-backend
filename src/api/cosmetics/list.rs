@@ -76,11 +76,15 @@ async fn endpoint(
 		let mut rows = Vec::with_capacity(cosmetics.len());
 		for (cosmetic, allowed) in cosmetics {
 			let asset = match cosmetic.asset_id {
-				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
+				Some(asset_id) => {
+					Asset::find_by_id(asset_id).one(&state.database).await?
+				}
 				None => None,
 			};
 			let cover_asset = match cosmetic.cover_asset_id {
-				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
+				Some(asset_id) => {
+					Asset::find_by_id(asset_id).one(&state.database).await?
+				}
 				None => None,
 			};
 			let allowed_slots = allowed.into_iter().map(|s| s.slot).collect();

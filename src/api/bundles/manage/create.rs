@@ -247,7 +247,8 @@ async fn endpoint(
 	// Provision the Stripe product and its default price.
 	let base_price = base_price.ok_or(CreateError::MissingPrice)?;
 	let product_id =
-		products::create_product(&state.stripe.client, &name, description.as_deref()).await?;
+		products::create_product(&state.stripe.client, &name, description.as_deref())
+			.await?;
 	let price_id = products::create_price(
 		&state.stripe.client,
 		&product_id,

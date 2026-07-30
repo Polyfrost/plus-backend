@@ -136,18 +136,21 @@ pub(super) async fn endpoint(
 						continue;
 					}
 
-					let inserted = PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(
-						|cosmetic| player_owned_cosmetic::ActiveModel {
-							player_id: ActiveValue::Set(user.id),
-							cosmetic_id: ActiveValue::Set(cosmetic.id),
-							acquired_via: ActiveValue::Set(TransactionProvider::Stripe),
-							transaction_id: ActiveValue::Set(Some(transaction.id)),
-							..Default::default()
-						},
-					))
-					.on_conflict_do_nothing()
-					.exec_with_returning_many(txn)
-					.await?;
+					let inserted =
+						PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(
+							|cosmetic| player_owned_cosmetic::ActiveModel {
+								player_id: ActiveValue::Set(user.id),
+								cosmetic_id: ActiveValue::Set(cosmetic.id),
+								acquired_via: ActiveValue::Set(
+									TransactionProvider::Stripe,
+								),
+								transaction_id: ActiveValue::Set(Some(transaction.id)),
+								..Default::default()
+							},
+						))
+						.on_conflict_do_nothing()
+						.exec_with_returning_many(txn)
+						.await?;
 
 					let granted_ids: Vec<i32> = match inserted {
 						TryInsertResult::Inserted(rows) => {

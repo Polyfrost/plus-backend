@@ -74,8 +74,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route("/edit/{id}", put_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new().api_route("/edit/{id}", put_with(self::endpoint, self::endpoint_doc))
 }
 
 struct FileUpload(Multipart);
@@ -186,9 +185,9 @@ async fn endpoint(
 		.ok_or(EditError::NotFound)?;
 
 	let asset_id = match file_data {
-		Some(data) => {
-			Some(store_asset(&state, &data, content_type, &extension, "collections").await?)
-		}
+		Some(data) => Some(
+			store_asset(&state, &data, content_type, &extension, "collections").await?,
+		),
 		None => None,
 	};
 

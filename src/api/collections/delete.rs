@@ -45,8 +45,10 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route("/delete/{id}", delete_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new().api_route(
+		"/delete/{id}",
+		delete_with(self::endpoint, self::endpoint_doc),
+	)
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]

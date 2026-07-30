@@ -6,21 +6,23 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{FromRequestParts, State},
+	extract::{FromRequestParts, Query, State},
 	http::{StatusCode, request::Parts},
 	response::{IntoResponse, Response},
 };
-use chrono::{Days, Utc};
+use chrono::{Days, NaiveDate, Utc};
 use entities::{
 	daily_playtime, monthly_active_login, player_owned_cosmetic, prelude::*,
-	sea_orm_active_enums::PlayerRole,
+	sea_orm_active_enums::PlayerRole, user,
 };
 use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait as _, EntityTrait, FromQueryResult, PaginatorTrait as _, QueryFilter,
-	QuerySelect, sea_query::Alias,
+	QuerySelect, Select,
+	prelude::DateTimeWithTimeZone,
+	sea_query::{Alias, Expr, Func},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
 	api::{
@@ -111,26 +113,107 @@ impl FromRequestParts<ApiState> for PrivateAnalyticsAuth {
 pub enum AnalyticsError {
 	#[error("Unable to query analytics data: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
+	#[error("`start` ({start}) is after `end` ({end})")]
+	InvalidPeriod { start: NaiveDate, end: NaiveDate },
 }
 
 impl IntoResponse for AnalyticsError {
 	fn into_response(self) -> axum::response::Response {
-		(StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response()
+		(
+			match self {
+				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				Self::InvalidPeriod { .. } => StatusCode::BAD_REQUEST,
+			},
+			self.to_string(),
+		)
+			.into_response()
 	}
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+pub struct AnalyticsPeriod {
+	start: Option<NaiveDate>,
+	end: Option<NaiveDate>,
+}
+
+impl AnalyticsPeriod {
+	fn validate(self) -> Result<Self, AnalyticsError> {
+		match (self.start, self.end) {
+			(Some(start), Some(end)) if start > end => {
+				Err(AnalyticsError::InvalidPeriod { start, end })
+			}
+			_ => Ok(self),
+		}
+	}
+
+	fn is_unbounded(self) -> bool {
+		self.start.is_none() && self.end.is_none()
+	}
+
+	fn start_timestamp(self) -> Option<DateTimeWithTimeZone> {
+		self.start.map(start_of_day)
+	}
+
+	fn end_timestamp_exclusive(self) -> Option<DateTimeWithTimeZone> {
+		self.end.and_then(|end| end.succ_opt()).map(start_of_day)
+	}
+}
+
+fn start_of_day(day: NaiveDate) -> DateTimeWithTimeZone {
+	day.and_hms_opt(0, 0, 0)
+		.expect("midnight is a valid time of day")
+		.and_utc()
+		.fixed_offset()
+}
+
+fn filter_timestamp_period<E: EntityTrait>(
+	mut select: Select<E>,
+	column: E::Column,
+	period: AnalyticsPeriod,
+) -> Select<E> {
+	if let Some(start) = period.start_timestamp() {
+		select = select.filter(column.gte(start));
+	}
+	if let Some(end) = period.end_timestamp_exclusive() {
+		select = select.filter(column.lt(end));
+	}
+	select
+}
+
+fn filter_date_period<E: EntityTrait>(
+	mut select: Select<E>,
+	column: E::Column,
+	period: AnalyticsPeriod,
+) -> Select<E> {
+	if let Some(start) = period.start {
+		select = select.filter(column.gte(start));
+	}
+	if let Some(end) = period.end {
+		select = select.filter(column.lte(end));
+	}
+	select
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAnalyticsOverview")
 		.summary("Get private analytics overview")
 		.description(
-			"Returns private aggregate analytics for users, MAU, owned items, and playtime.",
+			"Returns private aggregate analytics for users, MAU, owned items, and \
+			 playtime.\n\nBoth `start` and `end` are optional inclusive `YYYY-MM-DD` UTC \
+			 days, and either can be given on its own. Cumulative metrics (`total_users`, \
+			 owned items and their distribution) are snapshots of the state at the end of \
+			 the period, while flow metrics (`new_users`, `items_acquired`, playtime and \
+			 sessions) only count activity inside the period. Without either parameter \
+			 the response is the all-time overview.",
 		)
 		.tag("analytics")
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct AnalyticsOverviewResponse {
+	period: AnalyticsPeriod,
 	total_users: i64,
+	new_users: i64,
 	monthly_active_users: i64,
 	owned_items_per_user: OwnedItemsPerUser,
 	playtime: Playtime,
@@ -149,6 +232,7 @@ struct OwnedItemsPerUser {
 	total_owned_items: i64,
 	average_per_user: f64,
 	users_with_any: i64,
+	items_acquired: i64,
 	distribution: OwnedItemsDistribution,
 }
 
@@ -166,10 +250,9 @@ struct OwnedItemsDistribution {
 	eleven_plus: i64,
 }
 
-#[derive(Debug, FromQueryResult)]
-struct UserCounts {
-	total_users: i64,
-	monthly_active_users: i64,
+#[derive(Debug, Default, FromQueryResult)]
+struct DistinctCount {
+	count: i64,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -242,57 +325,101 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 async fn endpoint(
 	State(state): State<ApiState>,
 	_auth: PrivateAnalyticsAuth,
+	Query(period): Query<AnalyticsPeriod>,
 ) -> Result<Json<AnalyticsOverviewResponse>, AnalyticsError> {
-	let user_counts = UserCounts {
-		total_users: User::find().count(&state.database).await? as i64,
-		monthly_active_users: MonthlyActiveLogin::find()
-			.filter(monthly_active_login::Column::Month.eq(current_utc_month()))
-			.count(&state.database)
-			.await? as i64,
+	let period = period.validate()?;
+	let up_to_end = AnalyticsPeriod {
+		start: None,
+		end: period.end,
 	};
 
-	let cosmetic_counts = PlayerOwnedCosmetic::find()
-		.select_only()
-		.column(player_owned_cosmetic::Column::PlayerId)
-		.column_as(player_owned_cosmetic::Column::CosmeticId.count(), "count")
-		.group_by(player_owned_cosmetic::Column::PlayerId)
-		.into_model::<PlayerOwnedCount>()
-		.all(&state.database)
-		.await?;
+	let total_users =
+		filter_timestamp_period(User::find(), user::Column::CreatedAt, up_to_end)
+			.count(&state.database)
+			.await? as i64;
+	let new_users = filter_timestamp_period(User::find(), user::Column::CreatedAt, period)
+		.count(&state.database)
+		.await? as i64;
+
+	let monthly_active_users = if period.is_unbounded() {
+		MonthlyActiveLogin::find()
+			.filter(monthly_active_login::Column::Month.eq(current_utc_month()))
+			.count(&state.database)
+			.await? as i64
+	} else {
+		let mut query = MonthlyActiveLogin::find().select_only().column_as(
+			Expr::expr(Func::count_distinct(Expr::col(
+				monthly_active_login::Column::PlayerId,
+			))),
+			"count",
+		);
+		if let Some(start) = period.start_timestamp() {
+			query = query.filter(monthly_active_login::Column::LastLoginAt.gte(start));
+		}
+		if let Some(end) = period.end_timestamp_exclusive() {
+			query = query.filter(monthly_active_login::Column::FirstLoginAt.lt(end));
+		}
+		query
+			.into_model::<DistinctCount>()
+			.one(&state.database)
+			.await?
+			.unwrap_or_default()
+			.count
+	};
+
+	let cosmetic_counts = filter_timestamp_period(
+		PlayerOwnedCosmetic::find(),
+		player_owned_cosmetic::Column::AcquiredAt,
+		up_to_end,
+	)
+	.select_only()
+	.column(player_owned_cosmetic::Column::PlayerId)
+	.column_as(player_owned_cosmetic::Column::CosmeticId.count(), "count")
+	.group_by(player_owned_cosmetic::Column::PlayerId)
+	.into_model::<PlayerOwnedCount>()
+	.all(&state.database)
+	.await?;
 
 	let mut owned_by_player = std::collections::HashMap::new();
 	for count in cosmetic_counts {
 		*owned_by_player.entry(count.player_id).or_insert(0) += count.count;
 	}
-	let owned_counts = OwnedItemsCounts::from_player_counts(
-		user_counts.total_users,
-		owned_by_player.into_values(),
-	);
+	let owned_counts =
+		OwnedItemsCounts::from_player_counts(total_users, owned_by_player.into_values());
 
-	let average_per_user = if user_counts.total_users == 0 {
+	let items_acquired = filter_timestamp_period(
+		PlayerOwnedCosmetic::find(),
+		player_owned_cosmetic::Column::AcquiredAt,
+		period,
+	)
+	.count(&state.database)
+	.await? as i64;
+
+	let average_per_user = if total_users == 0 {
 		0.0
 	} else {
-		owned_counts.total_owned_items as f64 / user_counts.total_users as f64
+		owned_counts.total_owned_items as f64 / total_users as f64
 	};
 
-	let playtime_totals = DailyPlaytime::find()
-		.select_only()
-		.column_as(
-			daily_playtime::Column::TotalSeconds
-				.sum()
-				.cast_as(Alias::new("bigint")),
-			"total_seconds",
-		)
-		.column_as(
-			daily_playtime::Column::SessionCount
-				.sum()
-				.cast_as(Alias::new("bigint")),
-			"total_sessions",
-		)
-		.into_model::<PlaytimeAggregate>()
-		.one(&state.database)
-		.await?
-		.unwrap_or_default();
+	let playtime_totals =
+		filter_date_period(DailyPlaytime::find(), daily_playtime::Column::Day, period)
+			.select_only()
+			.column_as(
+				daily_playtime::Column::TotalSeconds
+					.sum()
+					.cast_as(Alias::new("bigint")),
+				"total_seconds",
+			)
+			.column_as(
+				daily_playtime::Column::SessionCount
+					.sum()
+					.cast_as(Alias::new("bigint")),
+				"total_sessions",
+			)
+			.into_model::<PlaytimeAggregate>()
+			.one(&state.database)
+			.await?
+			.unwrap_or_default();
 
 	let thirty_days_ago = (Utc::now() - Days::new(30)).date_naive();
 	let last_30d_seconds = DailyPlaytime::find()
@@ -312,15 +439,17 @@ async fn endpoint(
 		.unwrap_or(0);
 
 	let total_playtime_seconds = playtime_totals.total_seconds.unwrap_or(0);
-	let average_seconds_per_user = if user_counts.total_users == 0 {
+	let average_seconds_per_user = if total_users == 0 {
 		0.0
 	} else {
-		total_playtime_seconds as f64 / user_counts.total_users as f64
+		total_playtime_seconds as f64 / total_users as f64
 	};
 
 	Ok(Json(AnalyticsOverviewResponse {
-		total_users: user_counts.total_users,
-		monthly_active_users: user_counts.monthly_active_users,
+		period,
+		total_users,
+		new_users,
+		monthly_active_users,
 		playtime: Playtime {
 			total_seconds: total_playtime_seconds,
 			average_seconds_per_user,
@@ -331,6 +460,7 @@ async fn endpoint(
 			total_owned_items: owned_counts.total_owned_items,
 			average_per_user,
 			users_with_any: owned_counts.users_with_any,
+			items_acquired,
 			distribution: OwnedItemsDistribution {
 				zero: owned_counts.zero,
 				one: owned_counts.one,
@@ -344,9 +474,68 @@ async fn endpoint(
 
 #[cfg(test)]
 mod tests {
+	use chrono::NaiveDate;
 	use entities::sea_orm_active_enums::PlayerRole;
 
-	use super::{PrivateAuthCredential, classify_authorization_header, is_admin_role};
+	use super::{
+		AnalyticsError, AnalyticsPeriod, PrivateAuthCredential,
+		classify_authorization_header, is_admin_role,
+	};
+
+	fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+		NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
+	}
+
+	fn period(start: Option<NaiveDate>, end: Option<NaiveDate>) -> AnalyticsPeriod {
+		AnalyticsPeriod { start, end }
+	}
+
+	#[test]
+	fn period_rejects_start_after_end() {
+		let invalid = period(Some(date(2026, 7, 2)), Some(date(2026, 7, 1)));
+		assert!(matches!(
+			invalid.validate(),
+			Err(AnalyticsError::InvalidPeriod { .. })
+		));
+
+		for valid in [
+			period(Some(date(2026, 7, 1)), Some(date(2026, 7, 1))),
+			period(Some(date(2026, 7, 1)), None),
+			period(None, Some(date(2026, 7, 1))),
+			period(None, None),
+		] {
+			assert!(valid.validate().is_ok());
+		}
+	}
+
+	#[test]
+	fn only_a_period_without_bounds_is_unbounded() {
+		assert!(period(None, None).is_unbounded());
+		assert!(!period(Some(date(2026, 7, 1)), None).is_unbounded());
+		assert!(!period(None, Some(date(2026, 7, 1))).is_unbounded());
+	}
+
+	#[test]
+	fn period_bounds_cover_whole_days() {
+		let period = period(Some(date(2026, 7, 1)), Some(date(2026, 7, 31)));
+
+		assert_eq!(
+			period.start_timestamp().map(|ts| ts.to_rfc3339()),
+			Some("2026-07-01T00:00:00+00:00".to_string())
+		);
+		assert_eq!(
+			period.end_timestamp_exclusive().map(|ts| ts.to_rfc3339()),
+			Some("2026-08-01T00:00:00+00:00".to_string())
+		);
+	}
+
+	#[test]
+	fn missing_period_bounds_produce_no_timestamps() {
+		let period = period(None, None);
+
+		assert!(period.start_timestamp().is_none());
+		assert!(period.end_timestamp_exclusive().is_none());
+	}
 
 	#[test]
 	fn auth_header_accepts_admin_password() {

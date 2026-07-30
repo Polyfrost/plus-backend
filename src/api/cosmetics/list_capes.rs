@@ -78,7 +78,9 @@ async fn endpoint(
 		let mut rows = Vec::with_capacity(cosmetics.len());
 		for (cosmetic, asset) in cosmetics {
 			let cover_asset = match cosmetic.cover_asset_id {
-				Some(asset_id) => Asset::find_by_id(asset_id).one(&state.database).await?,
+				Some(asset_id) => {
+					Asset::find_by_id(asset_id).one(&state.database).await?
+				}
 				None => None,
 			};
 			rows.push((cosmetic, asset, cover_asset, vec![BodySlot::Cape]));

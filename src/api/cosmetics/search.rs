@@ -13,8 +13,8 @@ use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait, Condition, ConnectionTrait, EntityTrait, FromQueryResult, JoinType, Order,
-	QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait, Select,
+	ColumnTrait, Condition, ConnectionTrait, EntityTrait, FromQueryResult, JoinType,
+	Order, QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait, Select,
 	sea_query::{Alias, Asterisk, Expr, SimpleExpr},
 };
 use serde::{Deserialize, Serialize};
@@ -483,9 +483,13 @@ async fn endpoint(
 			continue;
 		};
 
-		let variants = row
-			.group_id
-			.map(|_| members.iter().cloned().map(VariantView::from_cosmetic).collect());
+		let variants = row.group_id.map(|_| {
+			members
+				.iter()
+				.cloned()
+				.map(VariantView::from_cosmetic)
+				.collect()
+		});
 
 		let mut members = members.into_iter();
 		let Some(representative) = members.next() else {

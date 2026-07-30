@@ -33,9 +33,9 @@ impl IntoResponse for UpdateError {
 		(
 			match self {
 				Self::MissingBundle => StatusCode::NOT_FOUND,
-				Self::MissingProduct
-				| Self::MissingBasePrice
-				| Self::InvalidDiscount => StatusCode::BAD_REQUEST,
+				Self::MissingProduct | Self::MissingBasePrice | Self::InvalidDiscount => {
+					StatusCode::BAD_REQUEST
+				}
 				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
@@ -162,7 +162,8 @@ async fn endpoint(
 				products::to_cents(new_price),
 			)
 			.await?;
-			products::set_default_price(&state.stripe.client, product_id, &price_id).await?;
+			products::set_default_price(&state.stripe.client, product_id, &price_id)
+				.await?;
 
 			Some(PriceUpdate {
 				stripe_price_id: price_id,
