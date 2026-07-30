@@ -57,6 +57,8 @@ pub enum BodySlot {
 	Boots,
 	#[sea_orm(string_value = "shoulder")]
 	Shoulder,
+	#[sea_orm(string_value = "pet")]
+	Pet,
 }
 #[derive(
 	Debug,
@@ -93,6 +95,8 @@ pub enum CosmeticType {
 	Boots,
 	#[sea_orm(string_value = "shoulder")]
 	Shoulder,
+	#[sea_orm(string_value = "pet")]
+	Pet,
 }
 #[derive(
 	Debug,

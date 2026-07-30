@@ -26,9 +26,11 @@ pub(crate) struct ServeArgs {
 		long("bind-addr"),
 		long("bind-address"),
 		env("BIND_ADDR"),
-		fallback(SocketAddr::from_str("[::]:8080").expect("This str is always a valid SocketAddr"))
+		argument::<String>("ADDR"),
+		parse(parse_bind_addrs),
+		fallback_with(default_bind_addrs)
 	)]
-	pub(crate) bind_addr: SocketAddr,
+	pub(crate) bind_addr: Vec<SocketAddr>,
 	/// The Stripe secret API key used to create checkout sessions
 	#[bpaf(long("stripe-secret"), env("STRIPE_SECRET"))]
 	pub(crate) stripe_secret: String,
@@ -84,6 +86,19 @@ pub(crate) struct ServeArgs {
 		fallback_with(default_cors_origins)
 	)]
 	pub(crate) cors_origins: Vec<HeaderValue>,
+}
+
+fn parse_bind_addrs(value: String) -> Result<Vec<SocketAddr>, std::net::AddrParseError> {
+	value
+		.split(',')
+		.map(str::trim)
+		.filter(|addr| !addr.is_empty())
+		.map(SocketAddr::from_str)
+		.collect()
+}
+
+fn default_bind_addrs() -> Result<Vec<SocketAddr>, std::net::AddrParseError> {
+	parse_bind_addrs("[::]:8080,0.0.0.0:8080".to_owned())
 }
 
 fn parse_cors_origins(value: String) -> Result<Vec<HeaderValue>, InvalidHeaderValue> {

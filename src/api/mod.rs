@@ -168,12 +168,27 @@ pub(crate) async fn start(args: ServeArgs) {
 				.allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
 		);
 
-	// Setup the listener and start the web server
-	let listener = TcpListener::bind(args.bind_addr)
-		.await
-		.expect("Unable to bind on specififed socket address");
+	let mut listeners = Vec::new();
+	for addr in &args.bind_addr {
+		match TcpListener::bind(addr).await {
+			Ok(listener) => listeners.push(listener),
+			Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+				tracing::warn!(%addr, %err, "skipping bind address, already in use");
+			}
+			Err(err) => panic!("Unable to bind on {addr}: {err}"),
+		}
+	}
+	assert!(!listeners.is_empty(), "No socket addresses could be bound");
 
-	axum::serve(listener, app.into_make_service())
+	let make_service = app.into_make_service();
+	let servers = listeners.into_iter().map(|listener| {
+		let make_service = make_service.clone();
+		tokio::spawn(async move { axum::serve(listener, make_service).await })
+	});
+
+	futures::future::try_join_all(servers)
 		.await
-		.expect("infailable: axum::serve never returns")
+		.expect("infailable: server tasks should not be cancelled")
+		.into_iter()
+		.for_each(|result| result.expect("infailable: axum::serve never returns"));
 }

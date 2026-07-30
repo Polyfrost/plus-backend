@@ -83,6 +83,7 @@ fn parse_cosmetic_type(value: &str) -> Option<CosmeticType> {
 		"aura" => Some(CosmeticType::Aura),
 		"boots" => Some(CosmeticType::Boots),
 		"shoulder" => Some(CosmeticType::Shoulder),
+		"pet" => Some(CosmeticType::Pet),
 		"emote" => Some(CosmeticType::Emote),
 		_ => None,
 	}
@@ -100,6 +101,7 @@ fn parse_body_slot(value: &str) -> Option<BodySlot> {
 		"aura" => Some(BodySlot::Aura),
 		"boots" => Some(BodySlot::Boots),
 		"shoulder" => Some(BodySlot::Shoulder),
+		"pet" => Some(BodySlot::Pet),
 		_ => None,
 	}
 }
@@ -115,6 +117,7 @@ fn default_name(cosmetic_type: &CosmeticType) -> &'static str {
 		CosmeticType::Aura => "Aura",
 		CosmeticType::Boots => "Boots",
 		CosmeticType::Shoulder => "Shoulder",
+		CosmeticType::Pet => "Pet",
 		CosmeticType::Emote => "Emote",
 	}
 }
@@ -130,6 +133,7 @@ fn storage_prefix(cosmetic_type: &CosmeticType) -> &'static str {
 		CosmeticType::Aura => "auras",
 		CosmeticType::Boots => "boots",
 		CosmeticType::Shoulder => "shoulders",
+		CosmeticType::Pet => "pets",
 		CosmeticType::Emote => "emotes",
 	}
 }
