@@ -162,6 +162,46 @@ pub enum ClientBoundPacket {
 		/// are we revoking stuff
 		revoked: bool,
 	},
+	FriendRequestReceived {
+		request_id: i32,
+		sender: Uuid,
+	},
+	FriendRequestUpdated {
+		request_id: i32,
+		status: String,
+	},
+	FriendRemoved {
+		player: Uuid,
+	},
+	GroupMessageReceived {
+		group_id: i32,
+		message_id: i64,
+		sender: Uuid,
+		content: String,
+	},
+	GroupMessageEdited {
+		group_id: i32,
+		message_id: i64,
+		content: String,
+	},
+	GroupMessageDeleted {
+		group_id: i32,
+		message_id: i64,
+	},
+	GlobalChatMessageReceived {
+		message_id: i64,
+		sender: Uuid,
+		content: String,
+	},
+	SessionInviteReceived {
+		invite_id: i32,
+		session_id: Uuid,
+		sender: Uuid,
+	},
+	SessionInviteUpdated {
+		invite_id: i32,
+		status: String,
+	},
 	/// An error response from the server
 	Error {
 		#[serde(flatten)]

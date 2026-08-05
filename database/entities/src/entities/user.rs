@@ -15,6 +15,8 @@ pub struct Model {
 	pub role: PlayerRole,
 	pub particle_color: Option<i32>,
 	pub refund_count: i32,
+	pub eos_product_user_id: Option<String>,
+	pub username: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

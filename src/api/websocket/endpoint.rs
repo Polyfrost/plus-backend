@@ -508,6 +508,38 @@ async fn unsubscribe(state: &ApiState, connection_id: ConnectionId, players: Vec
 	}
 }
 
+pub(crate) async fn send_to_owner(
+	state: &ApiState,
+	owner: Uuid,
+	mut make_packet: impl FnMut() -> ClientBoundPacket,
+) {
+	let connection_ids = state
+		.realtime
+		.connections_by_owner
+		.read()
+		.await
+		.get(&owner)
+		.map(|connections| connections.iter().copied().collect::<Vec<_>>())
+		.unwrap_or_default();
+
+	let mut connections = state.realtime.connections.write().await;
+	for connection_id in connection_ids {
+		if let Some(connection) = connections.get_mut(&connection_id) {
+			let _ = connection.tx.send(make_packet());
+		}
+	}
+}
+
+pub(crate) async fn broadcast_all(
+	state: &ApiState,
+	mut make_packet: impl FnMut() -> ClientBoundPacket,
+) {
+	let mut connections = state.realtime.connections.write().await;
+	for connection in connections.values_mut() {
+		let _ = connection.tx.send(make_packet());
+	}
+}
+
 async fn broadcast_to_watchers(
 	state: &ApiState,
 	player: Uuid,

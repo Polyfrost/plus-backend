@@ -6,8 +6,14 @@ mod bundles;
 mod category;
 mod collections;
 mod cosmetics;
+mod global_chat;
+mod groups;
 mod links;
+mod oidc;
 mod players;
+mod sessions;
+mod social;
+mod special_chat;
 mod state;
 mod stripe;
 mod tags;
@@ -109,11 +115,17 @@ pub(crate) async fn start(args: ServeArgs) {
 		.merge(bundles::setup_router().await)
 		.merge(collections::setup_router().await)
 		.merge(links::setup_router().await)
+		.merge(oidc::setup_router().await)
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
+		.merge(global_chat::setup_router().await)
+		.merge(groups::setup_router().await)
 		.merge(tags::setup_router().await)
 		.merge(category::setup_router().await)
+		.merge(sessions::setup_router().await)
+		.merge(social::setup_router().await)
+		.merge(special_chat::setup_router().await)
 		.merge(websocket::setup_router().await)
 		.with_state(state);
 

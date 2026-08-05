@@ -20,7 +20,13 @@ use stripe_client::Client as StripeClient;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::{api::cosmetics::CachedAssetInfo, commands::ServeArgs};
+use crate::{
+	api::{
+		cosmetics::CachedAssetInfo,
+		oidc::{self, AuthorizationCode, OidcSigningKey},
+	},
+	commands::ServeArgs,
+};
 
 impl ApiState {
 	#[tracing::instrument(skip_all, name = "initialize_state", level = "debug")]
@@ -101,6 +107,8 @@ impl ApiState {
 			realtime.playtime.clone(),
 		));
 
+		let oidc_signing_key = oidc::load_or_generate_signing_key(&database).await;
+
 		// Return final state
 		ApiState {
 			stripe: StripeApiState {
@@ -128,6 +136,16 @@ impl ApiState {
 			particle_color_persist_tx,
 			admin_password: args.admin_password.clone(),
 			render_service_url: args.render_service_url.clone(),
+			global_chat_cooldown: Cache::builder()
+				.time_to_live(Duration::from_secs(2))
+				.build(),
+			oidc_issuer: args.oidc_issuer.clone(),
+			oidc_signing_key: Arc::new(oidc_signing_key),
+			oidc_codes: oidc::new_authorization_code_cache(),
+			special_chat_targets: args.special_chat_targets.clone(),
+			special_chat_cooldown: Cache::builder()
+				.time_to_live(Duration::from_secs(72 * 60 * 60))
+				.build(),
 		}
 	}
 }
@@ -147,6 +165,12 @@ pub(super) struct ApiState {
 		tokio::sync::mpsc::Sender<ParticleColorPersistence>,
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,
+	pub(super) global_chat_cooldown: Cache<i32, ()>,
+	pub(super) oidc_issuer: String,
+	pub(super) oidc_signing_key: Arc<OidcSigningKey>,
+	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
+	pub(super) special_chat_targets: Vec<Uuid>,
+	pub(super) special_chat_cooldown: Cache<(i32, i32), ()>,
 }
 
 #[derive(Clone)]

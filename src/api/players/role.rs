@@ -1,37 +1,13 @@
-use aide::{
-	OperationIo,
-	axum::{ApiRouter, routing::put_with},
-	transform::TransformOperation,
-};
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use aide::{axum::routing::put_with, transform::TransformOperation};
+use axum::{Json, extract::State, http::StatusCode};
 use entities::sea_orm_active_enums::PlayerRole;
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use super::PlayerError;
 use crate::api::{ApiState, account::AdminPlayer};
-
-#[derive(thiserror::Error, Debug, OperationIo)]
-pub enum RoleError {
-	#[error("The requested player does not exist")]
-	PlayerMissing,
-	#[error("Unable to query database: {0}")]
-	Database(#[from] sea_orm::error::DbErr),
-}
-
-impl IntoResponse for RoleError {
-	fn into_response(self) -> axum::response::Response {
-		(
-			match self {
-				Self::PlayerMissing => StatusCode::NOT_FOUND,
-				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-			},
-			self.to_string(),
-		)
-			.into_response()
-	}
-}
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("setPlayerRole")
@@ -46,11 +22,8 @@ struct RoleRequest {
 	role: PlayerRole,
 }
 
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route(
-		"/players/role",
-		put_with(self::endpoint, self::endpoint_doc),
-	)
+pub(super) fn router() -> aide::axum::ApiRouter<ApiState> {
+	aide::axum::ApiRouter::new().api_route("/role", put_with(self::endpoint, self::endpoint_doc))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -58,7 +31,7 @@ async fn endpoint(
 	State(state): State<ApiState>,
 	AdminPlayer(_admin): AdminPlayer,
 	Json(body): Json<RoleRequest>,
-) -> Result<StatusCode, RoleError> {
+) -> Result<StatusCode, PlayerError> {
 	use entities::{prelude::*, user};
 
 	let Some(player) = User::find()
@@ -66,7 +39,7 @@ async fn endpoint(
 		.one(&state.database)
 		.await?
 	else {
-		return Err(RoleError::PlayerMissing);
+		return Err(PlayerError::PlayerMissing);
 	};
 
 	let mut player: user::ActiveModel = player.into();
