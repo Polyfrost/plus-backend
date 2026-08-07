@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::PlayerError;
-use crate::api::{ApiState, account::AuthenticatedPlayer};
+use crate::{
+	api::{ApiState, account::AuthenticatedPlayer},
+	database::DatabaseUserExt,
+};
 
 const MAX_IDS: usize = 100;
 
@@ -42,6 +45,29 @@ pub(super) fn router() -> aide::axum::ApiRouter<ApiState> {
 		.api_route("/resolve", post_with(self::endpoint, self::endpoint_doc))
 }
 
+async fn fetch_mojang_username(state: &ApiState, uuid: Uuid) -> Option<String> {
+	#[derive(Deserialize)]
+	struct MojangProfile {
+		name: String,
+	}
+
+	let response = state
+		.client
+		.get(format!(
+			"https://sessionserver.mojang.com/session/minecraft/profile/{}",
+			uuid.as_simple()
+		))
+		.send()
+		.await
+		.ok()?;
+
+	if !response.status().is_success() {
+		return None;
+	}
+
+	response.json::<MojangProfile>().await.ok().map(|profile| profile.name)
+}
+
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
@@ -52,21 +78,30 @@ async fn endpoint(
 
 	body.ids.truncate(MAX_IDS);
 
-	let players = User::find()
+	let rows = User::find()
 		.filter(user::Column::MinecraftUuid.is_in(body.ids))
-		.filter(user::Column::Username.is_not_null())
 		.all(&state.database)
 		.await?;
 
-	Ok(Json(ResolveResponse {
-		players: players
-			.into_iter()
-			.filter_map(|player| {
-				Some(ResolvedPlayer {
-					id: player.minecraft_uuid,
-					username: player.username?,
-				})
-			})
-			.collect(),
-	}))
+	let mut players = Vec::with_capacity(rows.len());
+	for row in rows {
+		match row.username {
+			Some(username) => players.push(ResolvedPlayer {
+				id: row.minecraft_uuid,
+				username,
+			}),
+			None if state.special_chat_targets.contains(&row.minecraft_uuid) => {
+				if let Some(username) = fetch_mojang_username(&state, row.minecraft_uuid).await {
+					let _ = User::set_username(&state.database, row.id, &username).await;
+					players.push(ResolvedPlayer {
+						id: row.minecraft_uuid,
+						username,
+					});
+				}
+			}
+			None => {}
+		}
+	}
+
+	Ok(Json(ResolveResponse { players }))
 }

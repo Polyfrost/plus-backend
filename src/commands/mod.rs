@@ -100,6 +100,13 @@ pub(crate) struct ServeArgs {
 		fallback(Vec::new())
 	)]
 	pub(crate) special_chat_targets: Vec<uuid::Uuid>,
+	#[bpaf(
+		long("special-chat-auto-reply"),
+		env("SPECIAL_CHAT_AUTO_REPLY"),
+		argument::<String>("MESSAGE"),
+		optional
+	)]
+	pub(crate) special_chat_auto_reply: Option<String>,
 }
 
 fn parse_bind_addrs(value: String) -> Result<Vec<SocketAddr>, std::net::AddrParseError> {

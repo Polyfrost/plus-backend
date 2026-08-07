@@ -181,7 +181,7 @@ async fn send(
 		return Err(SpecialChatError::RateLimited);
 	}
 
-	let (_, group) = get_or_create_dm_group(&state, player.id, target.id).await?;
+	let (created, group) = get_or_create_dm_group(&state, player.id, target.id).await?;
 
 	let message = GroupMessages::insert(group_messages::ActiveModel {
 		group_id: Set(group.id),
@@ -208,6 +208,32 @@ async fn send(
 		}
 	})
 	.await;
+
+	if created && let Some(auto_reply) = state.special_chat_auto_reply.as_deref() {
+		if let Ok(reply) = GroupMessages::insert(group_messages::ActiveModel {
+			group_id: Set(group.id),
+			sender_id: Set(target.id),
+			content: Set(auto_reply.to_string()),
+			sent_at: ActiveValue::NotSet,
+			edited_at: Set(None),
+			deleted_at: Set(None),
+			idempotency_key: Set(None),
+			..Default::default()
+		})
+		.exec_with_returning(&state.database)
+		.await
+		{
+			send_to_owner(&state, player.minecraft_uuid, || {
+				ClientBoundPacket::GroupMessageReceived {
+					group_id: group.id,
+					message_id: reply.id,
+					sender: target.minecraft_uuid,
+					content: reply.content.clone(),
+				}
+			})
+			.await;
+		}
+	}
 
 	Ok((
 		StatusCode::CREATED,
