@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
-	groups::{GroupError, load_group, member_ids, require_membership},
+	groups::{GroupError, enforce_special_chat_cooldown, load_group, member_ids, require_membership},
 	social::is_blocked_either_way,
 	websocket::{send_to_owner, structs::ClientBoundPacket},
 };
@@ -209,8 +209,9 @@ async fn send(
 	use entities::{group_messages, prelude::*};
 
 	require_membership(&state, id, player.id).await?;
-	let _ = load_group(&state, id).await?;
+	let group = load_group(&state, id).await?;
 	require_not_blocked_by_members(&state, id, player.id).await?;
+	enforce_special_chat_cooldown(&state, &group, player.id).await?;
 
 	let content = body.content.trim();
 	if content.is_empty() || content.len() > MAX_MESSAGE_LENGTH {

@@ -42,6 +42,11 @@ pub enum GroupError {
 	InvalidContent,
 	#[error("You may only edit or delete your own messages")]
 	MessageForbidden,
+	#[error(
+		"You may only send one message to a given Special Chat recipient every \
+		 72 hours"
+	)]
+	RateLimited,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
@@ -63,6 +68,7 @@ impl IntoResponse for GroupError {
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN
 				}
+				Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self.to_string(),
@@ -131,6 +137,42 @@ pub(super) fn member_cap(kind: &GroupKind) -> usize {
 		GroupKind::Dm => MAX_DM_MEMBERS,
 		GroupKind::Group => MAX_GROUP_MEMBERS,
 	}
+}
+
+pub(super) async fn enforce_special_chat_cooldown(
+	state: &ApiState,
+	group: &entities::groups::Model,
+	sender_id: i32,
+) -> Result<(), GroupError> {
+	use entities::prelude::*;
+
+	if group.kind != GroupKind::Dm {
+		return Ok(());
+	}
+
+	let Some(other_id) = member_ids(state, group.id)
+		.await?
+		.into_iter()
+		.find(|id| *id != sender_id)
+	else {
+		return Ok(());
+	};
+
+	let Some(other_user) = User::find_by_id(other_id).one(&state.database).await? else {
+		return Ok(());
+	};
+
+	if !state.special_chat_targets.contains(&other_user.minecraft_uuid) {
+		return Ok(());
+	}
+
+	let cooldown_key = (sender_id, other_user.id);
+	if state.special_chat_cooldown.get(&cooldown_key).await.is_some() {
+		return Err(GroupError::RateLimited);
+	}
+	state.special_chat_cooldown.insert(cooldown_key, ()).await;
+
+	Ok(())
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
