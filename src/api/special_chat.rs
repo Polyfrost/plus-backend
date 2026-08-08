@@ -86,9 +86,10 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.summary("List Special Chat recipients")
 		.description(
 			"Lists the Special Chat recipients every player's Messaging \
-			 interface auto-instantiates a chat session for. group_id is \
-			 present once a chat has actually been opened (lazily, on first \
-			 message).",
+			 interface auto-instantiates a chat session for. The DM group \
+			 (and its opening message from the recipient, if one is \
+			 configured) is eagerly created here, so group_id is already \
+			 present before the player has sent anything.",
 		)
 		.tag("special-chat")
 }
@@ -118,32 +119,62 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
-	_player: AuthenticatedPlayer,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<Vec<SpecialChatTarget>>, SpecialChatError> {
-	use entities::{group_members, groups, prelude::*};
-	use sea_orm::{ColumnTrait, QueryFilter};
-
 	let mut targets = Vec::with_capacity(state.special_chat_targets.len());
-	for player in &state.special_chat_targets {
-		let group_id = match find_user_by_uuid(&state, *player).await {
-			Ok(user) => GroupMembers::find()
-				.filter(group_members::Column::UserId.eq(user.id))
-				.inner_join(Groups)
-				.filter(groups::Column::Kind.eq(entities::sea_orm_active_enums::GroupKind::Dm))
-				.one(&state.database)
-				.await
-				.map_err(GroupError::from)?
-				.map(|member| member.group_id),
+	for target in &state.special_chat_targets {
+		if *target == player.minecraft_uuid {
+			continue;
+		}
+
+		let group_id = match find_user_by_uuid(&state, *target).await {
+			Ok(target) => Some(open_special_chat_group(&state, &player, &target).await?.id),
 			Err(_) => None,
 		};
 
 		targets.push(SpecialChatTarget {
-			player: *player,
+			player: *target,
 			group_id,
 		});
 	}
 
 	Ok(Json(targets))
+}
+
+async fn open_special_chat_group(
+	state: &ApiState,
+	player: &entities::user::Model,
+	target: &entities::user::Model,
+) -> Result<entities::groups::Model, SpecialChatError> {
+	use entities::{group_messages, prelude::*};
+
+	let (created, group) = get_or_create_dm_group(state, player.id, target.id).await?;
+
+	if created && let Some(opening_message) = state.special_chat_auto_reply.as_deref() {
+		let message = GroupMessages::insert(group_messages::ActiveModel {
+			group_id: Set(group.id),
+			sender_id: Set(target.id),
+			content: Set(opening_message.to_string()),
+			sent_at: ActiveValue::NotSet,
+			edited_at: Set(None),
+			deleted_at: Set(None),
+			idempotency_key: Set(None),
+			..Default::default()
+		})
+		.exec_with_returning(&state.database)
+		.await
+		.map_err(GroupError::from)?;
+
+		send_to_owner(state, player.minecraft_uuid, || ClientBoundPacket::GroupMessageReceived {
+			group_id: group.id,
+			message_id: message.id,
+			sender: target.minecraft_uuid,
+			content: message.content.clone(),
+		})
+		.await;
+	}
+
+	Ok(group)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -181,7 +212,7 @@ async fn send(
 		return Err(SpecialChatError::RateLimited);
 	}
 
-	let (created, group) = get_or_create_dm_group(&state, player.id, target.id).await?;
+	let group = open_special_chat_group(&state, &player, &target).await?;
 
 	let message = GroupMessages::insert(group_messages::ActiveModel {
 		group_id: Set(group.id),
@@ -208,32 +239,6 @@ async fn send(
 		}
 	})
 	.await;
-
-	if created && let Some(auto_reply) = state.special_chat_auto_reply.as_deref() {
-		if let Ok(reply) = GroupMessages::insert(group_messages::ActiveModel {
-			group_id: Set(group.id),
-			sender_id: Set(target.id),
-			content: Set(auto_reply.to_string()),
-			sent_at: ActiveValue::NotSet,
-			edited_at: Set(None),
-			deleted_at: Set(None),
-			idempotency_key: Set(None),
-			..Default::default()
-		})
-		.exec_with_returning(&state.database)
-		.await
-		{
-			send_to_owner(&state, player.minecraft_uuid, || {
-				ClientBoundPacket::GroupMessageReceived {
-					group_id: group.id,
-					message_id: reply.id,
-					sender: target.minecraft_uuid,
-					content: reply.content.clone(),
-				}
-			})
-			.await;
-		}
-	}
 
 	Ok((
 		StatusCode::CREATED,
