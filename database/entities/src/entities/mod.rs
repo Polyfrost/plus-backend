@@ -27,6 +27,7 @@ pub mod relationship_requests;
 pub mod relationships;
 pub mod sea_orm_active_enums;
 pub mod session_invites;
+pub mod special_chat_cooldowns;
 pub mod tags;
 pub mod tags_cosmetic;
 pub mod tracked_link_hits;

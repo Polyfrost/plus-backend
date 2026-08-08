@@ -211,7 +211,6 @@ async fn send(
 	require_membership(&state, id, player.id).await?;
 	let group = load_group(&state, id).await?;
 	require_not_blocked_by_members(&state, id, player.id).await?;
-	enforce_special_chat_cooldown(&state, &group, player.id).await?;
 
 	let content = body.content.trim();
 	if content.is_empty() || content.len() > MAX_MESSAGE_LENGTH {
@@ -236,6 +235,8 @@ async fn send(
 			}),
 		));
 	}
+
+	enforce_special_chat_cooldown(&state, &group, player.id).await?;
 
 	let message = GroupMessages::insert(group_messages::ActiveModel {
 		group_id: Set(id),

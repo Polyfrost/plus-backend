@@ -21,7 +21,10 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
-	groups::{GroupError, find_user_by_uuid, get_or_create_dm_group},
+	groups::{
+		GroupError, find_user_by_uuid, get_or_create_dm_group, special_chat_cooldown_until,
+		try_consume_special_chat_cooldown,
+	},
 	social::is_blocked_either_way,
 	websocket::{send_to_owner, structs::ClientBoundPacket},
 };
@@ -67,6 +70,7 @@ impl IntoResponse for SpecialChatError {
 pub struct SpecialChatTarget {
 	player: Uuid,
 	group_id: Option<i32>,
+	cooldown_until: Option<DateTime<FixedOffset>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -127,14 +131,22 @@ async fn list(
 			continue;
 		}
 
-		let group_id = match find_user_by_uuid(&state, *target).await {
-			Ok(target) => Some(open_special_chat_group(&state, &player, &target).await?.id),
-			Err(_) => None,
+		let (group_id, cooldown_until) = match find_user_by_uuid(&state, *target).await {
+			Ok(target) => {
+				let group_id = open_special_chat_group(&state, &player, &target).await?.id;
+				let cooldown_until =
+					special_chat_cooldown_until(&state, player.id, target.id)
+						.await
+						.map_err(GroupError::from)?;
+				(Some(group_id), cooldown_until)
+			}
+			Err(_) => (None, None),
 		};
 
 		targets.push(SpecialChatTarget {
 			player: *target,
 			group_id,
+			cooldown_until,
 		});
 	}
 
@@ -207,12 +219,14 @@ async fn send(
 		return Err(SpecialChatError::Blocked);
 	}
 
-	let cooldown_key = (player.id, target.id);
-	if state.special_chat_cooldown.get(&cooldown_key).await.is_some() {
+	let group = open_special_chat_group(&state, &player, &target).await?;
+
+	if !try_consume_special_chat_cooldown(&state, player.id, target.id)
+		.await
+		.map_err(GroupError::from)?
+	{
 		return Err(SpecialChatError::RateLimited);
 	}
-
-	let group = open_special_chat_group(&state, &player, &target).await?;
 
 	let message = GroupMessages::insert(group_messages::ActiveModel {
 		group_id: Set(group.id),
@@ -227,8 +241,6 @@ async fn send(
 	.exec_with_returning(&state.database)
 	.await
 	.map_err(GroupError::from)?;
-
-	state.special_chat_cooldown.insert(cooldown_key, ()).await;
 
 	send_to_owner(&state, target.minecraft_uuid, || {
 		ClientBoundPacket::GroupMessageReceived {

@@ -144,9 +144,6 @@ impl ApiState {
 			oidc_codes: oidc::new_authorization_code_cache(),
 			special_chat_targets: args.special_chat_targets.clone(),
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
-			special_chat_cooldown: Cache::builder()
-				.time_to_live(Duration::from_secs(72 * 60 * 60))
-				.build(),
 		}
 	}
 }
@@ -172,7 +169,6 @@ pub(super) struct ApiState {
 	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
 	pub(super) special_chat_targets: Vec<Uuid>,
 	pub(super) special_chat_auto_reply: Option<String>,
-	pub(super) special_chat_cooldown: Cache<(i32, i32), ()>,
 }
 
 #[derive(Clone)]
