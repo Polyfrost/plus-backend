@@ -33,8 +33,8 @@ use crate::api::{
 
 /// Max UUIDs in a single `SubscribePlayers` or `GetActiveCosmetics` message.
 const MAX_PLAYERS_PER_REQUEST: usize = 64;
-/// Max distinct players a connection may subscribe to at once (render distance).
-const MAX_PLAYER_SUBSCRIPTIONS: usize = 128;
+const MAX_PLAYER_SUBSCRIPTIONS: usize = 512;
+const REAL_PLAYER_UUID_VERSION: usize = 4;
 
 fn enforce_max_players_per_request(players: &[Uuid]) -> Result<(), WebsocketError> {
 	if players.len() > MAX_PLAYERS_PER_REQUEST {
@@ -43,6 +43,21 @@ fn enforce_max_players_per_request(players: &[Uuid]) -> Result<(), WebsocketErro
 		});
 	}
 	Ok(())
+}
+
+fn is_fake_player(player: &Uuid) -> bool {
+	player.get_version_num() != REAL_PLAYER_UUID_VERSION
+}
+
+fn empty_snapshot(rejected: Vec<Uuid>, request_id: Option<u64>) -> ClientBoundPacket {
+	ClientBoundPacket::SubscriptionSnapshot {
+		equipped: HashMap::new(),
+		active_emotes: HashMap::new(),
+		particle_colors: HashMap::new(),
+		users: Vec::new(),
+		rejected,
+		request_id,
+	}
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -377,42 +392,49 @@ async fn subscribe(
 	state: &ApiState,
 	connection_id: ConnectionId,
 	players: Vec<Uuid>,
+	request_id: Option<u64>,
 ) -> Result<ClientBoundPacket, WebsocketError> {
-	let requested = players.into_iter().collect::<HashSet<_>>();
-	let newly_subscribed = {
+	let mut seen = HashSet::new();
+	let requested = players
+		.into_iter()
+		.filter(|player| seen.insert(*player))
+		.collect::<Vec<_>>();
+
+	let (newly_subscribed, rejected) = {
 		let mut connections = state.realtime.connections.write().await;
 		let Some(connection) = connections.get_mut(&connection_id) else {
-			return Ok(ClientBoundPacket::SubscriptionSnapshot {
-				equipped: HashMap::new(),
-				active_emotes: HashMap::new(),
-				particle_colors: HashMap::new(),
-				users: Vec::new(),
-			});
+			return Ok(empty_snapshot(Vec::new(), request_id));
 		};
 
-		let pending = requested
-			.iter()
-			.filter(|player| !connection.subscriptions.contains(player))
-			.count();
-		if connection.subscriptions.len() + pending > MAX_PLAYER_SUBSCRIPTIONS {
-			return Err(WebsocketError::SubscriptionLimitExceeded {
-				limit: MAX_PLAYER_SUBSCRIPTIONS,
-			});
+		let mut newly_subscribed = Vec::new();
+		let mut rejected = Vec::new();
+		for player in requested {
+			if is_fake_player(&player) {
+				rejected.push(player);
+				continue;
+			}
+			if connection.subscriptions.contains(&player) {
+				continue;
+			}
+			if connection.subscriptions.len() >= MAX_PLAYER_SUBSCRIPTIONS {
+				rejected.push(player);
+				continue;
+			}
+			connection.subscriptions.insert(player);
+			newly_subscribed.push(player);
 		}
-
-		requested
-			.into_iter()
-			.filter(|player| connection.subscriptions.insert(*player))
-			.collect::<Vec<_>>()
+		(newly_subscribed, rejected)
 	};
 
+	if !rejected.is_empty() {
+		warn!(
+			"Connection {connection_id} rejected {} subscription(s) (cap {MAX_PLAYER_SUBSCRIPTIONS})",
+			rejected.len()
+		);
+	}
+
 	if newly_subscribed.is_empty() {
-		return Ok(ClientBoundPacket::SubscriptionSnapshot {
-			equipped: HashMap::new(),
-			active_emotes: HashMap::new(),
-			particle_colors: HashMap::new(),
-			users: Vec::new(),
-		});
+		return Ok(empty_snapshot(rejected, request_id));
 	}
 
 	{
@@ -480,6 +502,8 @@ async fn subscribe(
 		active_emotes,
 		particle_colors,
 		users,
+		rejected,
+		request_id,
 	})
 }
 
@@ -530,14 +554,28 @@ async fn broadcast_to_watchers(
 	}
 }
 
+struct RequestError {
+	error: WebsocketError,
+	request_id: Option<u64>,
+}
+
+impl From<WebsocketError> for RequestError {
+	fn from(error: WebsocketError) -> Self {
+		Self {
+			error,
+			request_id: None,
+		}
+	}
+}
+
 async fn handle_msg(
 	socket: &mut WebSocket,
 	state: &ApiState,
 	player: &entities::user::Model,
 	connection_id: ConnectionId,
 	msg: Result<Message, axum::Error>,
-) -> Result<(), WebsocketError> {
-	let msg = msg?;
+) -> Result<(), RequestError> {
+	let msg = msg.map_err(WebsocketError::from)?;
 
 	// Ignore control/keepalive frames. Ping/Pong carry an opaque payload (Ktor
 	// sends a Ping every pingInterval) that is not a serializable request, and
@@ -548,7 +586,20 @@ async fn handle_msg(
 
 	let parsed = serde_json::from_slice::<ServerBoundPacket>(&msg.into_data())
 		.map_err(WebsocketError::Deserialization)?;
+	let request_id = parsed.request_id();
 
+	handle_packet(socket, state, player, connection_id, parsed)
+		.await
+		.map_err(|error| RequestError { error, request_id })
+}
+
+async fn handle_packet(
+	socket: &mut WebSocket,
+	state: &ApiState,
+	player: &entities::user::Model,
+	connection_id: ConnectionId,
+	parsed: ServerBoundPacket,
+) -> Result<(), WebsocketError> {
 	match parsed {
 		ServerBoundPacket::GetActiveCosmetics { players } => {
 			enforce_max_players_per_request(&players)?;
@@ -560,9 +611,12 @@ async fn handle_msg(
 			)
 			.await?;
 		}
-		ServerBoundPacket::SubscribePlayers { players } => {
+		ServerBoundPacket::SubscribePlayers {
+			players,
+			request_id,
+		} => {
 			enforce_max_players_per_request(&players)?;
-			let snapshot = subscribe(state, connection_id, players).await?;
+			let snapshot = subscribe(state, connection_id, players, request_id).await?;
 			send_packet(socket, snapshot).await?;
 		}
 		ServerBoundPacket::UnsubscribePlayers { players } => {
@@ -670,8 +724,14 @@ async fn endpoint(
 		let equipped = match load_equipped(&state, player.id).await {
 			Ok(equipped) => equipped,
 			Err(error) => {
-				let _ =
-					send_packet(&mut socket, ClientBoundPacket::Error { error }).await;
+				let _ = send_packet(
+					&mut socket,
+					ClientBoundPacket::Error {
+						error,
+						request_id: None,
+					},
+				)
+				.await;
 				return;
 			}
 		};
@@ -697,15 +757,18 @@ async fn endpoint(
 					let Some(packet) = packet else {
 						break;
 					};
-					send_packet(&mut socket, packet).await
+					send_packet(&mut socket, packet).await.map_err(RequestError::from)
 				}
 			};
 
 			match result {
 				Ok(_) => continue,
-				Err(WebsocketError::Fatal(_)) => break,
-				Err(e) => {
-					let e = ClientBoundPacket::Error { error: e };
+				Err(RequestError {
+					error: WebsocketError::Fatal(_),
+					..
+				}) => break,
+				Err(RequestError { error, request_id }) => {
+					let e = ClientBoundPacket::Error { error, request_id };
 					if send_packet(&mut socket, e).await.is_err() {
 						break;
 					};

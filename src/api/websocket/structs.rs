@@ -23,8 +23,6 @@ pub enum WebsocketError {
 	UnownedEmote(i32),
 	#[error("Too many players in one request (max {limit})")]
 	TooManyPlayersInRequest { limit: usize },
-	#[error("Too many player subscriptions (max {limit})")]
-	SubscriptionLimitExceeded { limit: usize },
 }
 
 impl WebsocketError {
@@ -37,8 +35,7 @@ impl WebsocketError {
 			Self::DatabaseQuery(_) | Self::Serialization(_) => Self::ERROR_CODES[1],
 			Self::Deserialization(_)
 			| Self::InvalidSlot { .. }
-			| Self::TooManyPlayersInRequest { .. }
-			| Self::SubscriptionLimitExceeded { .. } => Self::ERROR_CODES[2],
+			| Self::TooManyPlayersInRequest { .. } => Self::ERROR_CODES[2],
 			Self::UnownedCosmetic(_) | Self::UnownedEmote(_) => Self::ERROR_CODES[3],
 		}
 	}
@@ -92,6 +89,8 @@ pub enum ServerBoundPacket {
 	SubscribePlayers {
 		/// Player UUIDs to watch. Capped per request and per connection total.
 		players: Vec<Uuid>,
+		#[serde(default)]
+		request_id: Option<u64>,
 	},
 	UnsubscribePlayers {
 		players: Vec<Uuid>,
@@ -133,6 +132,8 @@ pub enum ClientBoundPacket {
 		/// The subset of subscribed players that currently have a live PolyPlus
 		/// session connected. Used to render a "uses PolyPlus" indicator.
 		users: Vec<Uuid>,
+		rejected: Vec<Uuid>,
+		request_id: Option<u64>,
 	},
 	/// A subscribed player's PolyPlus session came online or went offline.
 	PlayerPresence {
@@ -166,7 +167,17 @@ pub enum ClientBoundPacket {
 	Error {
 		#[serde(flatten)]
 		error: WebsocketError,
+		request_id: Option<u64>,
 	},
+}
+
+impl ServerBoundPacket {
+	pub fn request_id(&self) -> Option<u64> {
+		match self {
+			Self::SubscribePlayers { request_id, .. } => *request_id,
+			_ => None,
+		}
+	}
 }
 
 #[cfg(test)]
@@ -203,11 +214,26 @@ mod tests {
 		.expect("packet should parse");
 
 		match packet {
-			ServerBoundPacket::SubscribePlayers { players } => {
+			ServerBoundPacket::SubscribePlayers {
+				players,
+				request_id,
+			} => {
 				assert_eq!(players, vec![player]);
+				assert_eq!(request_id, None);
 			}
 			_ => panic!("unexpected packet variant"),
 		}
+	}
+
+	#[test]
+	fn parses_player_subscription_with_request_id() {
+		let player = Uuid::nil();
+		let packet: ServerBoundPacket = serde_json::from_str(&format!(
+			r#"{{"type":"SubscribePlayers","players":["{player}"],"request_id":7}}"#
+		))
+		.expect("packet should parse");
+
+		assert_eq!(packet.request_id(), Some(7));
 	}
 
 	#[test]
@@ -218,12 +244,29 @@ mod tests {
 			active_emotes: HashMap::from([(player, 6)]),
 			particle_colors: HashMap::from([(player, 0xFF_0000)]),
 			users: vec![player],
+			rejected: Vec::new(),
+			request_id: Some(3),
 		};
 
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");
 		assert_eq!(serialized["type"], "SubscriptionSnapshot");
 		assert_eq!(serialized["equipped"][player.to_string()]["cape"], 1);
 		assert_eq!(serialized["users"][0], player.to_string());
+		assert_eq!(serialized["rejected"].as_array().map(Vec::len), Some(0));
+		assert_eq!(serialized["request_id"], 3);
+	}
+
+	#[test]
+	fn serializes_error_packet_with_request_id() {
+		let packet = ClientBoundPacket::Error {
+			error: super::WebsocketError::TooManyPlayersInRequest { limit: 64 },
+			request_id: Some(9),
+		};
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(serialized["type"], "Error");
+		assert_eq!(serialized["error_code"], "bad_request");
+		assert_eq!(serialized["request_id"], 9);
 	}
 
 	#[test]
