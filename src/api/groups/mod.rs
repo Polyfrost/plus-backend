@@ -9,8 +9,6 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::api::ApiState;
 
-pub(crate) use create::get_or_create_dm_group;
-
 pub(super) const MAX_DM_MEMBERS: usize = 2;
 pub(super) const MAX_GROUP_MEMBERS: usize = 50;
 
@@ -42,11 +40,6 @@ pub enum GroupError {
 	InvalidContent,
 	#[error("You may only edit or delete your own messages")]
 	MessageForbidden,
-	#[error(
-		"You may only send one message to a given Special Chat recipient every \
-		 72 hours"
-	)]
-	RateLimited,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
@@ -68,7 +61,6 @@ impl IntoResponse for GroupError {
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN
 				}
-				Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self.to_string(),
@@ -137,90 +129,6 @@ pub(super) fn member_cap(kind: &GroupKind) -> usize {
 		GroupKind::Dm => MAX_DM_MEMBERS,
 		GroupKind::Group => MAX_GROUP_MEMBERS,
 	}
-}
-
-pub(super) const SPECIAL_CHAT_COOLDOWN_SECS: i64 = 72 * 60 * 60;
-
-pub(super) async fn try_consume_special_chat_cooldown(
-	state: &ApiState,
-	sender_id: i32,
-	target_id: i32,
-) -> Result<bool, sea_orm::DbErr> {
-	use sea_orm::{ConnectionTrait, Statement};
-
-	let result = state
-		.database
-		.query_one(Statement::from_sql_and_values(
-			state.database.get_database_backend(),
-			r#"
-			INSERT INTO special_chat_cooldowns (sender_id, target_id, last_sent_at)
-			VALUES ($1, $2, now())
-			ON CONFLICT (sender_id, target_id) DO UPDATE
-				SET last_sent_at = now()
-				WHERE special_chat_cooldowns.last_sent_at <= now() - make_interval(secs => $3)
-			RETURNING last_sent_at
-			"#,
-			[
-				sender_id.into(),
-				target_id.into(),
-				(SPECIAL_CHAT_COOLDOWN_SECS as f64).into(),
-			],
-		))
-		.await?;
-
-	Ok(result.is_some())
-}
-
-pub(super) async fn special_chat_cooldown_until(
-	state: &ApiState,
-	sender_id: i32,
-	target_id: i32,
-) -> Result<Option<chrono::DateTime<chrono::FixedOffset>>, sea_orm::DbErr> {
-	use entities::{prelude::*, special_chat_cooldowns};
-
-	let row = SpecialChatCooldowns::find()
-		.filter(special_chat_cooldowns::Column::SenderId.eq(sender_id))
-		.filter(special_chat_cooldowns::Column::TargetId.eq(target_id))
-		.one(&state.database)
-		.await?;
-
-	Ok(row.map(|row| {
-		row.last_sent_at + chrono::Duration::seconds(SPECIAL_CHAT_COOLDOWN_SECS)
-	}))
-}
-
-pub(super) async fn enforce_special_chat_cooldown(
-	state: &ApiState,
-	group: &entities::groups::Model,
-	sender_id: i32,
-) -> Result<(), GroupError> {
-	use entities::prelude::*;
-
-	if group.kind != GroupKind::Dm {
-		return Ok(());
-	}
-
-	let Some(other_id) = member_ids(state, group.id)
-		.await?
-		.into_iter()
-		.find(|id| *id != sender_id)
-	else {
-		return Ok(());
-	};
-
-	let Some(other_user) = User::find_by_id(other_id).one(&state.database).await? else {
-		return Ok(());
-	};
-
-	if !state.special_chat_targets.contains(&other_user.minecraft_uuid) {
-		return Ok(());
-	}
-
-	if !try_consume_special_chat_cooldown(state, sender_id, other_user.id).await? {
-		return Err(GroupError::RateLimited);
-	}
-
-	Ok(())
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {

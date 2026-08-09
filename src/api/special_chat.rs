@@ -1,112 +1,50 @@
 use aide::{
 	OperationIo,
-	axum::{
-		ApiRouter,
-		routing::{get_with, post_with},
-	},
+	axum::{ApiRouter, routing::get_with},
 	transform::TransformOperation,
 };
-use axum::{
-	Json,
-	extract::{Path, State},
-	http::StatusCode,
-	response::IntoResponse,
-};
-use chrono::{DateTime, FixedOffset};
+use axum::{Json, extract::State};
 use schemars::JsonSchema;
-use sea_orm::{ActiveValue, EntityTrait, Set};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use serde::Serialize;
 
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
-	groups::{
-		GroupError, find_user_by_uuid, get_or_create_dm_group, special_chat_cooldown_until,
-		try_consume_special_chat_cooldown,
-	},
+	groups::{GroupError, find_user_by_uuid, load_group, member_ids},
 	social::is_blocked_either_way,
 	websocket::{send_to_owner, structs::ClientBoundPacket},
 };
 
-const MAX_MESSAGE_LENGTH: usize = 4000;
-
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum SpecialChatError {
-	#[error("That player does not have a Special Chat")]
-	NotASpecialChatTarget,
-	#[error("You cannot message yourself")]
-	SelfTarget,
-	#[error("That player has blocked you")]
-	Blocked,
-	#[error("Message content must not be empty and must be under {MAX_MESSAGE_LENGTH} characters")]
-	InvalidMessage,
-	#[error(
-		"You may only send one message to a given Special Chat recipient every \
-		 72 hours"
-	)]
-	RateLimited,
 	#[error(transparent)]
 	Group(#[from] GroupError),
 }
 
-impl IntoResponse for SpecialChatError {
+impl axum::response::IntoResponse for SpecialChatError {
 	fn into_response(self) -> axum::response::Response {
 		match self {
-			Self::NotASpecialChatTarget => {
-				(StatusCode::NOT_FOUND, self.to_string()).into_response()
-			}
-			Self::SelfTarget | Self::Blocked => {
-				(StatusCode::CONFLICT, self.to_string()).into_response()
-			}
-			Self::InvalidMessage => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
-			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()).into_response(),
 			Self::Group(error) => error.into_response(),
 		}
 	}
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct SpecialChatTarget {
-	player: Uuid,
+pub struct SpecialChatStatus {
 	group_id: Option<i32>,
-	cooldown_until: Option<DateTime<FixedOffset>>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct SendRequest {
-	content: String,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-struct SentMessage {
-	group_id: i32,
-	message_id: i64,
-	sent_at: DateTime<FixedOffset>,
-}
-
-fn list_doc(op: TransformOperation) -> TransformOperation {
-	op.id("listSpecialChatTargets")
-		.summary("List Special Chat recipients")
+fn status_doc(op: TransformOperation) -> TransformOperation {
+	op.id("getSpecialChatStatus")
+		.summary("Get (or eagerly create) the player's Special Chat group")
 		.description(
-			"Lists the Special Chat recipients every player's Messaging \
-			 interface auto-instantiates a chat session for. The DM group \
-			 (and its opening message from the recipient, if one is \
-			 configured) is eagerly created here, so group_id is already \
-			 present before the player has sent anything.",
-		)
-		.tag("special-chat")
-}
-
-fn send_doc(op: TransformOperation) -> TransformOperation {
-	op.id("sendSpecialChatMessage")
-		.summary("Send a message to a Special Chat recipient")
-		.description(
-			"Sends a message to a configured Special Chat recipient without \
-			 requiring prior authorization or mutual acceptance via the \
-			 Friends System. Subject to a strictly enforced 72-hour cooldown \
-			 between consecutive messages from the same sender to the same \
-			 recipient. The recipient may still block a specific sender.",
+			"Every configured Special Chat recipient is a member, alongside \
+			 the authenticated player, of a single ordinary group chat that \
+			 this endpoint eagerly creates (with its opening message from a \
+			 recipient, if one is configured) the first time it's called. \
+			 From then on it behaves exactly like any other group chat — \
+			 message it via the normal /groups endpoints.",
 		)
 		.tag("special-chat")
 }
@@ -114,58 +52,117 @@ fn send_doc(op: TransformOperation) -> TransformOperation {
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new().nest(
 		"/special-chat",
-		ApiRouter::new()
-			.api_route("/", get_with(self::list, self::list_doc))
-			.api_route("/{player}/messages", post_with(self::send, self::send_doc)),
+		ApiRouter::new().api_route("/", get_with(self::status, self::status_doc)),
 	)
 }
 
-#[tracing::instrument(level = "debug", skip(state))]
-async fn list(
-	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
-) -> Result<Json<Vec<SpecialChatTarget>>, SpecialChatError> {
-	let mut targets = Vec::with_capacity(state.special_chat_targets.len());
-	for target in &state.special_chat_targets {
-		if *target == player.minecraft_uuid {
-			continue;
-		}
-
-		let (group_id, cooldown_until) = match find_user_by_uuid(&state, *target).await {
-			Ok(target) => {
-				let group_id = open_special_chat_group(&state, &player, &target).await?.id;
-				let cooldown_until =
-					special_chat_cooldown_until(&state, player.id, target.id)
-						.await
-						.map_err(GroupError::from)?;
-				(Some(group_id), cooldown_until)
-			}
-			Err(_) => (None, None),
-		};
-
-		targets.push(SpecialChatTarget {
-			player: *target,
-			group_id,
-			cooldown_until,
-		});
-	}
-
-	Ok(Json(targets))
-}
-
-async fn open_special_chat_group(
+async fn get_or_create_special_chat_group(
 	state: &ApiState,
 	player: &entities::user::Model,
-	target: &entities::user::Model,
-) -> Result<entities::groups::Model, SpecialChatError> {
+) -> Result<Option<(bool, entities::groups::Model, Vec<entities::user::Model>)>, SpecialChatError>
+{
+	use entities::{
+		group_members, groups,
+		prelude::*,
+		sea_orm_active_enums::{GroupKind, GroupMemberRole},
+	};
+
+	let mut targets = Vec::new();
+	for target_uuid in &state.special_chat_targets {
+		if *target_uuid == player.minecraft_uuid {
+			continue;
+		}
+		let Ok(target) = find_user_by_uuid(state, *target_uuid).await else {
+			continue;
+		};
+		if is_blocked_either_way(state, player.id, target.id)
+			.await
+			.map_err(GroupError::from)?
+		{
+			continue;
+		}
+		targets.push(target);
+	}
+
+	if targets.is_empty() {
+		return Ok(None);
+	}
+
+	let existing_group_id = GroupMembers::find()
+		.filter(group_members::Column::UserId.eq(player.id))
+		.inner_join(Groups)
+		.filter(groups::Column::Kind.eq(GroupKind::Group))
+		.filter(groups::Column::OwnerId.is_null())
+		.filter(groups::Column::Name.is_null())
+		.all(&state.database)
+		.await
+		.map_err(GroupError::from)?
+		.into_iter()
+		.map(|member| member.group_id)
+		.next();
+
+	if let Some(group_id) = existing_group_id {
+		let existing_member_ids = member_ids(state, group_id).await.map_err(GroupError::from)?;
+		for target in &targets {
+			if !existing_member_ids.contains(&target.id) {
+				GroupMembers::insert(group_members::ActiveModel {
+					group_id: Set(group_id),
+					user_id: Set(target.id),
+					role: Set(GroupMemberRole::Member),
+					joined_at: ActiveValue::NotSet,
+				})
+				.exec_without_returning(&state.database)
+				.await
+				.map_err(GroupError::from)?;
+			}
+		}
+		return Ok(Some((false, load_group(state, group_id).await?, targets)));
+	}
+
+	let group = Groups::insert(groups::ActiveModel {
+		kind: Set(GroupKind::Group),
+		name: Set(None),
+		owner_id: Set(None),
+		created_at: ActiveValue::NotSet,
+		..Default::default()
+	})
+	.exec_with_returning(&state.database)
+	.await
+	.map_err(GroupError::from)?;
+
+	for member_id in std::iter::once(player.id).chain(targets.iter().map(|target| target.id)) {
+		GroupMembers::insert(group_members::ActiveModel {
+			group_id: Set(group.id),
+			user_id: Set(member_id),
+			role: Set(GroupMemberRole::Member),
+			joined_at: ActiveValue::NotSet,
+		})
+		.exec_without_returning(&state.database)
+		.await
+		.map_err(GroupError::from)?;
+	}
+
+	Ok(Some((true, group, targets)))
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn status(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+) -> Result<Json<SpecialChatStatus>, SpecialChatError> {
 	use entities::{group_messages, prelude::*};
 
-	let (created, group) = get_or_create_dm_group(state, player.id, target.id).await?;
+	let Some((created, group, targets)) = get_or_create_special_chat_group(&state, &player).await?
+	else {
+		return Ok(Json(SpecialChatStatus { group_id: None }));
+	};
 
-	if created && let Some(opening_message) = state.special_chat_auto_reply.as_deref() {
+	if created && let Some(opening_message) = state.special_chat_auto_reply.as_deref()
+		&& let Some(sender) = targets.first()
+	{
 		let message = GroupMessages::insert(group_messages::ActiveModel {
 			group_id: Set(group.id),
-			sender_id: Set(target.id),
+			sender_id: Set(sender.id),
 			content: Set(opening_message.to_string()),
 			sent_at: ActiveValue::NotSet,
 			edited_at: Set(None),
@@ -177,87 +174,14 @@ async fn open_special_chat_group(
 		.await
 		.map_err(GroupError::from)?;
 
-		send_to_owner(state, player.minecraft_uuid, || ClientBoundPacket::GroupMessageReceived {
+		send_to_owner(&state, player.minecraft_uuid, || ClientBoundPacket::GroupMessageReceived {
 			group_id: group.id,
 			message_id: message.id,
-			sender: target.minecraft_uuid,
+			sender: sender.minecraft_uuid,
 			content: message.content.clone(),
 		})
 		.await;
 	}
 
-	Ok(group)
-}
-
-#[tracing::instrument(level = "debug", skip(state))]
-async fn send(
-	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
-	Path(target): Path<Uuid>,
-	Json(body): Json<SendRequest>,
-) -> Result<(StatusCode, Json<SentMessage>), SpecialChatError> {
-	use entities::{group_messages, prelude::*};
-
-	if !state.special_chat_targets.contains(&target) {
-		return Err(SpecialChatError::NotASpecialChatTarget);
-	}
-	if target == player.minecraft_uuid {
-		return Err(SpecialChatError::SelfTarget);
-	}
-
-	let content = body.content.trim();
-	if content.is_empty() || content.len() > MAX_MESSAGE_LENGTH {
-		return Err(SpecialChatError::InvalidMessage);
-	}
-
-	let target = find_user_by_uuid(&state, target).await?;
-
-	if is_blocked_either_way(&state, player.id, target.id)
-		.await
-		.map_err(GroupError::from)?
-	{
-		return Err(SpecialChatError::Blocked);
-	}
-
-	let group = open_special_chat_group(&state, &player, &target).await?;
-
-	if !try_consume_special_chat_cooldown(&state, player.id, target.id)
-		.await
-		.map_err(GroupError::from)?
-	{
-		return Err(SpecialChatError::RateLimited);
-	}
-
-	let message = GroupMessages::insert(group_messages::ActiveModel {
-		group_id: Set(group.id),
-		sender_id: Set(player.id),
-		content: Set(content.to_string()),
-		sent_at: ActiveValue::NotSet,
-		edited_at: Set(None),
-		deleted_at: Set(None),
-		idempotency_key: Set(None),
-		..Default::default()
-	})
-	.exec_with_returning(&state.database)
-	.await
-	.map_err(GroupError::from)?;
-
-	send_to_owner(&state, target.minecraft_uuid, || {
-		ClientBoundPacket::GroupMessageReceived {
-			group_id: group.id,
-			message_id: message.id,
-			sender: player.minecraft_uuid,
-			content: message.content.clone(),
-		}
-	})
-	.await;
-
-	Ok((
-		StatusCode::CREATED,
-		Json(SentMessage {
-			group_id: group.id,
-			message_id: message.id,
-			sent_at: message.sent_at,
-		}),
-	))
+	Ok(Json(SpecialChatStatus { group_id: Some(group.id) }))
 }

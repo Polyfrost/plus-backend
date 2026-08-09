@@ -24,7 +24,6 @@ pub use super::player_owned_cosmetic::Entity as PlayerOwnedCosmetic;
 pub use super::relationship_requests::Entity as RelationshipRequests;
 pub use super::relationships::Entity as Relationships;
 pub use super::session_invites::Entity as SessionInvites;
-pub use super::special_chat_cooldowns::Entity as SpecialChatCooldowns;
 pub use super::tags::Entity as Tags;
 pub use super::tags_cosmetic::Entity as TagsCosmetic;
 pub use super::tracked_link_hits::Entity as TrackedLinkHits;
