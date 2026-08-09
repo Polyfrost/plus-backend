@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
+use chrono::{DateTime, Days, NaiveDate, Utc};
 use entities::{
 	daily_playtime, monthly_active_login,
 	prelude::*,
@@ -11,6 +11,8 @@ use sea_orm::{
 	sea_query::{Expr, OnConflict},
 };
 use uuid::Uuid;
+
+use crate::utils::time::current_utc_month;
 
 pub(crate) trait DatabaseUserExt {
 	/// Gets a [user::Model] given a specific Minecraft UUID, or else inserts a
@@ -84,13 +86,6 @@ impl DatabaseTransactionExt for Transaction {
 		.exec_with_returning(db)
 		.await
 	}
-}
-
-pub(crate) fn current_utc_month() -> Date {
-	Utc::now()
-		.date_naive()
-		.with_day(1)
-		.expect("every month has a first day")
 }
 
 pub(crate) async fn record_monthly_active_login(

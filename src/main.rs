@@ -8,6 +8,7 @@ use crate::commands::backend_args;
 mod api;
 mod commands;
 mod database;
+mod utils;
 
 #[tokio::main]
 async fn main() {
@@ -16,6 +17,7 @@ async fn main() {
 		.with(fmt::layer())
 		.with(EnvFilter::from_default_env())
 		.init();
+
 	// Setup TLS
 	rustls::crypto::ring::default_provider()
 		.install_default()
