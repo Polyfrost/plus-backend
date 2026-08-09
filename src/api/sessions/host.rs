@@ -1,7 +1,7 @@
 use aide::{
 	axum::{
 		ApiRouter,
-		routing::{delete_with, post_with},
+		routing::{delete_with, patch_with, post_with},
 	},
 	transform::TransformOperation,
 };
@@ -12,7 +12,7 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use schemars::JsonSchema;
-use sea_orm::{ActiveValue, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -21,6 +21,11 @@ use crate::api::{ApiState, account::AuthenticatedPlayer, sessions::SessionError}
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CreateSessionRequest {
 	eos_session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UpdateSessionRequest {
+	eos_session_id: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -47,10 +52,22 @@ fn close_doc(op: TransformOperation) -> TransformOperation {
 		.tag("sessions")
 }
 
+fn update_doc(op: TransformOperation) -> TransformOperation {
+	op.id("updateGameSession")
+		.summary("Set a hosted session's EOS session id")
+		.description(
+			"The EOS P2P socket a session is reachable on can only be derived \
+			 once the session has been created (its id seeds the socket name), \
+			 so the host backfills it here right after creation.",
+		)
+		.tag("sessions")
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.api_route("/", post_with(self::create, self::create_doc))
 		.api_route("/{id}", delete_with(self::close, self::close_doc))
+		.api_route("/{id}", patch_with(self::update, self::update_doc))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -81,6 +98,29 @@ async fn create(
 			expires_at: session.expires_at,
 		}),
 	))
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn update(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	Path(id): Path<Uuid>,
+	Json(body): Json<UpdateSessionRequest>,
+) -> Result<Json<SessionResponse>, SessionError> {
+	let session = super::load_session(&state, id).await?;
+	if session.host_id != player.id {
+		return Err(SessionError::NotHost);
+	}
+
+	let mut active: entities::game_sessions::ActiveModel = session.into();
+	active.eos_session_id = Set(Some(body.eos_session_id));
+	let session = active.update(&state.database).await?;
+
+	Ok(Json(SessionResponse {
+		id: session.id,
+		eos_session_id: session.eos_session_id,
+		expires_at: session.expires_at,
+	}))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

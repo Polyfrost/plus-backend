@@ -4,6 +4,7 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State};
+use chrono::{DateTime, FixedOffset};
 use schemars::JsonSchema;
 use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
@@ -11,7 +12,10 @@ use serde::Serialize;
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
-	groups::{GroupError, find_user_by_uuid, load_group, member_ids},
+	groups::{
+		GroupError, find_user_by_uuid, load_group, member_ids, special_chat_cooldown_target,
+		special_chat_cooldown_until,
+	},
 	social::is_blocked_either_way,
 	websocket::{send_to_owner, structs::ClientBoundPacket},
 };
@@ -33,6 +37,7 @@ impl axum::response::IntoResponse for SpecialChatError {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SpecialChatStatus {
 	group_id: Option<i32>,
+	cooldown_until: Option<DateTime<FixedOffset>>,
 }
 
 fn status_doc(op: TransformOperation) -> TransformOperation {
@@ -154,7 +159,7 @@ async fn status(
 
 	let Some((created, group, targets)) = get_or_create_special_chat_group(&state, &player).await?
 	else {
-		return Ok(Json(SpecialChatStatus { group_id: None }));
+		return Ok(Json(SpecialChatStatus { group_id: None, cooldown_until: None }));
 	};
 
 	if created && let Some(opening_message) = state.special_chat_auto_reply.as_deref()
@@ -183,5 +188,15 @@ async fn status(
 		.await;
 	}
 
-	Ok(Json(SpecialChatStatus { group_id: Some(group.id) }))
+	let cooldown_until = match special_chat_cooldown_target(&state, &group, player.id)
+		.await
+		.map_err(GroupError::from)?
+	{
+		Some(cooldown_target_id) => special_chat_cooldown_until(&state, player.id, cooldown_target_id)
+			.await
+			.map_err(GroupError::from)?,
+		None => None,
+	};
+
+	Ok(Json(SpecialChatStatus { group_id: Some(group.id), cooldown_until }))
 }

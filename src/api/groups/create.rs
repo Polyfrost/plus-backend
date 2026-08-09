@@ -13,14 +13,14 @@ use axum::{
 use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::{GroupKind, GroupMemberRole};
 use schemars::JsonSchema;
-use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
 	account::AuthenticatedPlayer,
-	groups::{GroupError, find_user_by_uuid, member_ids},
+	groups::{GroupError, find_user_by_uuid, load_group, member_ids, require_membership},
 	social::{are_friends, is_blocked_either_way},
 };
 
@@ -71,11 +71,24 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.tag("groups")
 }
 
+fn claim_doc(op: TransformOperation) -> TransformOperation {
+	op.id("claimSpecialChatGroup")
+		.summary("Convert the Special Chat group into a normal, player-owned group chat")
+		.description(
+			"Claims ownership of the eagerly-created Special Chat group (see \
+			 GET /special-chat), turning it into an ordinary group chat you \
+			 own — a fresh Special Chat group is created the next time one is \
+			 needed. Only works on that specific group.",
+		)
+		.tag("groups")
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.api_route("/dm/{player}", post_with(self::open_dm, self::dm_doc))
 		.api_route("/", post_with(self::create_group, self::create_doc))
 		.api_route("/", get_with(self::list, self::list_doc))
+		.api_route("/{id}/claim", post_with(self::claim, self::claim_doc))
 }
 
 async fn summarize(
@@ -212,6 +225,25 @@ async fn open_dm(
 		if created { StatusCode::CREATED } else { StatusCode::OK },
 		Json(summarize(&state, group, player.id).await?),
 	))
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn claim(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	Path(id): Path<i32>,
+) -> Result<Json<GroupSummary>, GroupError> {
+	require_membership(&state, id, player.id).await?;
+	let group = load_group(&state, id).await?;
+	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some() {
+		return Err(GroupError::NotSpecialChatGroup);
+	}
+
+	let mut active: entities::groups::ActiveModel = group.into();
+	active.owner_id = Set(Some(player.id));
+	let group = active.update(&state.database).await?;
+
+	Ok(Json(summarize(&state, group, player.id).await?))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
