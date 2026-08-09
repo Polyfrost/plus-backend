@@ -1,3 +1,4 @@
+mod link_puid;
 mod login;
 
 use aide::{OperationInput, axum::ApiRouter, openapi::SecurityRequirement};
@@ -22,7 +23,9 @@ pub const OPENAPI_SECURITY_NAME: &str = "Bearer Token";
 pub const PASETO_IMPLICIT_ASSERT: Option<&[u8]> = Some(b"plus-backend");
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().merge(login::router())
+	ApiRouter::new()
+		.merge(login::router())
+		.merge(link_puid::router())
 }
 
 #[derive(Debug)]

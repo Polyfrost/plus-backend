@@ -86,6 +86,27 @@ pub(crate) struct ServeArgs {
 		fallback_with(default_cors_origins)
 	)]
 	pub(crate) cors_origins: Vec<HeaderValue>,
+	#[bpaf(
+		long("oidc-issuer"),
+		env("OIDC_ISSUER"),
+		fallback("https://plus.polyfrost.org".to_string())
+	)]
+	pub(crate) oidc_issuer: String,
+	#[bpaf(
+		long("special-chat-target"),
+		env("SPECIAL_CHAT_TARGETS"),
+		argument::<String>("UUIDS"),
+		parse(parse_special_chat_targets),
+		fallback(Vec::new())
+	)]
+	pub(crate) special_chat_targets: Vec<uuid::Uuid>,
+	#[bpaf(
+		long("special-chat-auto-reply"),
+		env("SPECIAL_CHAT_AUTO_REPLY"),
+		argument::<String>("MESSAGE"),
+		optional
+	)]
+	pub(crate) special_chat_auto_reply: Option<String>,
 }
 
 fn parse_bind_addrs(value: String) -> Result<Vec<SocketAddr>, std::net::AddrParseError> {
@@ -114,4 +135,13 @@ fn default_cors_origins() -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
 	parse_cors_origins(
 		"https://plus-admin.polyfrost.org,http://localhost:3000".to_owned(),
 	)
+}
+
+fn parse_special_chat_targets(value: String) -> Result<Vec<uuid::Uuid>, uuid::Error> {
+	value
+		.split(',')
+		.map(str::trim)
+		.filter(|uuid| !uuid.is_empty())
+		.map(uuid::Uuid::parse_str)
+		.collect()
 }

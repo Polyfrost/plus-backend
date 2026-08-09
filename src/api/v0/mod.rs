@@ -5,8 +5,14 @@ mod bundles;
 mod category;
 mod collections;
 pub(super) mod cosmetics;
+mod global_chat;
+mod groups;
 mod links;
+pub(super) mod oidc;
 mod players;
+mod sessions;
+mod social;
+mod special_chat;
 mod stripe;
 mod tags;
 mod transactions;
@@ -28,10 +34,16 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(bundles::setup_router().await)
 		.merge(collections::setup_router().await)
 		.merge(links::setup_router().await)
+		.merge(oidc::setup_router().await)
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
+		.merge(global_chat::setup_router().await)
+		.merge(groups::setup_router().await)
 		.merge(tags::setup_router().await)
 		.merge(category::setup_router().await)
+		.merge(sessions::setup_router().await)
+		.merge(social::setup_router().await)
+		.merge(special_chat::setup_router().await)
 		.merge(websocket::setup_router().await)
 }

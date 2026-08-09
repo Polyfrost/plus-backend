@@ -102,7 +102,10 @@ async fn endpoint(
 	let response = state
 		.client
 		.get("https://sessionserver.mojang.com/session/minecraft/hasJoined")
-		.query(&[("username", query.username), ("serverId", query.server_id)])
+		.query(&[
+			("username", query.username.clone()),
+			("serverId", query.server_id),
+		])
 		.send()
 		.await
 		.map_err(LoginError::SessionserverAuthentication)?
@@ -121,6 +124,8 @@ async fn endpoint(
 		serde_json::from_str(&body).map_err(|_| LoginError::Unauthorized)?;
 	let player =
 		entities::prelude::User::get_or_create(&state.database, parsed.id).await?;
+	entities::prelude::User::set_username(&state.database, player.id, &query.username)
+		.await?;
 	record_monthly_active_login(&state.database, player.id).await?;
 
 	let token = local::encrypt(

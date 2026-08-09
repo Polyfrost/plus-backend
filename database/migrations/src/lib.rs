@@ -36,6 +36,11 @@ mod m20260711_000000_add_cosmetic_cover;
 mod m20260717_000000_add_cosmetic_trigram_search;
 mod m20260720_000000_create_tracked_links;
 mod m20260729_000000_add_pet_cosmetic;
+mod m20260731_000000_create_social_tables;
+mod m20260731_000001_create_oidc_keys;
+mod m20260731_000002_add_eos_product_user_id;
+mod m20260804_000000_add_username_to_users;
+mod m20260808_000000_create_special_chat_cooldowns;
 
 pub struct Migrator;
 
@@ -79,6 +84,11 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260717_000000_add_cosmetic_trigram_search::Migration),
 			Box::new(m20260720_000000_create_tracked_links::Migration),
 			Box::new(m20260729_000000_add_pet_cosmetic::Migration),
+			Box::new(m20260731_000000_create_social_tables::Migration),
+			Box::new(m20260731_000001_create_oidc_keys::Migration),
+			Box::new(m20260731_000002_add_eos_product_user_id::Migration),
+			Box::new(m20260804_000000_add_username_to_users::Migration),
+			Box::new(m20260808_000000_create_special_chat_cooldowns::Migration),
 		]
 	}
 }

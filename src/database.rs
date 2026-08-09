@@ -21,6 +21,12 @@ pub(crate) trait DatabaseUserExt {
 		db: &impl ConnectionTrait,
 		minecraft_uuid: Uuid,
 	) -> Result<user::Model, DbErr>;
+
+	async fn set_username(
+		db: &impl ConnectionTrait,
+		player_id: i32,
+		username: &str,
+	) -> Result<(), DbErr>;
 }
 
 pub(crate) trait DatabaseTransactionExt {
@@ -54,6 +60,24 @@ impl DatabaseUserExt for User {
 				.await?
 			}
 		})
+	}
+
+	async fn set_username(
+		db: &impl ConnectionTrait,
+		player_id: i32,
+		username: &str,
+	) -> Result<(), DbErr> {
+		User::update_many()
+			.col_expr(user::Column::Username, Expr::value(username.to_string()))
+			.filter(user::Column::Id.eq(player_id))
+			.filter(
+				user::Column::Username
+					.ne(username)
+					.or(user::Column::Username.is_null()),
+			)
+			.exec(db)
+			.await?;
+		Ok(())
 	}
 }
 

@@ -26,12 +26,22 @@ pub(in crate::api) use self::{
 		RealtimeState,
 	},
 };
-use crate::{api::v0::cosmetics::CachedAssetInfo, commands::ServeArgs};
+use uuid::Uuid;
+
+use crate::{
+	api::v0::{
+		cosmetics::CachedAssetInfo,
+		oidc::{self, AuthorizationCode, OidcSigningKey},
+	},
+	commands::ServeArgs,
+};
 
 /// How long a rendered asset stays in the in-memory cache.
 const ASSET_CACHE_TTL: Duration = Duration::from_hours(2);
 /// How long to wait for a free database connection before giving up.
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a player must wait between global chat messages.
+const GLOBAL_CHAT_COOLDOWN: Duration = Duration::from_secs(2);
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
@@ -49,6 +59,12 @@ pub(super) struct ApiState {
 	pub(super) particle_color_persist_tx: mpsc::Sender<ParticleColorPersistence>,
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,
+	pub(super) global_chat_cooldown: Cache<i32, ()>,
+	pub(super) oidc_issuer: String,
+	pub(super) oidc_signing_key: Arc<OidcSigningKey>,
+	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
+	pub(super) special_chat_targets: Vec<Uuid>,
+	pub(super) special_chat_auto_reply: Option<String>,
 }
 
 #[derive(Clone)]
@@ -76,6 +92,8 @@ impl ApiState {
 		let realtime = RealtimeState::default();
 		persistence::spawn_playtime_flush(database.clone(), realtime.playtime.clone());
 
+		let oidc_signing_key = oidc::load_or_generate_signing_key(&database).await;
+
 		ApiState {
 			stripe: StripeApiState::new(args),
 			client: build_http_client(true),
@@ -90,6 +108,14 @@ impl ApiState {
 			),
 			admin_password: args.admin_password.clone(),
 			render_service_url: args.render_service_url.clone(),
+			global_chat_cooldown: Cache::builder()
+				.time_to_live(GLOBAL_CHAT_COOLDOWN)
+				.build(),
+			oidc_issuer: args.oidc_issuer.clone(),
+			oidc_signing_key: Arc::new(oidc_signing_key),
+			oidc_codes: oidc::new_authorization_code_cache(),
+			special_chat_targets: args.special_chat_targets.clone(),
+			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			s3_bucket,
 			database,
 		}

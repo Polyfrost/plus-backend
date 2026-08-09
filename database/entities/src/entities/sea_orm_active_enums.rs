@@ -132,6 +132,122 @@ pub enum PlayerRole {
 	serde :: Serialize,
 	Hash,
 )]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "relationship_kind")]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipKind {
+	#[sea_orm(string_value = "friend")]
+	Friend,
+	#[sea_orm(string_value = "best_friend")]
+	BestFriend,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "relationship_request_status"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipRequestStatus {
+	#[sea_orm(string_value = "pending")]
+	Pending,
+	#[sea_orm(string_value = "accepted")]
+	Accepted,
+	#[sea_orm(string_value = "declined")]
+	Declined,
+	#[sea_orm(string_value = "cancelled")]
+	Cancelled,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "group_kind")]
+#[serde(rename_all = "snake_case")]
+pub enum GroupKind {
+	#[sea_orm(string_value = "dm")]
+	Dm,
+	#[sea_orm(string_value = "group")]
+	Group,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "group_member_role")]
+#[serde(rename_all = "snake_case")]
+pub enum GroupMemberRole {
+	#[sea_orm(string_value = "owner")]
+	Owner,
+	#[sea_orm(string_value = "member")]
+	Member,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "session_invite_status"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionInviteStatus {
+	#[sea_orm(string_value = "pending")]
+	Pending,
+	#[sea_orm(string_value = "accepted")]
+	Accepted,
+	#[sea_orm(string_value = "declined")]
+	Declined,
+	#[sea_orm(string_value = "expired")]
+	Expired,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "tag_type")]
 #[serde(rename_all = "snake_case")]
 pub enum TagType {
