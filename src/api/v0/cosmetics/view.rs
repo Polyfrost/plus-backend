@@ -102,7 +102,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new().api_route(
-		"/cosmetics/view/{id}",
+		"/view/{id}",
 		get_with(self::endpoint, self::endpoint_doc),
 	)
 }

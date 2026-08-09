@@ -34,11 +34,11 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(put_player::router())
 				.merge(manage::router())
 				.merge(grant::router())
-				.merge(list_capes::router()),
+				.merge(list_capes::router())
+				.merge(search::router())
+				.merge(view::router())
 		)
 		.merge(list::router())
-		.merge(search::router())
-		.merge(view::router())
 }
 
 /// A buyable cosmetic. What the player owns once and chooses variants within.

@@ -284,7 +284,7 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new().api_route(
-		"/cosmetics/search",
+		"/search",
 		get_with(self::endpoint, self::endpoint_doc),
 	)
 }
