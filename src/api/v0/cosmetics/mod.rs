@@ -2,7 +2,6 @@ mod cover;
 mod get_player;
 mod grant;
 mod list;
-mod list_capes;
 mod manage;
 mod put_player;
 mod search;
@@ -34,7 +33,6 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(put_player::router())
 				.merge(manage::router())
 				.merge(grant::router())
-				.merge(list_capes::router())
 				.merge(search::router())
 				.merge(view::router())
 		)

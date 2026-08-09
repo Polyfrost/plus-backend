@@ -3,10 +3,11 @@ use aide::{
 	axum::{ApiRouter, routing::get_with},
 	transform::TransformOperation,
 };
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Json, extract::{Query, State}, http::StatusCode, response::IntoResponse};
+use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-use serde::Serialize;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryTrait};
+use serde::{Deserialize, Serialize};
 
 use crate::api::{
 	ApiState,
@@ -54,6 +55,11 @@ pub struct Response {
 	cosmetics: Vec<CosmeticInfo>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ListFilters {
+	r#type: Option<CosmeticType>
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new().api_route("/cosmetics", get_with(self::endpoint, self::endpoint_doc))
 }
@@ -61,6 +67,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
+	Query(filters): Query<ListFilters>,
 ) -> Result<Json<Response>, ResponseError> {
 	let mut response = Response::default();
 
@@ -69,6 +76,9 @@ async fn endpoint(
 
 		let cosmetics = Cosmetic::find()
 			.filter(cosmetic::Column::Enabled.eq(true))
+			.apply_if(filters.r#type, |query, v| {
+				query.filter(cosmetic::Column::Type.eq(v))
+			})
 			.find_with_related(CosmeticAllowedSlot)
 			.all(&state.database)
 			.await?;
