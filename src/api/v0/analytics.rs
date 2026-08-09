@@ -32,6 +32,13 @@ use crate::{
 	utils::time::{current_utc_month, start_of_day},
 };
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().api_route(
+		"/analytics/overview",
+		get_with(self::endpoint, self::endpoint_doc),
+	)
+}
+
 #[derive(Debug)]
 pub struct PrivateAnalyticsAuth;
 
@@ -305,13 +312,6 @@ impl OwnedItemsCounts {
 
 		counts
 	}
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route(
-		"/analytics/overview",
-		get_with(self::endpoint, self::endpoint_doc),
-	)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

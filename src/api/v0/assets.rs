@@ -15,6 +15,18 @@ use serde::Serialize;
 
 use crate::api::ApiState;
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.api_route(
+			"/asset/{id}",
+			get_with(self::redirect_endpoint, self::redirect_doc),
+		)
+		.api_route(
+			"/asset/{id}/url",
+			get_with(self::url_endpoint, self::url_doc),
+		)
+}
+
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum AssetError {
 	#[error("No asset with that id has a resolvable url")]
@@ -83,18 +95,6 @@ fn url_doc(op: TransformOperation) -> TransformOperation {
 			 that id has a resolvable url.",
 		)
 		.tag("assets")
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route(
-			"/asset/{id}",
-			get_with(self::redirect_endpoint, self::redirect_doc),
-		)
-		.api_route(
-			"/asset/{id}/url",
-			get_with(self::url_endpoint, self::url_doc),
-		)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

@@ -12,6 +12,13 @@ use uuid::Uuid;
 
 use crate::api::{ApiState, v0::account::AdminPlayer};
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().api_route(
+		"/players/role",
+		put_with(self::endpoint, self::endpoint_doc),
+	)
+}
+
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum RoleError {
 	#[error("The requested player does not exist")]
@@ -44,13 +51,6 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 struct RoleRequest {
 	player: Uuid,
 	role: PlayerRole,
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route(
-		"/players/role",
-		put_with(self::endpoint, self::endpoint_doc),
-	)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

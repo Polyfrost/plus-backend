@@ -30,6 +30,14 @@ use crate::{
 	},
 };
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.api_route("/go/{slug}", get_with(self::follow, self::redirect_doc))
+		.api_route("/links", post_with(self::create, self::create_doc))
+		.api_route("/links", get_with(self::list, self::list_doc))
+		.api_route("/links/{slug}", delete_with(self::delete, self::delete_doc))
+}
+
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum LinksError {
 	#[error("No tracked link with that slug exists")]
@@ -176,14 +184,6 @@ fn delete_doc(op: TransformOperation) -> TransformOperation {
 			"Deletes the tracked link with the given slug. Admin password required.",
 		)
 		.tag("links")
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.api_route("/go/{slug}", get_with(self::follow, self::redirect_doc))
-		.api_route("/links", post_with(self::create, self::create_doc))
-		.api_route("/links", get_with(self::list, self::list_doc))
-		.api_route("/links/{slug}", delete_with(self::delete, self::delete_doc))
 }
 
 #[tracing::instrument(level = "debug", skip(state, visitor))]

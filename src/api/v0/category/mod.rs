@@ -4,6 +4,10 @@ use aide::axum::ApiRouter;
 
 use crate::api::ApiState;
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().nest("/category", ApiRouter::new().merge(list::router()))
+}
+
 // Fetches the category for each of the given cosmetic ids, grouped by type.
 
 // Cosmetics with no category are absent from the map; callers should treat a
@@ -33,7 +37,3 @@ use crate::api::ApiState;
 
 // 	Ok(rows)
 // }
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().nest("/category", ApiRouter::new().merge(list::router()))
-}

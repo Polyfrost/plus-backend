@@ -25,6 +25,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::ApiState;
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.nest(
+			"/cosmetics",
+			ApiRouter::new()
+				.merge(get_player::router())
+				.merge(put_player::router())
+				.merge(manage::router())
+				.merge(grant::router())
+				.merge(list_capes::router()),
+		)
+		.merge(list::router())
+		.merge(search::router())
+		.merge(view::router())
+}
+
 /// A buyable cosmetic. What the player owns once and chooses variants within.
 ///
 /// When a cosmetic has multiple variants (e.g. every pride cape, or every cat
@@ -346,20 +362,4 @@ pub(super) type EquippedCosmetics = HashMap<BodySlot, i32>;
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub(super) struct PartialEquippedCosmetics {
 	pub equipped: HashMap<BodySlot, Option<i32>>,
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new()
-		.nest(
-			"/cosmetics",
-			ApiRouter::new()
-				.merge(get_player::router())
-				.merge(put_player::router())
-				.merge(manage::router())
-				.merge(grant::router())
-				.merge(list_capes::router()),
-		)
-		.merge(list::router())
-		.merge(search::router())
-		.merge(view::router())
 }

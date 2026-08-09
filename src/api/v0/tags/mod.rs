@@ -15,6 +15,17 @@ use serde::Serialize;
 
 use crate::api::ApiState;
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().nest(
+		"/tags",
+		ApiRouter::new()
+			.merge(list::router())
+			.merge(create::router())
+			.merge(apply::router())
+			.merge(remove::router()),
+	)
+}
+
 /// The tags applied to a cosmetic, grouped by their type.
 #[derive(Clone, Debug, Default, Serialize, JsonSchema)]
 pub(crate) struct CosmeticTags {
@@ -95,15 +106,4 @@ async fn expand_groups<C: ConnectionTrait>(
 	}
 
 	Ok(Some(expanded.into_iter().collect()))
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().nest(
-		"/tags",
-		ApiRouter::new()
-			.merge(list::router())
-			.merge(create::router())
-			.merge(apply::router())
-			.merge(remove::router()),
-	)
 }

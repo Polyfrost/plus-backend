@@ -11,6 +11,18 @@ use uuid::Uuid;
 
 use crate::{api::ApiState, utils::hash::sha256_hex};
 
+pub(super) async fn setup_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().nest(
+		"/collections",
+		ApiRouter::new()
+			.merge(list::router())
+			.merge(create::router())
+			.merge(edit::router())
+			.merge(delete::router())
+			.merge(view::router()),
+	)
+}
+
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum StoreAssetError {
 	#[error("Database error: {0}")]
@@ -50,16 +62,4 @@ pub(crate) async fn store_asset(
 	.await?;
 
 	Ok(asset.id)
-}
-
-pub(super) async fn setup_router() -> ApiRouter<ApiState> {
-	ApiRouter::new().nest(
-		"/collections",
-		ApiRouter::new()
-			.merge(list::router())
-			.merge(create::router())
-			.merge(edit::router())
-			.merge(delete::router())
-			.merge(view::router()),
-	)
 }
