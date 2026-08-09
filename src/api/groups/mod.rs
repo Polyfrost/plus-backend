@@ -40,6 +40,11 @@ pub enum GroupError {
 	InvalidContent,
 	#[error("You may only edit or delete your own messages")]
 	MessageForbidden,
+	#[error(
+		"You may only send one message to the Special Chat group every 72 \
+		 hours"
+	)]
+	RateLimited,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
@@ -61,6 +66,7 @@ impl IntoResponse for GroupError {
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN
 				}
+				Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self.to_string(),
@@ -129,6 +135,80 @@ pub(super) fn member_cap(kind: &GroupKind) -> usize {
 		GroupKind::Dm => MAX_DM_MEMBERS,
 		GroupKind::Group => MAX_GROUP_MEMBERS,
 	}
+}
+
+pub(super) const SPECIAL_CHAT_COOLDOWN_SECS: i64 = 72 * 60 * 60;
+
+pub(super) async fn try_consume_special_chat_cooldown(
+	state: &ApiState,
+	sender_id: i32,
+	target_id: i32,
+) -> Result<bool, sea_orm::DbErr> {
+	use sea_orm::{ConnectionTrait, Statement};
+
+	let result = state
+		.database
+		.query_one(Statement::from_sql_and_values(
+			state.database.get_database_backend(),
+			r#"
+			INSERT INTO special_chat_cooldowns (sender_id, target_id, last_sent_at)
+			VALUES ($1, $2, now())
+			ON CONFLICT (sender_id, target_id) DO UPDATE
+				SET last_sent_at = now()
+				WHERE special_chat_cooldowns.last_sent_at <= now() - make_interval(secs => $3)
+			RETURNING last_sent_at
+			"#,
+			[
+				sender_id.into(),
+				target_id.into(),
+				(SPECIAL_CHAT_COOLDOWN_SECS as f64).into(),
+			],
+		))
+		.await?;
+
+	Ok(result.is_some())
+}
+
+pub(super) async fn enforce_special_chat_cooldown(
+	state: &ApiState,
+	group: &entities::groups::Model,
+	sender_id: i32,
+) -> Result<(), GroupError> {
+	use entities::prelude::*;
+
+	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some() {
+		return Ok(());
+	}
+
+	let Some(sender) = User::find_by_id(sender_id).one(&state.database).await? else {
+		return Ok(());
+	};
+	if state.special_chat_targets.contains(&sender.minecraft_uuid) {
+		return Ok(());
+	}
+
+	let mut target_ids = Vec::new();
+	for member_id in member_ids(state, group.id).await? {
+		if member_id == sender_id {
+			continue;
+		}
+		let Some(member) = User::find_by_id(member_id).one(&state.database).await? else {
+			continue;
+		};
+		if state.special_chat_targets.contains(&member.minecraft_uuid) {
+			target_ids.push(member.id);
+		}
+	}
+
+	let Some(&cooldown_target_id) = target_ids.iter().min() else {
+		return Ok(());
+	};
+
+	if !try_consume_special_chat_cooldown(state, sender_id, cooldown_target_id).await? {
+		return Err(GroupError::RateLimited);
+	}
+
+	Ok(())
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
