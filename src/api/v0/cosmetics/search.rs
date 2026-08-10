@@ -319,7 +319,7 @@ async fn endpoint(
 		),
 		Sort::Popularity => (
 			Expr::col((cosmetic::Entity, cosmetic::Column::PurchaseCount)).sum(),
-			Order::Asc,
+			Order::Desc,
 		),
 	};
 
