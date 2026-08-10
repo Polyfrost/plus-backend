@@ -11,9 +11,11 @@ use axum::{
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset, Utc};
+use entities::sea_orm_active_enums::SessionInviteStatus;
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set,
+	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+	Set,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -25,6 +27,33 @@ use crate::api::{
 	v0::social::is_blocked_either_way,
 	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
 };
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SessionInviteInfo {
+	id: i32,
+	session_id: Uuid,
+	status: SessionInviteStatus,
+}
+
+async fn load_invite_info(
+	state: &ApiState,
+	session_invite_id: Option<i32>,
+) -> Result<Option<SessionInviteInfo>, GroupError> {
+	use entities::prelude::*;
+
+	let Some(id) = session_invite_id else {
+		return Ok(None);
+	};
+
+	Ok(SessionInvites::find_by_id(id)
+		.one(&state.database)
+		.await?
+		.map(|invite| SessionInviteInfo {
+			id: invite.id,
+			session_id: invite.session_id,
+			status: invite.status,
+		}))
+}
 
 async fn require_not_blocked_by_members(
 	state: &ApiState,
@@ -56,6 +85,7 @@ pub struct GroupMessage {
 	content: String,
 	sent_at: DateTime<FixedOffset>,
 	edited_at: Option<DateTime<FixedOffset>>,
+	session_invite: Option<SessionInviteInfo>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -184,15 +214,42 @@ async fn list(
 		.map(|user| (user.id, user.minecraft_uuid))
 		.collect::<std::collections::HashMap<_, _>>();
 
+	let invite_ids = rows
+		.iter()
+		.filter_map(|row| row.session_invite_id)
+		.collect::<Vec<_>>();
+	let invites = if invite_ids.is_empty() {
+		std::collections::HashMap::new()
+	} else {
+		SessionInvites::find()
+			.filter(entities::session_invites::Column::Id.is_in(invite_ids))
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|invite| {
+				(
+					invite.id,
+					SessionInviteInfo {
+						id: invite.id,
+						session_id: invite.session_id,
+						status: invite.status,
+					},
+				)
+			})
+			.collect::<std::collections::HashMap<_, _>>()
+	};
+
 	Ok(Json(
 		rows.into_iter()
 			.filter_map(|row| {
+				let session_invite = row.session_invite_id.and_then(|id| invites.get(&id)).cloned();
 				senders.get(&row.sender_id).map(|uuid| GroupMessage {
 					id: row.id,
 					sender: *uuid,
 					content: row.content,
 					sent_at: row.sent_at,
 					edited_at: row.edited_at,
+					session_invite,
 				})
 			})
 			.collect(),
@@ -232,6 +289,7 @@ async fn send(
 				content: existing.content,
 				sent_at: existing.sent_at,
 				edited_at: existing.edited_at,
+				session_invite: None,
 			}),
 		));
 	}
@@ -256,6 +314,8 @@ async fn send(
 		message_id: message.id,
 		sender: player.minecraft_uuid,
 		content: message.content.clone(),
+		session_invite_id: None,
+		session_invite_status: None,
 	})
 	.await?;
 
@@ -267,6 +327,7 @@ async fn send(
 			content: message.content,
 			sent_at: message.sent_at,
 			edited_at: message.edited_at,
+			session_invite: None,
 		}),
 	))
 }
@@ -308,6 +369,7 @@ async fn edit(
 		return Err(GroupError::InvalidContent);
 	}
 
+	let session_invite_id = message.session_invite_id;
 	let mut active: entities::group_messages::ActiveModel = message.into();
 	active.content = Set(content.to_string());
 	active.edited_at = Set(Some(Utc::now().into()));
@@ -317,6 +379,7 @@ async fn edit(
 		group_id: id,
 		message_id: message.id,
 		content: message.content.clone(),
+		session_invite_status: None,
 	})
 	.await?;
 
@@ -326,6 +389,7 @@ async fn edit(
 		content: message.content,
 		sent_at: message.sent_at,
 		edited_at: message.edited_at,
+		session_invite: load_invite_info(&state, session_invite_id).await?,
 	}))
 }
 
@@ -361,6 +425,32 @@ async fn mark_read(
 	use sea_orm::sea_query::OnConflict;
 
 	require_membership(&state, id, player.id).await?;
+
+	// Clients may send an id that doesn't correspond to a real row (e.g. a client-local optimistic/
+	// pending message id used before the server has acked a send). last_read_message_id has a FK to
+	// group_messages, so inserting an unknown id would 500. Clamp to the newest real message in this
+	// group instead of trusting the client-supplied id verbatim.
+	let message_id = match entities::prelude::GroupMessages::find_by_id(message_id)
+		.filter(entities::group_messages::Column::GroupId.eq(id))
+		.one(&state.database)
+		.await?
+	{
+		Some(_) => Some(message_id),
+		None => {
+			entities::prelude::GroupMessages::find()
+				.filter(entities::group_messages::Column::GroupId.eq(id))
+				.order_by_desc(entities::group_messages::Column::Id)
+				.select_only()
+				.column(entities::group_messages::Column::Id)
+				.into_tuple::<i64>()
+				.one(&state.database)
+				.await?
+		}
+	};
+
+	let Some(message_id) = message_id else {
+		return Ok(StatusCode::NO_CONTENT);
+	};
 
 	GroupMessageReads::insert(group_message_reads::ActiveModel {
 		group_id: Set(id),

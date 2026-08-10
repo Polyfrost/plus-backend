@@ -13,17 +13,121 @@ use axum::{
 use chrono::{DateTime, FixedOffset, Utc};
 use entities::sea_orm_active_enums::SessionInviteStatus;
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::account::AuthenticatedPlayer,
-	v0::sessions::{SessionError, find_user_by_uuid, load_session},
-	v0::social::{are_friends, is_blocked_either_way},
-	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
+	v0::{
+		account::AuthenticatedPlayer,
+		groups::get_or_create_dm_group,
+		sessions::{SessionError, find_user_by_uuid, load_session},
+		social::{are_friends, is_blocked_either_way},
+		websocket::{send_to_owner, structs::ClientBoundPacket},
+	},
 };
+
+fn to_session_error(e: crate::api::v0::groups::GroupError) -> SessionError {
+	SessionError::Database(sea_orm::error::DbErr::Custom(e.to_string()))
+}
+
+async fn post_invite_message(
+	state: &ApiState,
+	sender: &entities::user::Model,
+	recipient: &entities::user::Model,
+	invite_id: i32,
+) -> Result<(), SessionError> {
+	use entities::{group_messages, prelude::*};
+
+	let (_, dm_group) = get_or_create_dm_group(state, sender.id, recipient.id)
+		.await
+		.map_err(to_session_error)?;
+
+	let message = GroupMessages::insert(group_messages::ActiveModel {
+		group_id: Set(dm_group.id),
+		sender_id: Set(sender.id),
+		content: Set("Invited you to their world".to_string()),
+		sent_at: ActiveValue::NotSet,
+		edited_at: Set(None),
+		deleted_at: Set(None),
+		idempotency_key: Set(None),
+		session_invite_id: Set(Some(invite_id)),
+		..Default::default()
+	})
+	.exec_with_returning(&state.database)
+	.await?;
+
+	send_to_owner(state, recipient.minecraft_uuid, || {
+		ClientBoundPacket::GroupMessageReceived {
+			group_id: dm_group.id,
+			message_id: message.id,
+			sender: sender.minecraft_uuid,
+			content: message.content.clone(),
+			session_invite_id: Some(invite_id),
+			session_invite_status: Some(SessionInviteStatus::Pending),
+		}
+	})
+	.await;
+
+	Ok(())
+}
+
+async fn find_invite_message(
+	state: &ApiState,
+	invite_id: i32,
+) -> Result<Option<(i32, i64)>, SessionError> {
+	use entities::{group_messages, prelude::*};
+
+	Ok(GroupMessages::find()
+		.filter(group_messages::Column::SessionInviteId.eq(invite_id))
+		.one(&state.database)
+		.await?
+		.map(|message| (message.group_id, message.id)))
+}
+
+async fn notify_invite_message_status(
+	state: &ApiState,
+	invite_id: i32,
+	status: SessionInviteStatus,
+) -> Result<(), SessionError> {
+	use entities::{group_members, prelude::*};
+
+	let Some((group_id, message_id)) = find_invite_message(state, invite_id).await?
+	else {
+		return Ok(());
+	};
+
+	let member_ids = GroupMembers::find()
+		.filter(group_members::Column::GroupId.eq(group_id))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|member| member.user_id)
+		.collect::<Vec<_>>();
+
+	let members = User::find()
+		.filter(entities::user::Column::Id.is_in(member_ids))
+		.all(&state.database)
+		.await?;
+
+	for member in members {
+		let status = status.clone();
+		send_to_owner(state, member.minecraft_uuid, move || {
+			ClientBoundPacket::GroupMessageEdited {
+				group_id,
+				message_id,
+				content: "Invited you to their world".to_string(),
+				session_invite_status: Some(status.clone()),
+			}
+		})
+		.await;
+	}
+
+	Ok(())
+}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SessionInvite {
@@ -67,8 +171,14 @@ fn decline_doc(op: TransformOperation) -> TransformOperation {
 
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.api_route("/{id}/invites/{player}", post_with(self::send, self::send_doc))
-		.api_route("/invites/incoming", get_with(self::incoming, self::incoming_doc))
+		.api_route(
+			"/{id}/invites/{player}",
+			post_with(self::send, self::send_doc),
+		)
+		.api_route(
+			"/invites/incoming",
+			get_with(self::incoming, self::incoming_doc),
+		)
 		.api_route(
 			"/invites/{invite_id}/accept",
 			post_with(self::accept, self::accept_doc),
@@ -123,6 +233,8 @@ async fn send(
 		}
 	})
 	.await;
+
+	post_invite_message(&state, &player, &target, invite.id).await?;
 
 	Ok((
 		StatusCode::CREATED,
@@ -230,6 +342,9 @@ async fn accept(
 		.await;
 	}
 
+	notify_invite_message_status(&state, invite.id, SessionInviteStatus::Accepted)
+		.await?;
+
 	Ok(StatusCode::NO_CONTENT)
 }
 
@@ -263,6 +378,9 @@ async fn decline(
 		})
 		.await;
 	}
+
+	notify_invite_message_status(&state, invite.id, SessionInviteStatus::Declined)
+		.await?;
 
 	Ok(StatusCode::NO_CONTENT)
 }

@@ -41,6 +41,7 @@ mod m20260731_000001_create_oidc_keys;
 mod m20260731_000002_add_eos_product_user_id;
 mod m20260804_000000_add_username_to_users;
 mod m20260808_000000_create_special_chat_cooldowns;
+mod m20260810_000000_add_session_invite_to_group_messages;
 
 pub struct Migrator;
 
@@ -89,6 +90,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260731_000002_add_eos_product_user_id::Migration),
 			Box::new(m20260804_000000_add_username_to_users::Migration),
 			Box::new(m20260808_000000_create_special_chat_cooldowns::Migration),
+			Box::new(m20260810_000000_add_session_invite_to_group_messages::Migration),
 		]
 	}
 }

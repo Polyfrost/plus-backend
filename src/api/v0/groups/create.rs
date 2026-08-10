@@ -233,6 +233,10 @@ async fn claim(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<Json<GroupSummary>, GroupError> {
+	if !state.special_chat_targets.contains(&player.minecraft_uuid) {
+		return Err(GroupError::NotSpecialChatAccount);
+	}
+
 	require_membership(&state, id, player.id).await?;
 	let group = load_group(&state, id).await?;
 	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some() {

@@ -14,6 +14,7 @@ pub struct Model {
 	pub edited_at: Option<DateTimeWithTimeZone>,
 	pub deleted_at: Option<DateTimeWithTimeZone>,
 	pub idempotency_key: Option<Uuid>,
+	pub session_invite_id: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -34,6 +35,14 @@ pub enum Relation {
 		on_delete = "Cascade"
 	)]
 	Sender,
+	#[sea_orm(
+		belongs_to = "super::session_invites::Entity",
+		from = "Column::SessionInviteId",
+		to = "super::session_invites::Column::Id",
+		on_update = "NoAction",
+		on_delete = "SetNull"
+	)]
+	SessionInvites,
 }
 
 impl Related<super::groups::Entity> for Entity {

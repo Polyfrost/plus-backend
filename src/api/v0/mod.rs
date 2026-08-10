@@ -5,7 +5,7 @@ mod bundles;
 mod category;
 mod collections;
 pub(super) mod cosmetics;
-mod global_chat;
+// mod global_chat; // todo: Currently disabled
 mod groups;
 mod links;
 pub(super) mod oidc;
@@ -22,9 +22,6 @@ use aide::axum::ApiRouter;
 
 use crate::api::ApiState;
 
-/// The original, unversioned API. It is served from the root of the server
-/// rather than from a `/v0` prefix, so that clients written before the
-/// versioning scheme existed keep working unchanged.
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.nest("/stripe", stripe::setup_router().await)
@@ -38,7 +35,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
-		.merge(global_chat::setup_router().await)
+		// .merge(global_chat::setup_router().await)
 		.merge(groups::setup_router().await)
 		.merge(tags::setup_router().await)
 		.merge(category::setup_router().await)

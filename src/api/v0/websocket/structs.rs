@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use entities::sea_orm_active_enums::BodySlot;
+use entities::sea_orm_active_enums::{BodySlot, SessionInviteStatus};
 use schemars::{JsonSchema, json_schema};
 use serde::{Deserialize, Serialize, ser::SerializeStruct as _};
 use uuid::Uuid;
@@ -179,11 +179,14 @@ pub enum ClientBoundPacket {
 		message_id: i64,
 		sender: Uuid,
 		content: String,
+		session_invite_id: Option<i32>,
+		session_invite_status: Option<SessionInviteStatus>,
 	},
 	GroupMessageEdited {
 		group_id: i32,
 		message_id: i64,
 		content: String,
+		session_invite_status: Option<SessionInviteStatus>,
 	},
 	GroupMessageDeleted {
 		group_id: i32,
