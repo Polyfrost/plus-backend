@@ -2,6 +2,8 @@ mod create;
 mod members;
 mod messages;
 
+pub(crate) use create::get_or_create_dm_group;
+
 use aide::{OperationIo, axum::ApiRouter};
 use axum::{http::StatusCode, response::IntoResponse};
 use entities::sea_orm_active_enums::GroupKind;
@@ -47,6 +49,8 @@ pub enum GroupError {
 	RateLimited,
 	#[error("Only the eagerly-created Special Chat group can be converted this way")]
 	NotSpecialChatGroup,
+	#[error("Only Special Chat accounts may convert this group")]
+	NotSpecialChatAccount,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
@@ -64,7 +68,8 @@ impl IntoResponse for GroupError {
 				| Self::DmImmutable
 				| Self::GroupFull
 				| Self::AlreadyMember
-				| Self::NotSpecialChatGroup => StatusCode::CONFLICT,
+				| Self::NotSpecialChatGroup
+				| Self::NotSpecialChatAccount => StatusCode::CONFLICT,
 				Self::InvalidContent => StatusCode::BAD_REQUEST,
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN

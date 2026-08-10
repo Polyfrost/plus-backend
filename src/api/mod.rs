@@ -6,7 +6,7 @@ mod bundles;
 mod category;
 mod collections;
 mod cosmetics;
-mod global_chat;
+// mod global_chat; // Global chat is disabled for now.
 mod groups;
 mod links;
 mod oidc;
@@ -119,7 +119,7 @@ pub(crate) async fn start(args: ServeArgs) {
 		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
-		.merge(global_chat::setup_router().await)
+		// .merge(global_chat::setup_router().await) // Global chat is disabled for now.
 		.merge(groups::setup_router().await)
 		.merge(tags::setup_router().await)
 		.merge(category::setup_router().await)

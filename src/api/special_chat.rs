@@ -38,6 +38,7 @@ impl axum::response::IntoResponse for SpecialChatError {
 pub struct SpecialChatStatus {
 	group_id: Option<i32>,
 	cooldown_until: Option<DateTime<FixedOffset>>,
+	is_special_chat_target: bool,
 }
 
 fn status_doc(op: TransformOperation) -> TransformOperation {
@@ -157,9 +158,11 @@ async fn status(
 ) -> Result<Json<SpecialChatStatus>, SpecialChatError> {
 	use entities::{group_messages, prelude::*};
 
+	let is_special_chat_target = state.special_chat_targets.contains(&player.minecraft_uuid);
+
 	let Some((created, group, targets)) = get_or_create_special_chat_group(&state, &player).await?
 	else {
-		return Ok(Json(SpecialChatStatus { group_id: None, cooldown_until: None }));
+		return Ok(Json(SpecialChatStatus { group_id: None, cooldown_until: None, is_special_chat_target }));
 	};
 
 	if created && let Some(opening_message) = state.special_chat_auto_reply.as_deref()
@@ -184,6 +187,8 @@ async fn status(
 			message_id: message.id,
 			sender: sender.minecraft_uuid,
 			content: message.content.clone(),
+			session_invite_id: None,
+			session_invite_status: None,
 		})
 		.await;
 	}
@@ -198,5 +203,5 @@ async fn status(
 		None => None,
 	};
 
-	Ok(Json(SpecialChatStatus { group_id: Some(group.id), cooldown_until }))
+	Ok(Json(SpecialChatStatus { group_id: Some(group.id), cooldown_until, is_special_chat_target }))
 }
