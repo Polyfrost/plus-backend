@@ -1,38 +1,19 @@
-mod account;
 pub(crate) mod admin_auth;
-mod analytics;
-mod assets;
-mod bundles;
-mod category;
-mod collections;
-mod cosmetics;
-// mod global_chat; // Global chat is disabled for now.
-mod groups;
-mod links;
-mod oidc;
-mod players;
-mod sessions;
-mod social;
-mod special_chat;
+mod docs;
 mod state;
-mod stripe;
-mod tags;
-mod transactions;
-mod websocket;
+mod v0;
+mod v1;
+
 use aide::{
 	axum::ApiRouter,
 	openapi::{
 		ApiKeyLocation, Contact, License, OpenApi, SchemaObject, SecurityScheme, Server,
 	},
-	redoc::Redoc,
-	scalar::Scalar,
-	swagger::Swagger,
 	transform::TransformOpenApi,
 };
 use axum::{
 	Extension,
 	http::{Method, header},
-	routing::get as axum_get,
 };
 use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
@@ -40,21 +21,27 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
 	api::{
+		docs::{DocPage, DocVersion},
 		state::ApiState,
-		websocket::structs::{ClientBoundPacket, ServerBoundPacket},
+		v0::websocket::structs::{ClientBoundPacket, ServerBoundPacket},
 	},
 	commands::ServeArgs,
 };
 
-fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
-	spec.version("1.0.0")
-		.title("Poly+ API")
+fn init_openapi_spec<'a>(
+	spec: TransformOpenApi<'a>,
+	version: DocVersion,
+) -> TransformOpenApi<'a> {
+	spec.version(&version.document_version())
+		.title(&version.title())
 		.summary("An API used as the backend of the Poly+ mod")
-		.description(
+		.description(&format!(
 			"This API provides all the backend services necessary for enabling the \
 			 functionalities of the Poly+ mod, such as storing and serving cosmetic \
-			 information.",
-		)
+			 information.\n\nThis document only covers the {} endpoints; the other \
+			 versions are documented separately.",
+			version.label()
+		))
 		.license(License {
 			name: "PolyForm Shield License 1.0.0".to_string(),
 			url: Some("https://polyformproject.org/licenses/shield/1.0.0/".to_string()),
@@ -63,7 +50,7 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 		.tos("https://polyfrost.org/legal/terms/")
 		.contact(Contact {
 			url: Some("https://polyfrost.org/contact/".to_string()),
-			email: Some("ty@polyfrost.org".to_string()),
+			email: Some("contact@atmofrost.org".to_string()),
 			..Default::default()
 		})
 		.server(Server {
@@ -82,7 +69,7 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 			..Default::default()
 		})
 		.security_scheme(
-			account::OPENAPI_SECURITY_NAME,
+			v0::account::OPENAPI_SECURITY_NAME,
 			SecurityScheme::Http {
 				scheme: "bearer".to_string(),
 				bearer_format: Some("paseto".to_string()),
@@ -101,38 +88,17 @@ fn init_openapi_spec(spec: TransformOpenApi<'_>) -> TransformOpenApi<'_> {
 		)
 }
 
-#[derive(Clone, Copy)]
-struct OpenApiSpec(&'static str);
-
 pub(crate) async fn start(args: ServeArgs) {
 	let state = ApiState::new(&args).await;
 
-	let app = ApiRouter::new()
-		.nest("/stripe", stripe::setup_router().await)
-		.nest("/account", account::setup_router().await)
-		.nest("/transactions", transactions::setup_router().await)
-		.merge(assets::setup_router().await)
-		.merge(bundles::setup_router().await)
-		.merge(collections::setup_router().await)
-		.merge(links::setup_router().await)
-		.merge(oidc::setup_router().await)
-		.merge(analytics::setup_router().await)
-		.merge(players::setup_router().await)
-		.merge(cosmetics::setup_router().await)
-		// .merge(global_chat::setup_router().await) // Global chat is disabled for now.
-		.merge(groups::setup_router().await)
-		.merge(tags::setup_router().await)
-		.merge(category::setup_router().await)
-		.merge(sessions::setup_router().await)
-		.merge(social::setup_router().await)
-		.merge(special_chat::setup_router().await)
-		.merge(websocket::setup_router().await)
-		.with_state(state);
+	let mut openapi_v0 = OpenApi::default();
+	let v0 = v0::setup_router()
+		.await
+		.with_state(state.clone())
+		.finish_api_with(&mut openapi_v0, |spec| init_openapi_spec(spec, docs::V0));
 
-	// Convert OpenAPI router to normal actix router, and render the doc as JSON
-	let mut openapi = OpenApi::default();
-	let app = app.finish_api_with(&mut openapi, init_openapi_spec);
-	if let Some(components) = openapi.components.as_mut() {
+	// Manually add documentation for websockets because aide doesn't detect them
+	if let Some(components) = openapi_v0.components.as_mut() {
 		components.schemas.insert(
 			ClientBoundPacket::schema_name().into_owned(),
 			SchemaObject {
@@ -150,27 +116,27 @@ pub(crate) async fn start(args: ServeArgs) {
 			},
 		);
 	}
-	let openapi_rendered = Box::leak(
-		serde_json::to_string(&openapi)
-			.expect("Unable to render OpenAPI documentation as JSON")
-			.into_boxed_str(),
-	);
+
+	let mut openapi_v1 = OpenApi::default();
+	let v1 = ApiRouter::new()
+		.nest("/v1", v1::setup_router().await)
+		.with_state(state)
+		.finish_api_with(&mut openapi_v1, |spec| init_openapi_spec(spec, docs::V1));
+
+	// Final router object
+	let mut app = v0.merge(v1);
+
+	// Add visual doc pages
+	for (version, openapi) in [(docs::V0, &openapi_v0), (docs::V1, &openapi_v1)] {
+		app = app.route(&version.spec_url(), docs::spec_route(openapi));
+
+		for &page in DocPage::ALL {
+			app = app.route(&version.page_url(page), docs::page_route(version, page));
+		}
+	}
+
+	// Add middleware
 	let app = app
-		.route("/scalar", Scalar::new("/openapi.json").axum_route().into())
-		.route(
-			"/swagger",
-			Swagger::new("/openapi.json").axum_route().into(),
-		)
-		.route("/redoc", Redoc::new("/openapi.json").axum_route().into())
-		.route(
-			"/openapi.json",
-			axum_get(
-				async |Extension(OpenApiSpec(spec)): Extension<OpenApiSpec>| {
-					([(header::CONTENT_TYPE, "application/json")], spec)
-				},
-			),
-		)
-		.layer(Extension(OpenApiSpec(openapi_rendered)))
 		.layer(Extension(args.client_ip_source))
 		.layer(TraceLayer::new_for_http())
 		.layer(
@@ -183,7 +149,10 @@ pub(crate) async fn start(args: ServeArgs) {
 	let mut listeners = Vec::new();
 	for addr in &args.bind_addr {
 		match TcpListener::bind(addr).await {
-			Ok(listener) => listeners.push(listener),
+			Ok(listener) => {
+				listeners.push(listener);
+				tracing::info!(%addr, "binded to address");
+			}
 			Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
 				tracing::warn!(%addr, %err, "skipping bind address, already in use");
 			}
