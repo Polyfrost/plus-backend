@@ -144,12 +144,31 @@ impl VariantInfo {
 	}
 }
 
+/// Matches cosmetics that are not hidden by their group
+pub(super) fn in_enabled_group() -> sea_orm::Condition {
+	use sea_orm::{ColumnTrait, Condition, sea_query::Query};
+
+	Condition::any()
+		.add(cosmetic::Column::GroupId.is_null())
+		.add(
+			cosmetic::Column::GroupId.in_subquery(
+				Query::select()
+					.column(cosmetic_group::Column::Id)
+					.from(cosmetic_group::Entity)
+					.and_where(cosmetic_group::Column::Enabled.eq(true))
+					.to_owned(),
+			),
+		)
+}
+
 pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 	db: &C,
 ) -> Result<HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>, sea_orm::DbErr> {
 	use entities::prelude::{CosmeticGroup, CosmeticGroupAllowedSlot};
 	use sea_orm::EntityTrait;
 
+	// Disabled groups are loaded too: a player who owns one of their variants
+	// keeps it, so the group is still needed to name and bucket that variant.
 	Ok(CosmeticGroup::find()
 		.find_with_related(CosmeticGroupAllowedSlot)
 		.all(db)

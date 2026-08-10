@@ -124,13 +124,10 @@ async fn endpoint(
 			.all(&state.database)
 			.await?;
 
+		// No enabled check here: a cosmetic the player owns is theirs for good,
 		let mut rows = Vec::new();
 		let mut emote_tasks = JoinSet::new();
-		for cosmetic in owned
-			.into_iter()
-			.filter_map(|(_, c)| c)
-			.filter(|c| c.enabled)
-		{
+		for cosmetic in owned.into_iter().filter_map(|(_, c)| c) {
 			let asset = match cosmetic.asset_id {
 				Some(asset_id) => {
 					Asset::find_by_id(asset_id).one(&state.database).await?
@@ -196,9 +193,7 @@ async fn endpoint(
 				.await?
 				.into_iter()
 				.filter_map(|(equipment, cosmetic)| {
-					cosmetic
-						.filter(|c| c.enabled)
-						.map(|_| (equipment.slot, equipment.cosmetic_id))
+					cosmetic.map(|_| (equipment.slot, equipment.cosmetic_id))
 				}),
 		);
 	};
