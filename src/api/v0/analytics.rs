@@ -126,14 +126,13 @@ pub enum AnalyticsError {
 
 impl IntoResponse for AnalyticsError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				Self::InvalidPeriod { .. } => StatusCode::BAD_REQUEST,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

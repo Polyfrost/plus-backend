@@ -33,7 +33,7 @@ pub enum UpdateError {
 
 impl IntoResponse for UpdateError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::MissingBundle => StatusCode::NOT_FOUND,
 				Self::MissingProduct | Self::MissingBasePrice | Self::InvalidDiscount => {
@@ -42,9 +42,8 @@ impl IntoResponse for UpdateError {
 				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

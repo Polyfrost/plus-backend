@@ -60,7 +60,7 @@ pub enum UploadError {
 
 impl IntoResponse for UploadError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::MissingFile
 				| Self::InvalidType
@@ -74,9 +74,8 @@ impl IntoResponse for UploadError {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

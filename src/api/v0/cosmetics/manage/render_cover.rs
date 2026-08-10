@@ -33,19 +33,23 @@ pub enum RenderCoverError {
 
 impl IntoResponse for RenderCoverError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
 				Self::MissingAsset | Self::CoverExists => StatusCode::BAD_REQUEST,
-				Self::RenderDisabled => StatusCode::SERVICE_UNAVAILABLE,
+				// Carries no internal detail beyond the configuration state
+				// itself, so it is surfaced rather than withheld
+				Self::RenderDisabled => {
+					return (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+						.into_response();
+				}
 				Self::Render(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) | Self::S3(_) | Self::Store(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

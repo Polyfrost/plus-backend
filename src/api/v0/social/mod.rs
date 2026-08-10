@@ -31,7 +31,7 @@ pub enum SocialError {
 
 impl IntoResponse for SocialError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::PlayerMissing | Self::RequestMissing => StatusCode::NOT_FOUND,
 				Self::SelfTarget
@@ -42,9 +42,8 @@ impl IntoResponse for SocialError {
 				Self::RequestForbidden => StatusCode::FORBIDDEN,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

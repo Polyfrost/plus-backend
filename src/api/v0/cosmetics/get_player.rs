@@ -58,15 +58,14 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 
 impl IntoResponse for ResponseError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				ResponseError::PlayerRequired => StatusCode::BAD_REQUEST,
 				ResponseError::S3Presign(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

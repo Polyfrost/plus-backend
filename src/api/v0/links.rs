@@ -54,16 +54,15 @@ pub enum LinksError {
 
 impl IntoResponse for LinksError {
 	fn into_response(self) -> Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::NotFound => StatusCode::NOT_FOUND,
 				Self::SlugTaken => StatusCode::CONFLICT,
 				Self::InvalidSlug | Self::InvalidUrl => StatusCode::BAD_REQUEST,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

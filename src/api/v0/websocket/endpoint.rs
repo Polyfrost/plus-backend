@@ -602,6 +602,16 @@ impl From<WebsocketError> for RequestError {
 	}
 }
 
+/// Builds an error packet, logging errors whose details are withheld from the
+/// client so that they are not lost.
+fn error_packet(error: WebsocketError, request_id: Option<u64>) -> ClientBoundPacket {
+	if error.is_internal() {
+		tracing::error!(%error, "websocket request failed");
+	}
+
+	ClientBoundPacket::Error { error, request_id }
+}
+
 async fn handle_msg(
 	socket: &mut WebSocket,
 	state: &ApiState,
@@ -758,14 +768,7 @@ async fn endpoint(
 		let equipped = match load_equipped(&state, player.id).await {
 			Ok(equipped) => equipped,
 			Err(error) => {
-				let _ = send_packet(
-					&mut socket,
-					ClientBoundPacket::Error {
-						error,
-						request_id: None,
-					},
-				)
-				.await;
+				let _ = send_packet(&mut socket, error_packet(error, None)).await;
 				return;
 			}
 		};
@@ -802,7 +805,7 @@ async fn endpoint(
 					..
 				}) => break,
 				Err(RequestError { error, request_id }) => {
-					let e = ClientBoundPacket::Error { error, request_id };
+					let e = error_packet(error, request_id);
 					if send_packet(&mut socket, e).await.is_err() {
 						break;
 					};

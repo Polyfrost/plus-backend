@@ -36,7 +36,7 @@ pub enum TokenError {
 
 impl IntoResponse for TokenError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::UnsupportedGrant | Self::InvalidCode | Self::Mismatch | Self::PkceFailed => {
 					StatusCode::BAD_REQUEST
@@ -44,9 +44,8 @@ impl IntoResponse for TokenError {
 				Self::Unauthorized => StatusCode::UNAUTHORIZED,
 				Self::Signing(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

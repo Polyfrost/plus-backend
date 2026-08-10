@@ -38,13 +38,12 @@ pub enum SearchError {
 
 impl IntoResponse for SearchError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 
@@ -324,7 +323,7 @@ async fn endpoint(
 		),
 	};
 
-	let mut buckets = filtered(&query)
+	let mut buckets: Select<Cosmetic> = filtered(&query)
 		.select_only()
 		.column(cosmetic::Column::GroupId)
 		.expr_as(solo_id_expr(), "solo_id")

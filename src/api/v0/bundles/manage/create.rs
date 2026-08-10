@@ -44,7 +44,7 @@ pub enum CreateError {
 
 impl IntoResponse for CreateError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::MissingName | Self::MissingPrice | Self::Rejection(_) => {
 					StatusCode::BAD_REQUEST
@@ -54,9 +54,8 @@ impl IntoResponse for CreateError {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

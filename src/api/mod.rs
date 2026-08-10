@@ -13,7 +13,8 @@ use aide::{
 };
 use axum::{
 	Extension,
-	http::{Method, header},
+	http::{Method, StatusCode, header},
+	response::{IntoResponse, Response},
 };
 use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
@@ -27,6 +28,22 @@ use crate::{
 	},
 	commands::ServeArgs,
 };
+
+pub(crate) const INTERNAL_MESSAGE: &str = "Internal server error";
+
+/// Turns an error into a response, logging rather than exposing the error
+/// message whenever the status is a server error.
+pub(crate) fn error_response<E: std::error::Error>(
+	status: StatusCode,
+	error: E
+) -> Response {
+	if status.is_server_error() {
+		tracing::error!(%status, error = %error, "request failed");
+		(status, INTERNAL_MESSAGE).into_response()
+	} else {
+		(status, error.to_string()).into_response()
+	}
+}
 
 fn init_openapi_spec<'a>(
 	spec: TransformOpenApi<'a>,
