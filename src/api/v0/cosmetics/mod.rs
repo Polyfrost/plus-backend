@@ -299,8 +299,8 @@ impl EmoteInfo {
 }
 
 impl CachedAssetInfo {
-	// sha256("null")
-	const DEFAULT_HASH: &str = "37a6259cc0c1dae299a7866489dff0bd";
+	const DEFAULT_HASH: &str =
+		"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
 
 	#[tracing::instrument(
 		name = "fetch_cached_asset_info",
@@ -382,4 +382,15 @@ pub(super) type EquippedCosmetics = HashMap<BodySlot, i32>;
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub(super) struct PartialEquippedCosmetics {
 	pub equipped: HashMap<BodySlot, Option<i32>>,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::CachedAssetInfo;
+	use crate::utils::hash::sha256_hex;
+
+	#[test]
+	fn default_hash_is_sha256_of_null() {
+		assert_eq!(CachedAssetInfo::DEFAULT_HASH, sha256_hex(b"null"));
+	}
 }
