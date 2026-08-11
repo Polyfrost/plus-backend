@@ -1,6 +1,9 @@
 use aide::{
 	OperationIo,
-	axum::{ApiRouter, routing::get_with},
+	axum::{
+		ApiRouter,
+		routing::{get_with, post_with},
+	},
 	transform::TransformOperation,
 };
 use axum::{
@@ -11,9 +14,12 @@ use axum::{
 };
 use schemars::JsonSchema;
 use sea_orm::EntityTrait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::api::ApiState;
+use crate::api::{
+	ApiState, admin_auth::AdminAuthenticationExtractor, state::AssetCacheError,
+	v0::cosmetics::CachedAssetInfo,
+};
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
@@ -25,6 +31,14 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			"/asset/{id}/url",
 			get_with(self::url_endpoint, self::url_doc),
 		)
+		.api_route(
+			"/assets/refresh",
+			post_with(self::refresh_all_endpoint, self::refresh_all_doc),
+		)
+		.api_route(
+			"/assets/refresh/{id}",
+			post_with(self::refresh_one_endpoint, self::refresh_one_doc),
+		)
 }
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -35,6 +49,8 @@ pub enum AssetError {
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("Unable to presign asset url: {0}")]
 	S3(#[from] s3::error::S3Error),
+	#[error(transparent)]
+	Refresh(#[from] AssetCacheError),
 }
 
 impl IntoResponse for AssetError {
@@ -42,11 +58,24 @@ impl IntoResponse for AssetError {
 		crate::api::error_response(
 			match self {
 				Self::NotFound => StatusCode::NOT_FOUND,
-				Self::Database(_) | Self::S3(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				Self::Database(_) | Self::S3(_) | Self::Refresh(_) => {
+					StatusCode::INTERNAL_SERVER_ERROR
+				}
 			},
 			self,
 		)
 	}
+}
+
+/// The asset an operation addresses.
+///
+/// A named struct rather than a bare `Path<i32>`: aide cannot name a scalar
+/// path parameter, so it documents no parameter at all and the id field is
+/// missing from the generated docs.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AssetPath {
+	/// The id of the asset.
+	id: i32,
 }
 
 /// The resolvable url for an asset.
@@ -54,6 +83,18 @@ impl IntoResponse for AssetError {
 pub struct AssetUrlResponse {
 	/// The direct (possibly presigned) url the asset can be fetched from.
 	url: String,
+}
+
+/// What a full asset cache refresh did.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RefreshAllResponse {
+	/// How many assets had their cached info recomputed and stored.
+	refreshed: usize,
+	/// How many assets could not be resolved and are therefore absent from the
+	/// cache. They fall back to being resolved per request until they succeed.
+	failed: usize,
+	/// How many cached entries were dropped because their asset is gone.
+	evicted: usize,
 }
 
 /// Resolve the direct url for the asset with the given id, presigning an S3
@@ -99,7 +140,7 @@ fn url_doc(op: TransformOperation) -> TransformOperation {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn redirect_endpoint(
 	State(state): State<ApiState>,
-	Path(id): Path<i32>,
+	Path(AssetPath { id }): Path<AssetPath>,
 ) -> Result<Redirect, AssetError> {
 	Ok(Redirect::temporary(&resolve_url(&state, id).await?))
 }
@@ -107,9 +148,118 @@ async fn redirect_endpoint(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn url_endpoint(
 	State(state): State<ApiState>,
-	Path(id): Path<i32>,
+	Path(AssetPath { id }): Path<AssetPath>,
 ) -> Result<Json<AssetUrlResponse>, AssetError> {
 	Ok(Json(AssetUrlResponse {
 		url: resolve_url(&state, id).await?,
 	}))
+}
+
+fn refresh_all_doc(op: TransformOperation) -> TransformOperation {
+	op.id("refreshAssetCache")
+		.summary("Refresh the asset cache")
+		.description(
+			"Recomputes the cached hash of every asset from the database and object \
+			 storage, and drops cached entries whose asset no longer exists. Cached \
+			 hashes never expire on their own, so this is how a change made outside \
+			 the API — an object replaced in storage, a hash edited in the database \
+			 — is picked up without a restart. Runs synchronously and reports what \
+			 it did. Admin password required.",
+		)
+		.tag("assets")
+		.response_with::<{ StatusCode::OK.as_u16() }, Json<RefreshAllResponse>, _>(|res| {
+			res.description("The cache was rebuilt")
+		})
+		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
+			res.description("Invalid or missing admin password")
+		})
+}
+
+fn refresh_one_doc(op: TransformOperation) -> TransformOperation {
+	op.id("refreshAsset")
+		.summary("Refresh a single asset")
+		.description(
+			"Recomputes the cached hash of one asset and returns it. Prefer this \
+			 over a full refresh when a single object changed: it costs one lookup \
+			 instead of one per asset. Returns 404 when no asset with that id \
+			 exists, in which case any leftover cache entry is dropped. Admin \
+			 password required.",
+		)
+		.tag("assets")
+		.response_with::<{ StatusCode::OK.as_u16() }, Json<CachedAssetInfo>, _>(|res| {
+			res.description("The asset's cached info was recomputed")
+		})
+		.response_with::<{ StatusCode::NOT_FOUND.as_u16() }, String, _>(|res| {
+			res.description("No asset exists with the given id")
+		})
+		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
+			res.description("Invalid or missing admin password")
+		})
+}
+
+#[tracing::instrument(level = "debug", skip(state, _auth))]
+async fn refresh_all_endpoint(
+	State(state): State<ApiState>,
+	_auth: AdminAuthenticationExtractor,
+) -> Result<Json<RefreshAllResponse>, AssetError> {
+	let refresh = state.refresh_asset_cache().await?;
+
+	tracing::info!(
+		refreshed = refresh.refreshed,
+		failed = refresh.failed,
+		evicted = refresh.evicted,
+		"Refreshed the asset cache on request"
+	);
+
+	Ok(Json(RefreshAllResponse {
+		refreshed: refresh.refreshed,
+		failed: refresh.failed,
+		evicted: refresh.evicted,
+	}))
+}
+
+#[tracing::instrument(level = "debug", skip(state, _auth))]
+async fn refresh_one_endpoint(
+	State(state): State<ApiState>,
+	_auth: AdminAuthenticationExtractor,
+	Path(AssetPath { id }): Path<AssetPath>,
+) -> Result<Json<CachedAssetInfo>, AssetError> {
+	state
+		.refresh_asset(id)
+		.await?
+		.map(Json)
+		.ok_or(AssetError::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+	/// Registering a route panics on a path conflict, which would only surface at
+	/// startup.
+	#[tokio::test]
+	async fn router_paths_do_not_conflict() {
+		let _ = super::setup_router().await;
+	}
+
+	/// aide silently documents no parameter at all for a bare `Path<i32>`, which
+	/// leaves the id field missing from the docs. Guards the named-struct fix.
+	#[tokio::test]
+	async fn path_parameters_are_documented() {
+		let mut api = aide::openapi::OpenApi::default();
+		let _ = super::setup_router().await.finish_api(&mut api);
+
+		let spec = serde_json::to_value(&api).unwrap();
+		let documented = |path: &str, method: &str| {
+			spec["paths"][path][method]["parameters"]
+				.as_array()
+				.is_some_and(|params| {
+					params.iter().any(|param| {
+						param["in"] == "path" && param["name"] == "id"
+					})
+				})
+		};
+
+		assert!(documented("/asset/{id}", "get"));
+		assert!(documented("/asset/{id}/url", "get"));
+		assert!(documented("/assets/refresh/{id}", "post"));
+	}
 }

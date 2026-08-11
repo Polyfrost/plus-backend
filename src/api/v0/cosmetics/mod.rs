@@ -347,7 +347,10 @@ impl CachedAssetInfo {
 			return Ok(info);
 		}
 
-		Self::from_db_model(asset, s3_bucket).await
+		let info = Self::from_db_model(asset, s3_bucket).await?;
+		cache.insert(asset.id, info.clone()).await;
+
+		Ok(info)
 	}
 
 	async fn asset_url(
