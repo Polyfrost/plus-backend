@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use entities::sea_orm_active_enums::{AssetKind, BodySlot, CosmeticType};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DbErr, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
 use crate::{
@@ -390,23 +390,29 @@ async fn endpoint(
 			&data,
 			content_type.as_deref().unwrap_or(default_content_type),
 		)
-		.await?;
+		.await?; // first step, if error, nothing has to be reverted
 
 	use entities::{
 		asset, cosmetic, cosmetic_allowed_slot, cosmetic_group,
 		cosmetic_group_allowed_slot, prelude::*,
 	};
 
-	let asset = asset::ActiveModel {
-		storage_path: Set(Some(path)),
+	let asset = match (asset::ActiveModel {
+		storage_path: Set(Some(path.clone())),
 		url: Set(None),
 		asset_kind: Set(asset_kind),
 		content_type: Set(content_type.or_else(|| Some(default_content_type.to_string()))),
 		hash: Set(Some(sha256_hex(&data))),
 		..Default::default()
 	}
-	.insert(&state.database)
-	.await?;
+	.insert(&state.database) // if database error, revert s3 changes
+	.await)
+	{
+		Ok(asset) => asset,
+		Err(error) => {
+			return Err(delete_from_s3_bucket(&state, path, error).await);
+		}
+	};
 
 	let cover_asset_id = if state.render_service_url.is_empty() {
 		None
@@ -432,7 +438,7 @@ async fn endpoint(
 			.await
 			{
 				Ok(id) => Some(id),
-				Err(error) => {
+				Err(error) => { // delete insert to database from :408 and s3 insertion (debate)
 					tracing::warn!("Unable to store cosmetic cover asset: {error}");
 					None
 				}
@@ -446,22 +452,36 @@ async fn endpoint(
 
 	let group = match group_name {
 		Some(group_name) => {
-			let existing = CosmeticGroup::find()
+			let existing = match (CosmeticGroup::find()
 				.filter(cosmetic_group::Column::Name.eq(group_name.clone()))
 				.filter(cosmetic_group::Column::Type.eq(cosmetic_type.clone()))
 				.one(&state.database)
-				.await?;
+				.await)
+				{
+					Ok(existing) => existing,
+					Err(error) => {
+						// todo!("Check if cover also should be reverted");
+						return Err(delete_from_s3_bucket(&state, path, error).await);
+					}
+				}; // in theory select query, but if it throws an error, it will stop the fn, so changes should also be reverted here
 			let group = match existing {
 				Some(group) => group,
 				None => {
-					cosmetic_group::ActiveModel {
+					let active_group = match (cosmetic_group::ActiveModel {
 						name: Set(group_name),
 						r#type: Set(cosmetic_type.clone()),
 						enabled: Set(true),
 						..Default::default()
 					}
-					.insert(&state.database)
-					.await?
+					.insert(&state.database)// probably if there is a database error it must be handled and everything made before has to be reverted
+					.await) 
+					{
+						Ok(active_group) => active_group,
+						Err(error) => {
+							return Err(delete_from_s3_bucket(&state, path, error).await);
+						}
+					};
+					active_group // stopped here =-=-=-=-=-=-=-=
 				}
 			};
 			if !slots.is_empty() {
@@ -473,7 +493,7 @@ async fn endpoint(
 				))
 				.on_conflict_do_nothing()
 				.exec(&state.database)
-				.await?;
+				.await?; // probably if there is a database error it must be handled and everything made before has to be reverted
 			}
 			Some(group)
 		}
@@ -491,7 +511,7 @@ async fn endpoint(
 				.filter(cosmetic::Column::StripeProductId.is_not_null())
 				.filter(cosmetic::Column::StripePriceId.is_not_null())
 				.one(&state.database)
-				.await?
+				.await? // again, select query, but changes should be reverted
 		}
 		None => None,
 	};
@@ -504,7 +524,7 @@ async fn endpoint(
 			sibling.discount_rate,
 		),
 		None => {
-			let base_price = base_price.ok_or(UploadError::MissingPrice)?;
+			let base_price = base_price.ok_or(UploadError::MissingPrice)?; // if error revert
 			let product_name = group
 				.as_ref()
 				.map(|g| g.name.as_str())
@@ -514,15 +534,15 @@ async fn endpoint(
 				product_name,
 				description.as_deref(),
 			)
-			.await?;
+			.await?; // if error revert everything
 			let price_id = products::create_price(
 				&state.stripe.client,
 				&product_id,
 				to_cents(base_price),
 			)
-			.await?;
+			.await?; // if error revert everything
 			products::set_default_price(&state.stripe.client, &product_id, &price_id)
-				.await?;
+				.await?; // if error revert everything
 			(Some(product_id), Some(price_id), Some(base_price), None)
 		}
 	};
@@ -546,7 +566,7 @@ async fn endpoint(
 		..Default::default()
 	}
 	.insert(&state.database)
-	.await?;
+	.await?; // if database error revert 
 
 	if !slots.is_empty() {
 		cosmetic_allowed_slot::Entity::insert_many(slots.iter().map(|slot| {
@@ -555,15 +575,15 @@ async fn endpoint(
 				slot: Set(slot.clone()),
 			}
 		}))
-		.exec(&state.database)
-		.await?;
+		.exec(&state.database) 
+		.await?; // if database error revert
 	}
 
 	let info = crate::api::v0::cosmetics::CachedAssetInfo::from_db_model(
 		&asset,
 		state.s3_bucket.clone(),
 	)
-	.await?;
+	.await?; // error not reachable
 	state.asset_cache.insert(asset.id, info).await;
 
 	let groups = match &group {
@@ -571,7 +591,7 @@ async fn endpoint(
 			let group_slots = CosmeticGroupAllowedSlot::find()
 				.filter(cosmetic_group_allowed_slot::Column::GroupId.eq(group.id))
 				.all(&state.database)
-				.await?
+				.await? // select query, reverted changes on error (debate, because there is already finished product)
 				.into_iter()
 				.map(|s| s.slot)
 				.collect();
@@ -584,7 +604,7 @@ async fn endpoint(
 		Some(cover_asset_id) => {
 			Asset::find_by_id(cover_asset_id)
 				.one(&state.database)
-				.await?
+				.await? // select query, revert changes on error (debate)
 		}
 		None => None,
 	};
@@ -596,7 +616,20 @@ async fn endpoint(
 		state.s3_bucket.clone(),
 		false,
 	)
-	.await?;
+	.await?; // if error revert everything (debate, only grouping)
 
 	Ok(Json(infos.remove(0)))
+}
+
+async fn delete_from_s3_bucket(
+	state: &ApiState,
+	path: String,
+	error: DbErr
+) -> UploadError {
+	if let Err(cleanup) = state.s3_bucket.delete_object(&path).await {
+		tracing::warn!(
+			"Unable to clean up orphaned object '{path}' after failed assert insert: {cleanup}"
+		);
+	}
+	return UploadError::Database(error);
 }
