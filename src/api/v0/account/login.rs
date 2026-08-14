@@ -116,16 +116,19 @@ async fn endpoint(
 	if response.status() != StatusCode::OK {
 		return Err(LoginError::Unauthorized);
 	}
+
 	let body = response
 		.text()
 		.await
 		.map_err(LoginError::SessionserverAuthentication)?;
+
 	let parsed: SessionserverLoginSuccess =
 		serde_json::from_str(&body).map_err(|_| LoginError::Unauthorized)?;
 	let player =
 		entities::prelude::User::get_or_create(&state.database, parsed.id).await?;
 	entities::prelude::User::set_username(&state.database, player.id, &query.username)
 		.await?;
+
 	record_monthly_active_login(&state.database, player.id).await?;
 
 	let token = local::encrypt(
@@ -141,6 +144,9 @@ async fn endpoint(
 		None,
 		PASETO_IMPLICIT_ASSERT,
 	)?;
+
+	#[cfg(debug_assertions)]
+	tracing::debug!(%token, %player.id, "authenticated player");
 
 	Ok(Json(LoginResponse { token }))
 }
