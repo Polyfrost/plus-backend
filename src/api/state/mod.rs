@@ -3,7 +3,7 @@
 mod persistence;
 mod realtime;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use entities::prelude::*;
 use migrations::{Migrator, MigratorTrait};
@@ -36,8 +36,6 @@ use crate::{
 	commands::ServeArgs,
 };
 
-/// How long a rendered asset stays in the in-memory cache.
-const ASSET_CACHE_TTL: Duration = Duration::from_hours(2);
 /// How long to wait for a free database connection before giving up.
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a player must wait between global chat messages.
@@ -120,6 +118,27 @@ impl ApiState {
 			database,
 		}
 	}
+
+	pub(super) async fn refresh_asset_cache(
+		&self,
+	) -> Result<AssetCacheRefresh, AssetCacheError> {
+		Ok(refresh_asset_cache(&self.asset_cache, &self.database, &self.s3_bucket).await?)
+	}
+
+	pub(super) async fn refresh_asset(
+		&self,
+		id: i32,
+	) -> Result<Option<CachedAssetInfo>, AssetCacheError> {
+		let Some(asset) = Asset::find_by_id(id).one(&self.database).await? else {
+			self.asset_cache.invalidate(&id).await;
+			return Ok(None);
+		};
+
+		let info = CachedAssetInfo::from_db_model(&asset, self.s3_bucket.clone()).await?;
+		self.asset_cache.insert(id, info.clone()).await;
+
+		Ok(Some(info))
+	}
 }
 
 impl StripeApiState {
@@ -179,30 +198,88 @@ fn build_http_client(https_only: bool) -> Client {
 		.expect("Unable to build reqwest client")
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum AssetCacheError {
+	#[error("Unable to query database: {0}")]
+	Database(#[from] sea_orm::error::DbErr),
+	#[error("Unable to read asset from object storage: {0}")]
+	S3(#[from] s3::error::S3Error),
+}
+
+#[derive(Debug, Default)]
+pub struct AssetCacheRefresh {
+	/// Assets whose cached info was recomputed and stored.
+	pub refreshed: usize,
+	/// Assets whose info could not be resolved, leaving them out of the cache.
+	pub failed: usize,
+	/// Cached entries dropped because their asset no longer exists.
+	pub evicted: usize,
+}
+
 /// Builds the asset cache, warming it with every asset currently in the database.
+///
+/// Entries never expire on their own. An asset's bytes are immutable once
+/// uploaded — every write path inserts a fresh row with its hash already
+/// computed — so a cached hash only goes stale when the underlying object is
+/// replaced out of band. That case is handled by the admin refresh endpoints
+/// rather than by re-reading object storage on a timer.
 async fn build_asset_cache(
 	database: &DatabaseConnection,
 	s3_bucket: &Arc<Bucket>,
 ) -> Cache<i32, CachedAssetInfo> {
-	let asset_cache = Cache::builder().time_to_live(ASSET_CACHE_TTL).build();
+	let asset_cache = Cache::builder().build();
 
-	let assets = Asset::find()
-		.all(database)
+	let refresh = refresh_asset_cache(&asset_cache, database, s3_bucket)
 		.await
 		.expect("Unable to fetch assets from db");
 
+	info!(
+		refreshed = refresh.refreshed,
+		failed = refresh.failed,
+		"Warmed the asset cache"
+	);
+
+	asset_cache
+}
+
+
+async fn refresh_asset_cache(
+	asset_cache: &Cache<i32, CachedAssetInfo>,
+	database: &DatabaseConnection,
+	s3_bucket: &Arc<Bucket>,
+) -> Result<AssetCacheRefresh, sea_orm::DbErr> {
+	let assets = Asset::find().all(database).await?;
+
+	let mut known = HashSet::with_capacity(assets.len());
+	let mut refresh = AssetCacheRefresh::default();
+
 	for asset in assets {
+		known.insert(asset.id);
+
 		let Ok(info) = CachedAssetInfo::from_db_model(&asset, s3_bucket.clone()).await
 		else {
 			warn!(
 				"Unable to fetch cached asset info for asset id {}",
 				asset.id
 			);
+			refresh.failed += 1;
 			continue;
 		};
 
 		asset_cache.insert(asset.id, info).await;
+		refresh.refreshed += 1;
 	}
 
-	asset_cache
+	let stale: Vec<i32> = asset_cache
+		.iter()
+		.map(|(id, _)| *id)
+		.filter(|id| !known.contains(id))
+		.collect();
+
+	for id in stale {
+		asset_cache.invalidate(&id).await;
+		refresh.evicted += 1;
+	}
+
+	Ok(refresh)
 }
