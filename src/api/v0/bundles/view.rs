@@ -65,8 +65,11 @@ async fn endpoint(
 	Path(id): Path<i32>,
 ) -> Result<Json<ViewResponse>, ViewError> {
 	use entities::{
-		bundles, bundles_cosmetics, prelude::*, sea_orm_active_enums::CosmeticType,
+		bundles, bundles_cosmetics, cosmetic, prelude::*,
+		sea_orm_active_enums::CosmeticType,
 	};
+
+	use crate::api::v0::cosmetics::in_enabled_group;
 
 	let bundle = Bundles::find_by_id(id)
 		.filter(bundles::Column::Enabled.eq(true))
@@ -76,9 +79,12 @@ async fn endpoint(
 
 	let mut cosmetics = Vec::new();
 	let mut emotes = Vec::new();
+
 	for (link, cosmetic) in BundlesCosmetics::find()
 		.filter(bundles_cosmetics::Column::BundleId.eq(id))
 		.find_also_related(Cosmetic)
+		.filter(cosmetic::Column::Enabled.eq(true))
+		.filter(in_enabled_group())
 		.all(&state.database)
 		.await?
 	{

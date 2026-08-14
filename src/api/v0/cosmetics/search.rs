@@ -223,6 +223,7 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 
 	let mut find = Cosmetic::find()
 		.filter(cosmetic::Column::Enabled.eq(true))
+		.filter(super::in_enabled_group())
 		.filter(cosmetic::Column::BasePrice.is_not_null());
 
 	if let Some(text) = &query.text {
@@ -390,6 +391,7 @@ async fn endpoint(
 
 		let cosmetics = Cosmetic::find()
 			.filter(cosmetic::Column::Enabled.eq(true))
+			.filter(super::in_enabled_group())
 			.filter(cosmetic::Column::BasePrice.is_not_null())
 			.filter(belongs)
 			.order_by_asc(cosmetic::Column::VariantOrder)

@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{
 	ApiState,
-	v0::cosmetics::{CosmeticInfo, group_cosmetics, is_redundant_variant, load_groups},
+	v0::cosmetics::{
+		CosmeticInfo, group_cosmetics, in_enabled_group, is_redundant_variant, load_groups,
+	},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -161,6 +163,7 @@ async fn endpoint(
 
 		let cosmetics = Cosmetic::find()
 			.filter(cosmetic::Column::Enabled.eq(true))
+			.filter(in_enabled_group())
 			.apply_if(filters.r#type, |query, v| {
 				query.filter(cosmetic::Column::Type.eq(v))
 			})

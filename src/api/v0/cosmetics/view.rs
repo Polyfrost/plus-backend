@@ -115,6 +115,7 @@ async fn endpoint(
 
 	if let Some(cosmetic) = Cosmetic::find_by_id(id)
 		.filter(cosmetic::Column::Enabled.eq(true))
+		.filter(super::in_enabled_group())
 		.one(&state.database)
 		.await?
 	{
