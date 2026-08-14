@@ -677,8 +677,6 @@ impl From<WebsocketError> for RequestError {
 	}
 }
 
-/// Builds an error packet, logging errors whose details are withheld from the
-/// client so that they are not lost.
 fn error_packet(error: WebsocketError, request_id: Option<u64>) -> ClientBoundPacket {
 	if error.is_internal() {
 		tracing::error!(%error, "websocket request failed");
@@ -832,6 +830,66 @@ async fn handle_packet(
 	Ok(())
 }
 
+#[tracing::instrument(level = "debug", skip(state))]
+async fn endpoint(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ws: WebSocketUpgrade,
+) -> Response<Body> {
+	ws.on_upgrade(async move |mut socket| {
+		let (tx, mut rx) = mpsc::unbounded_channel();
+		let equipped = match load_equipped(&state, player.id).await {
+			Ok(equipped) => equipped,
+			Err(error) => {
+				let _ = send_packet(&mut socket, error_packet(error, None)).await;
+				return;
+			}
+		};
+		let connection_id = register_connection(
+			&state,
+			player.id,
+			player.minecraft_uuid,
+			tx,
+			equipped,
+			player.particle_color,
+		)
+		.await;
+
+		loop {
+			let result = tokio::select! {
+				msg = socket.recv() => {
+					let Some(msg) = msg else {
+						break;
+					};
+					handle_msg(&mut socket, &state, &player, connection_id, msg).await
+				}
+				packet = rx.recv() => {
+					let Some(packet) = packet else {
+						break;
+					};
+					send_packet(&mut socket, packet).await.map_err(RequestError::from)
+				}
+			};
+
+			match result {
+				Ok(_) => continue,
+				Err(RequestError {
+					error: WebsocketError::Fatal(_),
+					..
+				}) => break,
+				Err(RequestError { error, request_id }) => {
+					let e = error_packet(error, request_id);
+					if send_packet(&mut socket, e).await.is_err() {
+						break;
+					};
+				}
+			}
+		}
+
+		unregister_connection(&state, connection_id).await;
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use std::collections::{HashMap, HashSet};
@@ -899,64 +957,4 @@ mod tests {
 
 		assert!(set.capacity() < populated);
 	}
-}
-
-#[tracing::instrument(level = "debug", skip(state))]
-async fn endpoint(
-	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
-	ws: WebSocketUpgrade,
-) -> Response<Body> {
-	ws.on_upgrade(async move |mut socket| {
-		let (tx, mut rx) = mpsc::unbounded_channel();
-		let equipped = match load_equipped(&state, player.id).await {
-			Ok(equipped) => equipped,
-			Err(error) => {
-				let _ = send_packet(&mut socket, error_packet(error, None)).await;
-				return;
-			}
-		};
-		let connection_id = register_connection(
-			&state,
-			player.id,
-			player.minecraft_uuid,
-			tx,
-			equipped,
-			player.particle_color,
-		)
-		.await;
-
-		loop {
-			let result = tokio::select! {
-				msg = socket.recv() => {
-					let Some(msg) = msg else {
-						break;
-					};
-					handle_msg(&mut socket, &state, &player, connection_id, msg).await
-				}
-				packet = rx.recv() => {
-					let Some(packet) = packet else {
-						break;
-					};
-					send_packet(&mut socket, packet).await.map_err(RequestError::from)
-				}
-			};
-
-			match result {
-				Ok(_) => continue,
-				Err(RequestError {
-					error: WebsocketError::Fatal(_),
-					..
-				}) => break,
-				Err(RequestError { error, request_id }) => {
-					let e = error_packet(error, request_id);
-					if send_packet(&mut socket, e).await.is_err() {
-						break;
-					};
-				}
-			}
-		}
-
-		unregister_connection(&state, connection_id).await;
-	})
 }

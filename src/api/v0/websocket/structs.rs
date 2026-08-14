@@ -38,8 +38,6 @@ impl WebsocketError {
 		)
 	}
 
-	/// The message sent to the client, with internal failure details replaced
-	/// by [`crate::api::INTERNAL_MESSAGE`].
 	fn public_message(&self) -> Cow<'_, str> {
 		if self.is_internal() {
 			Cow::Borrowed(crate::api::INTERNAL_MESSAGE)
