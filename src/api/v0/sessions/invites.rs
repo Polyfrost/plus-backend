@@ -30,10 +30,6 @@ use crate::api::{
 	},
 };
 
-fn to_session_error(e: crate::api::v0::groups::GroupError) -> SessionError {
-	SessionError::Database(sea_orm::error::DbErr::Custom(e.to_string()))
-}
-
 async fn post_invite_message(
 	state: &ApiState,
 	sender: &entities::user::Model,
@@ -42,9 +38,7 @@ async fn post_invite_message(
 ) -> Result<(), SessionError> {
 	use entities::{group_messages, prelude::*};
 
-	let (_, dm_group) = get_or_create_dm_group(state, sender.id, recipient.id)
-		.await
-		.map_err(to_session_error)?;
+	let (_, dm_group) = get_or_create_dm_group(state, sender.id, recipient.id).await?;
 
 	let message = GroupMessages::insert(group_messages::ActiveModel {
 		group_id: Set(dm_group.id),

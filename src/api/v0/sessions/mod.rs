@@ -37,14 +37,18 @@ pub enum SessionError {
 	InviteMissing,
 	#[error("You do not have permission to act on that invite")]
 	InviteForbidden,
+	#[error(transparent)]
+	Group(#[from] crate::api::v0::groups::GroupError),
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
 
 impl IntoResponse for SessionError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
+				// Defer to the group error so its own status mapping is kept
+				Self::Group(error) => return error.into_response(),
 				Self::PlayerMissing | Self::SessionMissing | Self::InviteMissing => {
 					StatusCode::NOT_FOUND
 				}
@@ -54,9 +58,8 @@ impl IntoResponse for SessionError {
 				Self::NotHost | Self::InviteForbidden => StatusCode::FORBIDDEN,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

@@ -31,7 +31,7 @@ pub(super) enum CreateError {
 
 impl IntoResponse for CreateError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				CreateError::Stripe(_) => StatusCode::BAD_GATEWAY,
 				CreateError::MissingUrl | CreateError::Database(_) => {
@@ -39,9 +39,8 @@ impl IntoResponse for CreateError {
 				}
 				CreateError::AlreadyOwned(_) => StatusCode::CONFLICT,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

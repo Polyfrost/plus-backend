@@ -29,6 +29,25 @@ impl WebsocketError {
 	const ERROR_CODES: &[&str] =
 		&["fatal", "internal_server_error", "bad_request", "not_owned"];
 
+	/// Whether this error describes an internal failure whose message must not
+	/// be sent to the client.
+	pub fn is_internal(&self) -> bool {
+		matches!(
+			self,
+			Self::Fatal(_) | Self::DatabaseQuery(_) | Self::Serialization(_)
+		)
+	}
+
+	/// The message sent to the client, with internal failure details replaced
+	/// by [`crate::api::INTERNAL_MESSAGE`].
+	fn public_message(&self) -> Cow<'_, str> {
+		if self.is_internal() {
+			Cow::Borrowed(crate::api::INTERNAL_MESSAGE)
+		} else {
+			Cow::Owned(self.to_string())
+		}
+	}
+
 	pub fn error_code(&self) -> &'static str {
 		match self {
 			Self::Fatal(_) => Self::ERROR_CODES[0],
@@ -48,7 +67,7 @@ impl Serialize for WebsocketError {
 	{
 		let mut state = serializer.serialize_struct("WebsocketError", 2)?;
 		state.serialize_field("error_code", self.error_code())?;
-		state.serialize_field("message", &self.to_string())?;
+		state.serialize_field("message", &self.public_message())?;
 		state.end()
 	}
 }

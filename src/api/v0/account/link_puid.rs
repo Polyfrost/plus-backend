@@ -38,10 +38,13 @@ async fn endpoint(
 ) -> Result<StatusCode, (StatusCode, String)> {
 	let mut active: entities::user::ActiveModel = player.into();
 	active.eos_product_user_id = Set(Some(body.product_user_id));
-	active
-		.update(&state.database)
-		.await
-		.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+	active.update(&state.database).await.map_err(|error| {
+		tracing::error!(%error, "unable to link EOS product user id");
+		(
+			StatusCode::INTERNAL_SERVER_ERROR,
+			crate::api::INTERNAL_MESSAGE.to_string()
+		)
+	})?;
 
 	Ok(StatusCode::NO_CONTENT)
 }

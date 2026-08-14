@@ -40,15 +40,14 @@ pub enum GlobalChatError {
 
 impl IntoResponse for GlobalChatError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::InvalidMessage => StatusCode::BAD_REQUEST,
 				Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

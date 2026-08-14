@@ -39,14 +39,13 @@ pub enum AssetError {
 
 impl IntoResponse for AssetError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::NotFound => StatusCode::NOT_FOUND,
 				Self::Database(_) | Self::S3(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

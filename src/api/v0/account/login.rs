@@ -56,7 +56,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 
 impl IntoResponse for LoginError {
 	fn into_response(self) -> axum::response::Response {
-		(
+		crate::api::error_response(
 			match self {
 				Self::InvalidUuid(_) => StatusCode::BAD_REQUEST,
 				Self::SessionserverAuthentication(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -64,9 +64,8 @@ impl IntoResponse for LoginError {
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				Self::Unauthorized => StatusCode::UNAUTHORIZED,
 			},
-			self.to_string(),
+			self,
 		)
-			.into_response()
 	}
 }
 

@@ -51,6 +51,79 @@ fn is_fake_player(player: &Uuid) -> bool {
 	player.get_version_num() != REAL_PLAYER_UUID_VERSION
 }
 
+/// Reclaims capacity once a map is mostly holes.
+fn shrink_map_if_sparse<K, V>(map: &mut HashMap<K, V>)
+where
+	K: Eq + std::hash::Hash,
+{
+	if map.capacity() > map.len().saturating_mul(4) {
+		map.shrink_to_fit();
+	}
+}
+
+fn shrink_set_if_sparse<T>(set: &mut HashSet<T>)
+where
+	T: Eq + std::hash::Hash,
+{
+	if set.capacity() > set.len().saturating_mul(4) {
+		set.shrink_to_fit();
+	}
+}
+
+/// Removes `connection_id` from each given player's watcher set, returning the
+/// players that are left with no watchers at all.
+fn drop_watchers(
+	watchers: &mut HashMap<Uuid, HashSet<ConnectionId>>,
+	connection_id: ConnectionId,
+	players: impl IntoIterator<Item = Uuid>,
+) -> Vec<Uuid> {
+	let mut orphaned = Vec::new();
+
+	for player in players {
+		if let Some(player_watchers) = watchers.get_mut(&player) {
+			player_watchers.remove(&connection_id);
+			if player_watchers.is_empty() {
+				watchers.remove(&player);
+				orphaned.push(player);
+			}
+		}
+	}
+
+	shrink_map_if_sparse(watchers);
+	orphaned
+}
+
+/// Drops cached runtime state for players that nobody watches any more and who
+/// hold no connection of their own.
+async fn prune_player_runtime(state: &ApiState, candidates: Vec<Uuid>) {
+	if candidates.is_empty() {
+		return;
+	}
+
+	let orphaned = {
+		let watchers = state.realtime.watchers.read().await;
+		let connections_by_owner = state.realtime.connections_by_owner.read().await;
+
+		candidates
+			.into_iter()
+			.filter(|player| {
+				!watchers.contains_key(player)
+					&& !connections_by_owner.contains_key(player)
+			})
+			.collect::<Vec<_>>()
+	};
+
+	if orphaned.is_empty() {
+		return;
+	}
+
+	let mut player_runtime = state.realtime.player_runtime.write().await;
+	for player in orphaned {
+		player_runtime.remove(&player);
+	}
+	shrink_map_if_sparse(&mut player_runtime);
+}
+
 fn empty_snapshot(rejected: Vec<Uuid>, request_id: Option<u64>) -> ClientBoundPacket {
 	ClientBoundPacket::SubscriptionSnapshot {
 		equipped: HashMap::new(),
@@ -379,15 +452,18 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		.await;
 	}
 
-	let mut watchers = state.realtime.watchers.write().await;
-	for player in connection.subscriptions {
-		if let Some(player_watchers) = watchers.get_mut(&player) {
-			player_watchers.remove(&connection_id);
-			if player_watchers.is_empty() {
-				watchers.remove(&player);
-			}
-		}
+	let mut orphaned = {
+		let mut watchers = state.realtime.watchers.write().await;
+		drop_watchers(&mut watchers, connection_id, connection.subscriptions)
+	};
+
+	// The owner's own runtime state is only worth keeping while someone is
+	// still watching them; `connections_by_owner` no longer lists them.
+	if !owner_still_connected {
+		orphaned.push(connection.owner);
 	}
+
+	prune_player_runtime(state, orphaned).await;
 }
 
 async fn subscribe(
@@ -510,28 +586,27 @@ async fn subscribe(
 }
 
 async fn unsubscribe(state: &ApiState, connection_id: ConnectionId, players: Vec<Uuid>) {
-	let requested = players.into_iter().collect::<HashSet<_>>();
 	let removed = {
 		let mut connections = state.realtime.connections.write().await;
 		let Some(connection) = connections.get_mut(&connection_id) else {
 			return;
 		};
 
-		requested
+		// `remove` returns false the second time a UUID comes up, so duplicates filter themselves out. The result is bounded by the subscription cap rather than by the (unvalidated) length of the request.
+		let removed = players
 			.into_iter()
 			.filter(|player| connection.subscriptions.remove(player))
-			.collect::<Vec<_>>()
+			.collect::<Vec<_>>();
+		shrink_set_if_sparse(&mut connection.subscriptions);
+		removed
 	};
 
-	let mut watchers = state.realtime.watchers.write().await;
-	for player in removed {
-		if let Some(player_watchers) = watchers.get_mut(&player) {
-			player_watchers.remove(&connection_id);
-			if player_watchers.is_empty() {
-				watchers.remove(&player);
-			}
-		}
-	}
+	let orphaned = {
+		let mut watchers = state.realtime.watchers.write().await;
+		drop_watchers(&mut watchers, connection_id, removed)
+	};
+
+	prune_player_runtime(state, orphaned).await;
 }
 
 pub(crate) async fn send_to_owner(
@@ -600,6 +675,16 @@ impl From<WebsocketError> for RequestError {
 			request_id: None,
 		}
 	}
+}
+
+/// Builds an error packet, logging errors whose details are withheld from the
+/// client so that they are not lost.
+fn error_packet(error: WebsocketError, request_id: Option<u64>) -> ClientBoundPacket {
+	if error.is_internal() {
+		tracing::error!(%error, "websocket request failed");
+	}
+
+	ClientBoundPacket::Error { error, request_id }
 }
 
 async fn handle_msg(
@@ -747,6 +832,75 @@ async fn handle_packet(
 	Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+	use std::collections::{HashMap, HashSet};
+
+	use uuid::Uuid;
+
+	use super::{
+		ConnectionId, drop_watchers, shrink_map_if_sparse, shrink_set_if_sparse,
+	};
+
+	#[test]
+	fn reports_players_left_without_watchers() {
+		let (alice, bob) = (Uuid::new_v4(), Uuid::new_v4());
+		let (first, second): (ConnectionId, ConnectionId) =
+			(Uuid::new_v4(), Uuid::new_v4());
+		let mut watchers = HashMap::from([
+			(alice, HashSet::from([first, second])),
+			(bob, HashSet::from([first])),
+		]);
+
+		let orphaned = drop_watchers(&mut watchers, first, [alice, bob]);
+
+		// Alice is still watched by the second connection, bob by nobody.
+		assert_eq!(orphaned, vec![bob]);
+		assert_eq!(watchers[&alice], HashSet::from([second]));
+		assert!(!watchers.contains_key(&bob));
+	}
+
+	#[test]
+	fn ignores_players_that_were_never_watched() {
+		let mut watchers = HashMap::new();
+
+		let orphaned = drop_watchers(&mut watchers, Uuid::new_v4(), [Uuid::new_v4()]);
+
+		assert!(orphaned.is_empty());
+		assert!(watchers.is_empty());
+	}
+
+	#[test]
+	fn reclaims_capacity_only_once_mostly_empty() {
+		let mut map = (0..64).map(|key| (key, ())).collect::<HashMap<_, _>>();
+		let populated = map.capacity();
+
+		map.retain(|key, _| *key < 48);
+		shrink_map_if_sparse(&mut map);
+		assert_eq!(
+			map.capacity(),
+			populated,
+			"a mostly full map keeps its capacity"
+		);
+
+		map.retain(|key, _| *key < 4);
+		shrink_map_if_sparse(&mut map);
+		assert!(map.capacity() < populated);
+		assert_eq!(map.len(), 4);
+	}
+
+	#[test]
+	fn reclaims_set_capacity_when_drained() {
+		let mut set = (0..64).collect::<HashSet<_>>();
+		let populated = set.capacity();
+
+		set.clear();
+		shrink_set_if_sparse(&mut set);
+
+		assert!(set.capacity() < populated);
+	}
+}
+
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
@@ -758,14 +912,7 @@ async fn endpoint(
 		let equipped = match load_equipped(&state, player.id).await {
 			Ok(equipped) => equipped,
 			Err(error) => {
-				let _ = send_packet(
-					&mut socket,
-					ClientBoundPacket::Error {
-						error,
-						request_id: None,
-					},
-				)
-				.await;
+				let _ = send_packet(&mut socket, error_packet(error, None)).await;
 				return;
 			}
 		};
@@ -802,7 +949,7 @@ async fn endpoint(
 					..
 				}) => break,
 				Err(RequestError { error, request_id }) => {
-					let e = ClientBoundPacket::Error { error, request_id };
+					let e = error_packet(error, request_id);
 					if send_packet(&mut socket, e).await.is_err() {
 						break;
 					};
