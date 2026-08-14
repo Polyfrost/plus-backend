@@ -56,10 +56,7 @@ pub struct ViewResponse {
 	created_at: DateTime<FixedOffset>,
 	tags: CosmeticTags,
 	/// Every enabled variant of this cosmetic's group, ordered by
-	/// `variant_order`, including the cosmetic asked for — so this is the whole
-	/// swatch list and does not shift depending on which variant is viewed. Null,
-	/// not empty, for an ungrouped cosmetic. Price and Stripe price id are
-	/// omitted from each entry as they are shared across every variant.
+	/// `variant_order`, including the cosmetic asked for
 	variants: Option<Vec<VariantView>>,
 }
 

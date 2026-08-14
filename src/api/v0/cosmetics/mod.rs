@@ -78,7 +78,7 @@ pub(super) struct VariantInfo {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	model: Option<String>,
 	/// The body slots THIS variant may be equipped in. Usually equals the
-	/// group's `allowed_slots`, but a variant can be narrower — e.g. a "Left"
+	/// group's `allowed_slots`, but a variant can be narrower - e.g. a "Left"
 	/// gauntlet only allows `left_hand` while the group allows both hands. The
 	/// client must equip into one of these.
 	allowed_slots: Vec<BodySlot>,

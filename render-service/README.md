@@ -8,8 +8,7 @@ cosmetic's cover.
 skinview3d is browser-only (three.js/WebGL), so rendering runs in a long-lived
 headless Chrome instance driven by Puppeteer. The fork is **pre-bundled** into
 `vendor/skinview3d.bundle.js` (committed) and injected into the page as a global
-`skinview3d`. Runtime deps are therefore pure-JS (`puppeteer` + `fflate`) — no
-build step, no git dependency — which keeps the Nix package simple.
+`skinview3d`.
 
 ## Run with Nix (production)
 
@@ -41,7 +40,7 @@ cd tools && npm install && node build-bundle.mjs
 ## HTTP API
 
 - `GET /` → `ok` (health check).
-- `POST /render` — JSON body:
+- `POST /render` - JSON body:
   ```json
   {
     "type": "cape|wings|aura|hat|glove|boots|shoulder|backpack|glasses|emote",

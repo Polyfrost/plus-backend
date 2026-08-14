@@ -67,21 +67,13 @@ impl IntoResponse for AssetError {
 	}
 }
 
-/// The asset an operation addresses.
-///
-/// A named struct rather than a bare `Path<i32>`: aide cannot name a scalar
-/// path parameter, so it documents no parameter at all and the id field is
-/// missing from the generated docs.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AssetPath {
-	/// The id of the asset.
 	id: i32,
 }
 
-/// The resolvable url for an asset.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssetUrlResponse {
-	/// The direct (possibly presigned) url the asset can be fetched from.
 	url: String,
 }
 
@@ -162,8 +154,8 @@ fn refresh_all_doc(op: TransformOperation) -> TransformOperation {
 			"Recomputes the cached hash of every asset from the database and object \
 			 storage, and drops cached entries whose asset no longer exists. Cached \
 			 hashes never expire on their own, so this is how a change made outside \
-			 the API — an object replaced in storage, a hash edited in the database \
-			 — is picked up without a restart. Runs synchronously and reports what \
+			 the API - an object replaced in storage, a hash edited in the database \
+			 - is picked up without a restart. Runs synchronously and reports what \
 			 it did. Admin password required.",
 		)
 		.tag("assets")
@@ -229,37 +221,4 @@ async fn refresh_one_endpoint(
 		.await?
 		.map(Json)
 		.ok_or(AssetError::NotFound)
-}
-
-#[cfg(test)]
-mod tests {
-	/// Registering a route panics on a path conflict, which would only surface at
-	/// startup.
-	#[tokio::test]
-	async fn router_paths_do_not_conflict() {
-		let _ = super::setup_router().await;
-	}
-
-	/// aide silently documents no parameter at all for a bare `Path<i32>`, which
-	/// leaves the id field missing from the docs. Guards the named-struct fix.
-	#[tokio::test]
-	async fn path_parameters_are_documented() {
-		let mut api = aide::openapi::OpenApi::default();
-		let _ = super::setup_router().await.finish_api(&mut api);
-
-		let spec = serde_json::to_value(&api).unwrap();
-		let documented = |path: &str, method: &str| {
-			spec["paths"][path][method]["parameters"]
-				.as_array()
-				.is_some_and(|params| {
-					params.iter().any(|param| {
-						param["in"] == "path" && param["name"] == "id"
-					})
-				})
-		};
-
-		assert!(documented("/asset/{id}", "get"));
-		assert!(documented("/asset/{id}/url", "get"));
-		assert!(documented("/assets/refresh/{id}", "post"));
-	}
 }

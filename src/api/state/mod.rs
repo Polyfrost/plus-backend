@@ -217,12 +217,6 @@ pub struct AssetCacheRefresh {
 }
 
 /// Builds the asset cache, warming it with every asset currently in the database.
-///
-/// Entries never expire on their own. An asset's bytes are immutable once
-/// uploaded — every write path inserts a fresh row with its hash already
-/// computed — so a cached hash only goes stale when the underlying object is
-/// replaced out of band. That case is handled by the admin refresh endpoints
-/// rather than by re-reading object storage on a timer.
 async fn build_asset_cache(
 	database: &DatabaseConnection,
 	s3_bucket: &Arc<Bucket>,

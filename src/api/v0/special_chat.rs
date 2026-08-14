@@ -49,7 +49,7 @@ fn status_doc(op: TransformOperation) -> TransformOperation {
 			 the authenticated player, of a single ordinary group chat that \
 			 this endpoint eagerly creates (with its opening message from a \
 			 recipient, if one is configured) the first time it's called. \
-			 From then on it behaves exactly like any other group chat — \
+			 From then on it behaves exactly like any other group chat - \
 			 message it via the normal /groups endpoints.",
 		)
 		.tag("special-chat")
