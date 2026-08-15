@@ -35,16 +35,12 @@ jobs:
             - name: Build with nix
               id: build
               run: |
-                  OUT_PATHS="$(nix build --print-out-paths .#plus-backend .#render-service)"
-                  {
-                      echo 'OUT_PATHS<<EOF'
-                      echo "${OUT_PATHS}"
-                      echo 'EOF'
-                  } >> "$GITHUB_OUTPUT"
+                  OUT_PATHS="$(nix build --print-out-paths .#plus-backend .#render-service | tr '\n' ' ')"
+                  echo "out-paths=${OUT_PATHS}" >> "$GITHUB_OUTPUT"
 
             - uses: cachix/cachix-action@v15
               with:
                 name: polyfrost
                 authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
                 signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
-                pathsToPush: "${{ steps.build.outputs.OUT_PATHS }}"
+                pathsToPush: "${{ steps.build.outputs.out-paths }}"
