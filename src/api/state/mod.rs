@@ -1,5 +1,7 @@
 //! Shared application state handed to every request handler.
 
+mod analytics_rollup;
+mod instrumentation;
 mod persistence;
 mod realtime;
 
@@ -20,6 +22,8 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 pub(in crate::api) use self::{
+	analytics_rollup::{ANALYTICS_DAILY_JOB, SESSION_LENGTH_BUCKETS},
+	instrumentation::Instrumentation,
 	persistence::{EquipmentPersistence, ParticleColorPersistence},
 	realtime::{
 		ConnectionId, PlayerRuntimeState, PlaytimeSession, RealtimeConnection,
@@ -63,6 +67,7 @@ pub(super) struct ApiState {
 	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
 	pub(super) special_chat_targets: Vec<Uuid>,
 	pub(super) special_chat_auto_reply: Option<String>,
+	pub(super) instrumentation: Instrumentation,
 }
 
 #[derive(Clone)]
@@ -87,8 +92,17 @@ impl ApiState {
 		let s3_bucket = connect_s3_bucket(args);
 		let asset_cache = build_asset_cache(&database, &s3_bucket).await;
 
+		reap_open_play_sessions(&database).await;
+
 		let realtime = RealtimeState::default();
 		persistence::spawn_playtime_flush(database.clone(), realtime.playtime.clone());
+		analytics_rollup::spawn_analytics_rollup(database.clone());
+
+		let instrumentation = Instrumentation::default();
+		instrumentation::spawn_instrumentation_flush(
+			database.clone(),
+			instrumentation.clone(),
+		);
 
 		let oidc_signing_key = oidc::load_or_generate_signing_key(&database).await;
 
@@ -114,6 +128,7 @@ impl ApiState {
 			oidc_codes: oidc::new_authorization_code_cache(),
 			special_chat_targets: args.special_chat_targets.clone(),
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
+			instrumentation,
 			s3_bucket,
 			database,
 		}
@@ -122,7 +137,10 @@ impl ApiState {
 	pub(super) async fn refresh_asset_cache(
 		&self,
 	) -> Result<AssetCacheRefresh, AssetCacheError> {
-		Ok(refresh_asset_cache(&self.asset_cache, &self.database, &self.s3_bucket).await?)
+		Ok(
+			refresh_asset_cache(&self.asset_cache, &self.database, &self.s3_bucket)
+				.await?,
+		)
 	}
 
 	pub(super) async fn refresh_asset(
@@ -173,6 +191,37 @@ async fn connect_database(database_url: &str) -> DatabaseConnection {
 	info!("Database successfully initialized");
 
 	database
+}
+
+/// Closes sessions left open by a process that stopped, dating them to their
+/// last heartbeat.
+async fn reap_open_play_sessions(database: &DatabaseConnection) {
+	use entities::{play_session, sea_orm_active_enums::SessionEndReason};
+	use sea_orm::{ActiveEnum as _, ColumnTrait, QueryFilter, sea_query::Expr};
+
+	let reaped = PlaySession::update_many()
+		.col_expr(
+			play_session::Column::EndedAt,
+			Expr::col(play_session::Column::LastHeartbeatAt).into(),
+		)
+		.col_expr(
+			play_session::Column::EndReason,
+			SessionEndReason::Reaped.as_enum(),
+		)
+		.filter(play_session::Column::EndedAt.is_null())
+		.exec(database)
+		.await;
+
+	match reaped {
+		Ok(result) if result.rows_affected > 0 => {
+			info!(
+				sessions = result.rows_affected,
+				"Closed play sessions left open by a previous run"
+			);
+		}
+		Ok(_) => {}
+		Err(error) => warn!("Unable to reap open play sessions: {error}"),
+	}
 }
 
 fn connect_s3_bucket(args: &ServeArgs) -> Arc<Bucket> {
@@ -235,7 +284,6 @@ async fn build_asset_cache(
 
 	asset_cache
 }
-
 
 async fn refresh_asset_cache(
 	asset_cache: &Cache<i32, CachedAssetInfo>,

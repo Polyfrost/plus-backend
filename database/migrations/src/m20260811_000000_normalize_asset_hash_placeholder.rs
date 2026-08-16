@@ -4,7 +4,8 @@ use sea_orm_migration::prelude::*;
 // to be consistent with the rest of the logic
 
 const LEGACY_PLACEHOLDER: &str = "37a6259cc0c1dae299a7866489dff0bd";
-const PLACEHOLDER: &str = "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
+const PLACEHOLDER: &str =
+	"74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b";
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;

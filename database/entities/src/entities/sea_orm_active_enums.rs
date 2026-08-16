@@ -308,3 +308,49 @@ pub enum TransactionStatus {
 	#[sea_orm(string_value = "refunded")]
 	Refunded,
 }
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "session_end_reason")]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEndReason {
+	#[sea_orm(string_value = "disconnect")]
+	Disconnect,
+	#[sea_orm(string_value = "reaped")]
+	Reaped,
+	#[sea_orm(string_value = "shutdown")]
+	Shutdown,
+}
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "ownership_event_kind"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnershipEventKind {
+	#[sea_orm(string_value = "granted")]
+	Granted,
+	#[sea_orm(string_value = "revoked")]
+	Revoked,
+}

@@ -200,7 +200,7 @@ impl FromRequestParts<ApiState> for AdminPlayer {
 	}
 }
 
-pub(super) fn role_at_least(
+pub(in crate::api) fn role_at_least(
 	actual: &sea_orm_active_enums::PlayerRole,
 	required: &sea_orm_active_enums::PlayerRole,
 ) -> bool {

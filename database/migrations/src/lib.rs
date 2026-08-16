@@ -43,6 +43,17 @@ mod m20260804_000000_add_username_to_users;
 mod m20260808_000000_create_special_chat_cooldowns;
 mod m20260810_000000_add_session_invite_to_group_messages;
 mod m20260811_000000_normalize_asset_hash_placeholder;
+mod m20260815_000000_add_analytics_indexes;
+mod m20260815_000001_create_analytics_rollup;
+mod m20260815_000002_create_cohort_retention;
+mod m20260815_000003_add_mau_indexes;
+mod m20260815_000004_create_play_sessions;
+mod m20260815_000005_create_session_lengths;
+mod m20260815_000006_create_cosmetic_daily;
+mod m20260815_000007_create_ownership_events;
+mod m20260815_000008_transaction_amounts;
+mod m20260815_000009_revenue_columns;
+mod m20260815_000010_create_client_info;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -92,6 +103,17 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260808_000000_create_special_chat_cooldowns::Migration),
 			Box::new(m20260810_000000_add_session_invite_to_group_messages::Migration),
 			Box::new(m20260811_000000_normalize_asset_hash_placeholder::Migration),
+			Box::new(m20260815_000000_add_analytics_indexes::Migration),
+			Box::new(m20260815_000001_create_analytics_rollup::Migration),
+			Box::new(m20260815_000002_create_cohort_retention::Migration),
+			Box::new(m20260815_000003_add_mau_indexes::Migration),
+			Box::new(m20260815_000004_create_play_sessions::Migration),
+			Box::new(m20260815_000005_create_session_lengths::Migration),
+			Box::new(m20260815_000006_create_cosmetic_daily::Migration),
+			Box::new(m20260815_000007_create_ownership_events::Migration),
+			Box::new(m20260815_000008_transaction_amounts::Migration),
+			Box::new(m20260815_000009_revenue_columns::Migration),
+			Box::new(m20260815_000010_create_client_info::Migration),
 		]
 	}
 }

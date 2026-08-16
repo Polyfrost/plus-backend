@@ -4,7 +4,9 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use entities::sea_orm_active_enums::{TransactionProvider, TransactionStatus};
+use entities::sea_orm_active_enums::{
+	OwnershipEventKind, TransactionProvider, TransactionStatus,
+};
 use schemars::JsonSchema;
 use sea_orm::{
 	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
@@ -109,6 +111,17 @@ async fn endpoint(
 	.on_conflict_do_nothing()
 	.exec(&txn)
 	.await?;
+
+	crate::database::record_ownership_events(
+		&txn,
+		player.id,
+		&cosmetic_ids,
+		OwnershipEventKind::Granted,
+		TransactionProvider::AdminGrant,
+		Some(transaction.id),
+	)
+	.await?;
+
 	txn.commit().await?;
 
 	let connection_ids = state

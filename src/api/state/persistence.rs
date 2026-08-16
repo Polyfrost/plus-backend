@@ -61,7 +61,8 @@ async fn persist_equipment_queue(
 ) {
 	use entities::{player_equipped_cosmetic, prelude::*, user};
 	use sea_orm::{
-		ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::OnConflict,
+		ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
+		sea_query::{Expr, OnConflict},
 	};
 
 	while let Some(update) = rx.recv().await {
@@ -87,6 +88,10 @@ async fn persist_equipment_queue(
 						player_equipped_cosmetic::Column::Slot,
 					])
 					.update_column(player_equipped_cosmetic::Column::CosmeticId)
+					.value(
+						player_equipped_cosmetic::Column::UpdatedAt,
+						Expr::current_timestamp(),
+					)
 					.to_owned(),
 				)
 				.exec(&database)
@@ -150,25 +155,56 @@ async fn flush_playtime_loop(database: DatabaseConnection, playtime: PlaytimeSes
 
 		// Claim every session's outstanding window up front so the lock is
 		// released before any database work happens.
-		let pending: Vec<(i32, DateTime<Utc>)> = {
+		let (windows, session_ids): (Vec<_>, Vec<_>) = {
 			let mut guard = playtime.write().await;
 			guard
 				.values_mut()
 				.map(|session| {
 					let from = session.last_accounted_at;
 					session.last_accounted_at = now;
-					(session.player_id, from)
+					((session.player_id, from, now), session.session_row_id)
 				})
-				.collect()
+				.unzip()
 		};
 
-		for (player_id, from) in pending {
-			if let Err(error) =
-				crate::database::accrue_playtime(&database, player_id, from, now, false)
-					.await
-			{
-				warn!("Unable to flush playtime for player {player_id}: {error}");
-			}
+		if windows.is_empty() {
+			continue;
+		}
+
+		if let Err(error) =
+			crate::database::flush_playtime_windows(&database, &windows).await
+		{
+			warn!(
+				"Unable to flush playtime for {} sessions: {error}",
+				windows.len()
+			);
+		}
+
+		if let Err(error) = heartbeat_sessions(&database, &session_ids, now).await {
+			warn!("Unable to heartbeat play sessions: {error}");
 		}
 	}
+}
+
+/// Timestamps open sessions so the startup reaper can close them at their
+/// last heartbeat.
+async fn heartbeat_sessions(
+	database: &DatabaseConnection,
+	session_ids: &[i64],
+	now: DateTime<Utc>,
+) -> Result<(), sea_orm::DbErr> {
+	use entities::{play_session, prelude::*};
+	use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr};
+
+	PlaySession::update_many()
+		.col_expr(
+			play_session::Column::LastHeartbeatAt,
+			Expr::value(sea_orm::prelude::DateTimeWithTimeZone::from(now)),
+		)
+		.filter(play_session::Column::Id.is_in(session_ids.iter().copied()))
+		.filter(play_session::Column::EndedAt.is_null())
+		.exec(database)
+		.await?;
+
+	Ok(())
 }

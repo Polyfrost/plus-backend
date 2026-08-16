@@ -18,7 +18,9 @@ use uuid::Uuid;
 
 use crate::{
 	api::{ApiState, v0::account::PASETO_IMPLICIT_ASSERT},
-	database::{DatabaseUserExt, record_monthly_active_login},
+	database::{
+		ClientInfo, DatabaseUserExt, record_client_info, record_monthly_active_login,
+	},
 };
 
 #[derive(Deserialize)]
@@ -79,7 +81,37 @@ struct LoginQuery {
 	/// This should ideally be randomly generated on the client
 	#[schemars(example = &"FnuhJQCStLeUOIwnrHgBjiTolqWRBBSe")]
 	server_id: String,
+	/// Version of the PolyPlus mod. Optional; older clients omit it.
+	#[schemars(example = &"1.4.2")]
+	client_version: Option<String>,
+	#[schemars(example = &"1.21.4")]
+	minecraft_version: Option<String>,
+	#[schemars(example = &"fabric")]
+	loader: Option<String>,
+	#[schemars(example = &"windows")]
+	os: Option<String>,
+	#[schemars(example = &"10.0.22631")]
+	os_version: Option<String>,
+	#[schemars(example = &"21.0.5")]
+	java_version: Option<String>,
 }
+
+/// Drops anything that does not look like a version or platform string, so
+/// a malformed value cannot skew the rollup.
+fn normalize_client_field(value: Option<String>) -> Option<String> {
+	let value = value?.trim().to_owned();
+
+	if value.is_empty() || value.len() > MAX_CLIENT_FIELD_LEN {
+		return None;
+	}
+
+	value
+		.chars()
+		.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+' | ' '))
+		.then_some(value)
+}
+
+const MAX_CLIENT_FIELD_LEN: usize = 64;
 
 /// A response given on successful a payment restore
 #[derive(Debug, Default, Serialize, JsonSchema)]
@@ -129,6 +161,19 @@ async fn endpoint(
 		.await?;
 
 	record_monthly_active_login(&state.database, player.id).await?;
+	record_client_info(
+		&state.database,
+		player.id,
+		ClientInfo {
+			client_version: normalize_client_field(query.client_version),
+			minecraft_version: normalize_client_field(query.minecraft_version),
+			loader: normalize_client_field(query.loader),
+			os: normalize_client_field(query.os),
+			os_version: normalize_client_field(query.os_version),
+			java_version: normalize_client_field(query.java_version),
+		},
+	)
+	.await?;
 
 	let token = local::encrypt(
 		&state.paseto_key,

@@ -27,5 +27,8 @@ async fn main() {
 
 	match args.command {
 		commands::Subcommand::Serve(args) => api::start(args).await,
+		commands::Subcommand::BackfillStripe(args) => {
+			commands::backfill::run(args).await;
+		}
 	}
 }

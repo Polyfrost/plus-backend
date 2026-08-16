@@ -2,6 +2,15 @@
 
 pub mod prelude;
 
+pub mod analytics_client_daily;
+pub mod analytics_cohort_retention;
+pub mod analytics_cosmetic_daily;
+pub mod analytics_cosmetic_snapshot;
+pub mod analytics_daily;
+pub mod analytics_hourly;
+pub mod analytics_job_state;
+pub mod analytics_session_length_daily;
+pub mod analytics_slot_snapshot;
 pub mod asset;
 pub mod blocks;
 pub mod bundles;
@@ -11,6 +20,7 @@ pub mod cosmetic;
 pub mod cosmetic_allowed_slot;
 pub mod cosmetic_group;
 pub mod cosmetic_group_allowed_slot;
+pub mod cosmetic_ownership_event;
 pub mod cosmetic_package;
 pub mod daily_playtime;
 pub mod game_sessions;
@@ -21,6 +31,8 @@ pub mod group_messages;
 pub mod groups;
 pub mod monthly_active_login;
 pub mod oidc_signing_keys;
+pub mod play_session;
+pub mod player_client_info;
 pub mod player_equipped_cosmetic;
 pub mod player_owned_cosmetic;
 pub mod relationship_requests;

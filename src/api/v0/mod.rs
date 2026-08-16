@@ -1,5 +1,4 @@
 pub(super) mod account;
-mod analytics;
 mod assets;
 mod bundles;
 mod category;
@@ -32,7 +31,6 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(collections::setup_router().await)
 		.merge(links::setup_router().await)
 		.merge(oidc::setup_router().await)
-		.merge(analytics::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
 		// .merge(global_chat::setup_router().await)

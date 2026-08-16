@@ -86,7 +86,7 @@ async fn endpoint(
 			cosmetic_allowed_slot, player_equipped_cosmetic, player_owned_cosmetic,
 			prelude::*,
 		};
-		use sea_orm::sea_query::OnConflict;
+		use sea_orm::sea_query::{Expr, OnConflict};
 
 		let txn = state.database.begin().await?;
 
@@ -127,6 +127,10 @@ async fn endpoint(
 						player_equipped_cosmetic::Column::Slot,
 					])
 					.update_column(player_equipped_cosmetic::Column::CosmeticId)
+					.value(
+						player_equipped_cosmetic::Column::UpdatedAt,
+						Expr::current_timestamp(),
+					)
 					.to_owned(),
 				)
 				.exec(&txn)

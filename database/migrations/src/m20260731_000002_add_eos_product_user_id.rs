@@ -17,7 +17,9 @@ impl MigrationTrait for Migration {
 			.alter_table(
 				Table::alter()
 					.table(User::Table)
-					.add_column(ColumnDef::new(UserExtra::EosProductUserId).string().null())
+					.add_column(
+						ColumnDef::new(UserExtra::EosProductUserId).string().null(),
+					)
 					.to_owned(),
 			)
 			.await

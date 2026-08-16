@@ -15,10 +15,8 @@ pub type ConnectionId = Uuid;
 /// Everything the websocket layer keeps in memory, shared across connections.
 #[derive(Debug, Clone, Default)]
 pub struct RealtimeState {
-	pub connections:
-		Arc<RwLock<HashMap<ConnectionId, RealtimeConnection>>>,
-	pub connections_by_owner:
-		Arc<RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
+	pub connections: Arc<RwLock<HashMap<ConnectionId, RealtimeConnection>>>,
+	pub connections_by_owner: Arc<RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
 	pub player_runtime: Arc<RwLock<HashMap<Uuid, PlayerRuntimeState>>>,
 	pub watchers: Arc<RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
 	pub playtime: PlaytimeSessions,
@@ -45,5 +43,7 @@ pub type PlaytimeSessions = Arc<RwLock<HashMap<Uuid, PlaytimeSession>>>;
 #[derive(Debug, Clone)]
 pub struct PlaytimeSession {
 	pub player_id: i32,
+	/// Row in `play_session` to heartbeat and close.
+	pub session_row_id: i64,
 	pub last_accounted_at: DateTime<Utc>,
 }
