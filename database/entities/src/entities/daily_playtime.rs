@@ -23,6 +23,20 @@ pub enum Relation {
 		on_delete = "Cascade"
 	)]
 	User,
+	#[sea_orm(
+		belongs_to = "super::player_client_info::Entity",
+		from = "Column::PlayerId",
+		to = "super::player_client_info::Column::PlayerId",
+		on_update = "NoAction",
+		on_delete = "Cascade"
+	)]
+	PlayerClientInfo,
+}
+
+impl Related<super::player_client_info::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::PlayerClientInfo.def()
+	}
 }
 
 impl Related<super::user::Entity> for Entity {

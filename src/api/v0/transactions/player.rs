@@ -59,7 +59,8 @@ struct TransactionInfo {
 	stripe_payment_id: Option<String>,
 	status: TransactionStatus,
 	raw_metadata: serde_json::Value,
-	amount: Option<f32>,
+	amount_minor: Option<i64>,
+	currency: Option<String>,
 	discount_rate: Option<i32>,
 	buyer: Option<Uuid>,
 }
@@ -123,8 +124,11 @@ pub(super) async fn endpoint(
 				status: transaction.status,
 				raw_metadata: transaction.raw_metadata,
 				buyer,
-				amount: transaction
-					.amount
+				amount_minor: transaction
+					.amount_minor
+					.filter(|_| transaction.buyer.is_none_or(|id| id == player.id)),
+				currency: transaction
+					.currency
 					.filter(|_| transaction.buyer.is_none_or(|id| id == player.id)),
 				discount_rate: transaction
 					.discount_rate

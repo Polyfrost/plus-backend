@@ -43,13 +43,19 @@ impl MigrationTrait for Migration {
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.from(SpecialChatCooldowns::Table, SpecialChatCooldowns::SenderId)
+							.from(
+								SpecialChatCooldowns::Table,
+								SpecialChatCooldowns::SenderId,
+							)
 							.to(User::Table, User::Id)
 							.on_delete(ForeignKeyAction::Cascade),
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.from(SpecialChatCooldowns::Table, SpecialChatCooldowns::TargetId)
+							.from(
+								SpecialChatCooldowns::Table,
+								SpecialChatCooldowns::TargetId,
+							)
 							.to(User::Table, User::Id)
 							.on_delete(ForeignKeyAction::Cascade),
 					)

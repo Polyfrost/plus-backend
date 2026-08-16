@@ -3,10 +3,13 @@ use axum::{
 	extract::State,
 	http::{HeaderMap, StatusCode},
 };
+use chrono::Utc;
 use entities::{
 	cosmetic, player_owned_cosmetic,
 	prelude::*,
-	sea_orm_active_enums::{CosmeticType, TransactionProvider, TransactionStatus},
+	sea_orm_active_enums::{
+		CosmeticType, OwnershipEventKind, TransactionProvider, TransactionStatus,
+	},
 	transaction, user,
 };
 use sea_orm::{
@@ -101,6 +104,15 @@ pub(super) async fn endpoint(
 		return StatusCode::BAD_REQUEST;
 	};
 
+	let charged = crate::database::StripeCharge {
+		amount_minor: session.amount_total,
+		currency: session.currency.map(|currency| currency.to_string()),
+		discount_minor: session
+			.total_details
+			.as_ref()
+			.map(|details| details.amount_discount),
+	};
+
 	let prices: Vec<String> = metadata
 		.get("prices")
 		.map(|p| {
@@ -128,6 +140,7 @@ pub(super) async fn endpoint(
 					buyer_id,
 					&session_id,
 					serde_json::json!({ "session_id": session_id.clone() }),
+					charged.clone(),
 				)
 				.await?;
 
@@ -172,6 +185,16 @@ pub(super) async fn endpoint(
 						.filter(cosmetic::Column::Id.is_in(granted_ids.clone()))
 						.exec(txn)
 						.await?;
+
+					crate::database::record_ownership_events(
+						txn,
+						user.id,
+						&granted_ids,
+						OwnershipEventKind::Granted,
+						TransactionProvider::Stripe,
+						Some(transaction.id),
+					)
+					.await?;
 
 					for cosmetic in cosmetics {
 						if !granted_ids.contains(&cosmetic.id) {
@@ -302,6 +325,7 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 					buyer_id,
 					&session_id,
 					serde_json::json!({ "session_id": session_id.clone() }),
+					crate::database::StripeCharge::default(),
 				)
 				.await?;
 
@@ -323,6 +347,31 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 					.all(txn)
 					.await?;
 
+				let revoked_ids: Vec<i32> =
+					cosmetics.iter().map(|cosmetic| cosmetic.id).collect();
+
+				crate::database::record_ownership_events(
+					txn,
+					user.id,
+					&revoked_ids,
+					OwnershipEventKind::Revoked,
+					TransactionProvider::Stripe,
+					Some(transaction.id),
+				)
+				.await?;
+
+				Cosmetic::update_many()
+					.col_expr(
+						cosmetic::Column::PurchaseCount,
+						Expr::cust_with_expr(
+							"GREATEST($1 - 1, 0)",
+							Expr::col(cosmetic::Column::PurchaseCount),
+						),
+					)
+					.filter(cosmetic::Column::Id.is_in(revoked_ids.clone()))
+					.exec(txn)
+					.await?;
+
 				PlayerOwnedCosmetic::delete_many()
 					.filter(
 						player_owned_cosmetic::Column::TransactionId.eq(transaction.id),
@@ -341,6 +390,7 @@ async fn handle_refund(state: &ApiState, charge: Charge) -> StatusCode {
 
 				let mut transaction: transaction::ActiveModel = transaction.into();
 				transaction.status = ActiveValue::Set(TransactionStatus::Refunded);
+				transaction.refunded_at = ActiveValue::Set(Some(Utc::now().into()));
 				transaction.update(txn).await?;
 
 				User::update_many()

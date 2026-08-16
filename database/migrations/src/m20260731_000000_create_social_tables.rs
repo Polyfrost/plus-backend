@@ -330,7 +330,10 @@ impl MigrationTrait for Migration {
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.from(RelationshipRequests::Table, RelationshipRequests::SenderId)
+							.from(
+								RelationshipRequests::Table,
+								RelationshipRequests::SenderId,
+							)
 							.to(User::Table, User::Id)
 							.on_delete(ForeignKeyAction::Cascade),
 					)
@@ -442,11 +445,7 @@ impl MigrationTrait for Migration {
 							.primary_key(),
 					)
 					.col(ColumnDef::new(GroupMessages::GroupId).integer().not_null())
-					.col(
-						ColumnDef::new(GroupMessages::SenderId)
-							.integer()
-							.not_null(),
-					)
+					.col(ColumnDef::new(GroupMessages::SenderId).integer().not_null())
 					.col(ColumnDef::new(GroupMessages::Content).text().not_null())
 					.col(
 						ColumnDef::new(GroupMessages::SentAt)

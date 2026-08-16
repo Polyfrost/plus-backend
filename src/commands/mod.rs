@@ -1,3 +1,5 @@
+pub(crate) mod backfill;
+
 use std::{net::SocketAddr, str::FromStr};
 
 use axum_client_ip::ClientIpSource;
@@ -12,9 +14,26 @@ pub(crate) struct BackendArgs {
 }
 
 #[derive(Clone, Debug, Bpaf)]
+#[expect(
+	clippy::large_enum_variant,
+	reason = "this is only used in one place, after which the variant value is moved"
+)]
 pub(crate) enum Subcommand {
 	#[bpaf(command("serve"))]
 	Serve(#[bpaf(external(serve_args))] ServeArgs),
+	#[bpaf(command("backfill-stripe"))]
+	BackfillStripe(#[bpaf(external(backfill_stripe_args))] BackfillStripeArgs),
+}
+
+#[derive(Clone, Debug, Bpaf)]
+pub(crate) struct BackfillStripeArgs {
+	#[bpaf(long("database-url"), env("DATABASE_URL"), argument("URL"))]
+	pub(crate) database_url: String,
+	#[bpaf(long("stripe-secret"), env("STRIPE_SECRET"), argument("SECRET"))]
+	pub(crate) stripe_secret: String,
+	/// Report what would be filled without writing anything.
+	#[bpaf(long("dry-run"), switch)]
+	pub(crate) dry_run: bool,
 }
 
 #[derive(Clone, Debug, Bpaf)]

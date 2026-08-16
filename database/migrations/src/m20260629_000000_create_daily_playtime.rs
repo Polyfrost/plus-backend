@@ -6,7 +6,7 @@ use crate::m20250917_163702_create_users_table::User;
 pub struct Migration;
 
 #[derive(DeriveIden)]
-enum DailyPlaytime {
+pub enum DailyPlaytime {
 	Table,
 	PlayerId,
 	Day,

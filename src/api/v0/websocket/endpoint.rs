@@ -13,7 +13,7 @@ use axum::{
 	},
 	routing::get,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use entities::sea_orm_active_enums::BodySlot;
 use http::{Response, StatusCode};
 use sea_orm::{ColumnTrait as _, EntityTrait as _, QueryFilter};
@@ -349,13 +349,21 @@ async fn register_connection(
 	};
 
 	if is_first_connection {
-		state.realtime.playtime.write().await.insert(
-			owner,
-			PlaytimeSession {
-				player_id,
-				last_accounted_at: Utc::now(),
-			},
-		);
+		let started_at = Utc::now();
+		match open_play_session(state, player_id, started_at).await {
+			Ok(session_row_id) => {
+				state.realtime.playtime.write().await.insert(
+					owner,
+					PlaytimeSession {
+						player_id,
+						session_row_id,
+						last_accounted_at: started_at,
+					},
+				);
+			}
+			// Analytics, not a reason to refuse the connection.
+			Err(error) => warn!("Unable to open play session: {error}"),
+		}
 	}
 
 	{
@@ -383,6 +391,53 @@ async fn register_connection(
 	}
 
 	connection_id
+}
+
+async fn open_play_session(
+	state: &ApiState,
+	player_id: i32,
+	started_at: DateTime<Utc>,
+) -> Result<i64, sea_orm::DbErr> {
+	use entities::{play_session, prelude::*};
+	use sea_orm::{ActiveValue, EntityTrait};
+
+	let session = PlaySession::insert(play_session::ActiveModel {
+		player_id: ActiveValue::Set(player_id),
+		started_at: ActiveValue::Set(started_at.into()),
+		last_heartbeat_at: ActiveValue::Set(started_at.into()),
+		..Default::default()
+	})
+	.exec_with_returning(&state.database)
+	.await?;
+
+	Ok(session.id)
+}
+
+async fn close_play_session(
+	state: &ApiState,
+	session_row_id: i64,
+	ended_at: DateTime<Utc>,
+) -> Result<(), sea_orm::DbErr> {
+	use entities::{play_session, prelude::*, sea_orm_active_enums::SessionEndReason};
+	use sea_orm::{
+		ActiveEnum as _, ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr,
+	};
+
+	PlaySession::update_many()
+		.col_expr(
+			play_session::Column::EndedAt,
+			Expr::value(sea_orm::prelude::DateTimeWithTimeZone::from(ended_at)),
+		)
+		.col_expr(
+			play_session::Column::EndReason,
+			SessionEndReason::Disconnect.as_enum(),
+		)
+		.filter(play_session::Column::Id.eq(session_row_id))
+		.filter(play_session::Column::EndedAt.is_null())
+		.exec(&state.database)
+		.await?;
+
+	Ok(())
 }
 
 async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
@@ -439,6 +494,12 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 			.await
 			{
 				warn!("Unable to record playtime on disconnect: {error}");
+			}
+
+			if let Err(error) =
+				close_play_session(state, session.session_row_id, now).await
+			{
+				warn!("Unable to close play session: {error}");
 			}
 		}
 
@@ -592,7 +653,8 @@ async fn unsubscribe(state: &ApiState, connection_id: ConnectionId, players: Vec
 			return;
 		};
 
-		// `remove` returns false the second time a UUID comes up, so duplicates filter themselves out. The result is bounded by the subscription cap rather than by the (unvalidated) length of the request.
+		// `remove` returns false on a repeat UUID, so the result is bounded by
+		// the subscription cap rather than the request's (unvalidated) length.
 		let removed = players
 			.into_iter()
 			.filter(|player| connection.subscriptions.remove(player))

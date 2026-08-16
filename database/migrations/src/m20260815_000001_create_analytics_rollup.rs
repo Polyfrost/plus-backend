@@ -1,0 +1,249 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[derive(DeriveIden)]
+enum AnalyticsDaily {
+	Table,
+	Day,
+	ComputedAt,
+	Dau,
+	Wau,
+	Mau,
+	NewUsers,
+	ReturningUsers,
+	TotalUsers,
+	PlaytimeSeconds,
+	Sessions,
+	CosmeticsAcquired,
+	CosmeticsAcquiredPaid,
+	CosmeticsAcquiredGranted,
+	TransactionsCompleted,
+	TransactionsRefunded,
+	GiftTransactions,
+	FriendRequestsSent,
+	FriendRequestsAccepted,
+	FriendshipsCreated,
+	BlocksCreated,
+	MessagesSent,
+	GameSessionsCreated,
+	SessionInvitesSent,
+	SessionInvitesAccepted,
+	TrackedLinkHits,
+}
+
+#[derive(DeriveIden)]
+enum AnalyticsJobState {
+	Table,
+	JobName,
+	FinalizedThrough,
+	LastRunAt,
+	LastRunMs,
+	LastError,
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		// No foreign key to "user": deleting a player must not erase history,
+		// and no player ids are stored here.
+		manager
+			.create_table(
+				Table::create()
+					.table(AnalyticsDaily::Table)
+					.if_not_exists()
+					.col(
+						ColumnDef::new(AnalyticsDaily::Day)
+							.date()
+							.not_null()
+							.primary_key(),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::ComputedAt)
+							.timestamp_with_time_zone()
+							.not_null()
+							.default(Expr::current_timestamp()),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::Dau)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::Wau)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::Mau)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::NewUsers)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::ReturningUsers)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::TotalUsers)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::PlaytimeSeconds)
+							.big_integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::Sessions)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::CosmeticsAcquired)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::CosmeticsAcquiredPaid)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::CosmeticsAcquiredGranted)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::TransactionsCompleted)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::TransactionsRefunded)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::GiftTransactions)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::FriendRequestsSent)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::FriendRequestsAccepted)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::FriendshipsCreated)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::BlocksCreated)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::MessagesSent)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::GameSessionsCreated)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::SessionInvitesSent)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::SessionInvitesAccepted)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.col(
+						ColumnDef::new(AnalyticsDaily::TrackedLinkHits)
+							.integer()
+							.not_null()
+							.default(0),
+					)
+					.to_owned(),
+			)
+			.await?;
+
+		manager
+			.create_table(
+				Table::create()
+					.table(AnalyticsJobState::Table)
+					.if_not_exists()
+					.col(
+						ColumnDef::new(AnalyticsJobState::JobName)
+							.text()
+							.not_null()
+							.primary_key(),
+					)
+					// Last day guaranteed never to change again; everything after
+					// it is recomputed on each run.
+					.col(
+						ColumnDef::new(AnalyticsJobState::FinalizedThrough)
+							.date()
+							.not_null(),
+					)
+					.col(
+						ColumnDef::new(AnalyticsJobState::LastRunAt)
+							.timestamp_with_time_zone()
+							.null(),
+					)
+					.col(ColumnDef::new(AnalyticsJobState::LastRunMs).integer().null())
+					.col(ColumnDef::new(AnalyticsJobState::LastError).text().null())
+					.to_owned(),
+			)
+			.await
+	}
+
+	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		manager
+			.drop_table(Table::drop().table(AnalyticsJobState::Table).to_owned())
+			.await?;
+
+		manager
+			.drop_table(Table::drop().table(AnalyticsDaily::Table).to_owned())
+			.await
+	}
+}
