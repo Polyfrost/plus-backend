@@ -32,6 +32,8 @@ pub struct GroupSummary {
 	members: Vec<Uuid>,
 	last_message: Option<LastMessage>,
 	unread: bool,
+	/// An unclaimed Special Chat group (see GET /special-chat).
+	special: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -143,6 +145,9 @@ async fn summarize(
 
 	Ok(GroupSummary {
 		id: group.id,
+		special: group.kind == GroupKind::Group
+			&& group.owner_id.is_none()
+			&& group.name.is_none(),
 		kind: group.kind,
 		name: group.name,
 		members,

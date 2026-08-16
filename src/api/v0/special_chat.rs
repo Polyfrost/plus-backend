@@ -160,6 +160,14 @@ async fn status(
 
 	let is_special_chat_target = state.special_chat_targets.contains(&player.minecraft_uuid);
 
+	if is_special_chat_target {
+		return Ok(Json(SpecialChatStatus {
+			group_id: None,
+			cooldown_until: None,
+			is_special_chat_target,
+		}));
+	}
+
 	let Some((created, group, targets)) = get_or_create_special_chat_group(&state, &player).await?
 	else {
 		return Ok(Json(SpecialChatStatus { group_id: None, cooldown_until: None, is_special_chat_target }));
