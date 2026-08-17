@@ -107,6 +107,7 @@ fn init_openapi_spec<'a>(
 
 pub(crate) async fn start(args: ServeArgs) {
 	let state = ApiState::new(&args).await;
+	v0::sessions::spawn_session_sweeper(state.clone());
 
 	let mut openapi_v0 = OpenApi::default();
 	let v0 = v0::setup_router()

@@ -503,6 +503,8 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 			}
 		}
 
+		crate::api::v0::sessions::expire_sessions_after_grace(state, connection.owner);
+
 		// Notify anyone watching this player that they are now offline.
 		broadcast_to_watchers(state, connection.owner, || {
 			ClientBoundPacket::PlayerPresence {

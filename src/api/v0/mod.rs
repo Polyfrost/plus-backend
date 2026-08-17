@@ -9,7 +9,7 @@ mod groups;
 mod links;
 pub(super) mod oidc;
 mod players;
-mod sessions;
+pub(super) mod sessions;
 mod social;
 mod special_chat;
 mod stripe;

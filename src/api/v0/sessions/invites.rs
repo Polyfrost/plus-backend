@@ -69,6 +69,75 @@ async fn post_invite_message(
 	Ok(())
 }
 
+pub(super) async fn expire_invites_for_sessions(
+	state: &ApiState,
+	session_ids: Vec<Uuid>,
+) -> Result<usize, SessionError> {
+	use entities::{prelude::*, session_invites, user};
+	use sea_orm::{ActiveEnum as _, prelude::DateTimeWithTimeZone, sea_query::Expr};
+
+	if session_ids.is_empty() {
+		return Ok(0);
+	}
+
+	let invites = SessionInvites::find()
+		.filter(session_invites::Column::SessionId.is_in(session_ids))
+		.filter(session_invites::Column::Status.eq(SessionInviteStatus::Pending))
+		.all(&state.database)
+		.await?;
+	if invites.is_empty() {
+		return Ok(0);
+	}
+
+	SessionInvites::update_many()
+		.col_expr(
+			session_invites::Column::Status,
+			SessionInviteStatus::Expired.as_enum(),
+		)
+		.col_expr(
+			session_invites::Column::RespondedAt,
+			Expr::value(DateTimeWithTimeZone::from(Utc::now())),
+		)
+		.filter(
+			session_invites::Column::Id
+				.is_in(invites.iter().map(|invite| invite.id).collect::<Vec<_>>()),
+		)
+		.exec(&state.database)
+		.await?;
+
+	let recipients = User::find()
+		.filter(
+			user::Column::Id.is_in(
+				invites
+					.iter()
+					.map(|invite| invite.recipient_id)
+					.collect::<Vec<_>>(),
+			),
+		)
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|user| (user.id, user.minecraft_uuid))
+		.collect::<std::collections::HashMap<_, _>>();
+
+	for invite in &invites {
+		if let Some(&recipient) = recipients.get(&invite.recipient_id) {
+			send_to_owner(state, recipient, || {
+				ClientBoundPacket::SessionInviteUpdated {
+					invite_id: invite.id,
+					status: "expired".to_string(),
+				}
+			})
+			.await;
+		}
+
+		notify_invite_message_status(state, invite.id, SessionInviteStatus::Expired)
+			.await?;
+	}
+
+	Ok(invites.len())
+}
+
 async fn find_invite_message(
 	state: &ApiState,
 	invite_id: i32,
@@ -259,6 +328,7 @@ async fn incoming(
 	let session_ids = rows.iter().map(|row| row.session_id).collect::<Vec<_>>();
 	let sessions = GameSessions::find()
 		.filter(entities::game_sessions::Column::Id.is_in(session_ids))
+		.filter(entities::game_sessions::Column::ExpiresAt.gt(Utc::now()))
 		.all(&state.database)
 		.await?
 		.into_iter()
@@ -317,6 +387,7 @@ async fn accept(
 	if invite.recipient_id != player.id {
 		return Err(SessionError::InviteForbidden);
 	}
+	load_session(&state, invite.session_id).await?;
 
 	let mut active: entities::session_invites::ActiveModel = invite.clone().into();
 	active.status = Set(SessionInviteStatus::Accepted);
