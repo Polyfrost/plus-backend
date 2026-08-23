@@ -24,7 +24,7 @@ use crate::api::{
 	v0::websocket::{broadcast_all, structs::ClientBoundPacket},
 };
 
-const MAX_MESSAGE_LENGTH: usize = 512;
+const MAX_MESSAGE_LENGTH: usize = 500;
 const DEFAULT_PAGE_SIZE: u64 = 100;
 const MAX_PAGE_SIZE: u64 = 200;
 
@@ -148,7 +148,7 @@ async fn send(
 	use entities::{global_chat_messages, prelude::*};
 
 	let content = body.content.trim();
-	if content.is_empty() || content.len() > MAX_MESSAGE_LENGTH {
+	if content.is_empty() || content.chars().count() > MAX_MESSAGE_LENGTH {
 		return Err(GlobalChatError::InvalidMessage);
 	}
 

@@ -270,7 +270,7 @@ async fn send(
 	require_not_blocked_by_members(&state, id, player.id).await?;
 
 	let content = body.content.trim();
-	if content.is_empty() || content.len() > MAX_MESSAGE_LENGTH {
+	if content.is_empty() || content.chars().count() > MAX_MESSAGE_LENGTH {
 		return Err(GroupError::InvalidContent);
 	}
 
@@ -365,7 +365,7 @@ async fn edit(
 	require_not_blocked_by_members(&state, id, player.id).await?;
 
 	let content = body.content.trim();
-	if content.is_empty() || content.len() > MAX_MESSAGE_LENGTH {
+	if content.is_empty() || content.chars().count() > MAX_MESSAGE_LENGTH {
 		return Err(GroupError::InvalidContent);
 	}
 
