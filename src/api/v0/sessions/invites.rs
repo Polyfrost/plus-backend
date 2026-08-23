@@ -200,6 +200,7 @@ pub struct SessionInvite {
 	eos_product_user_id: Option<String>,
 	eos_session_id: Option<String>,
 	created_at: DateTime<FixedOffset>,
+	status: SessionInviteStatus,
 }
 
 fn send_doc(op: TransformOperation) -> TransformOperation {
@@ -308,6 +309,7 @@ async fn send(
 			eos_product_user_id: player.eos_product_user_id,
 			eos_session_id: session.eos_session_id,
 			created_at: invite.created_at,
+			status: invite.status,
 		}),
 	))
 }
@@ -321,7 +323,10 @@ async fn incoming(
 
 	let rows = SessionInvites::find()
 		.filter(session_invites::Column::RecipientId.eq(player.id))
-		.filter(session_invites::Column::Status.eq(SessionInviteStatus::Pending))
+		.filter(
+			session_invites::Column::Status
+				.is_in([SessionInviteStatus::Pending, SessionInviteStatus::Accepted]),
+		)
 		.all(&state.database)
 		.await?;
 
@@ -356,13 +361,14 @@ async fn incoming(
 					eos_product_user_id: sender.eos_product_user_id.clone(),
 					eos_session_id: session.eos_session_id.clone(),
 					created_at: row.created_at,
+					status: row.status.clone(),
 				})
 			})
 			.collect(),
 	))
 }
 
-async fn load_pending_invite(
+async fn load_open_invite(
 	state: &ApiState,
 	id: i32,
 ) -> Result<entities::session_invites::Model, SessionError> {
@@ -371,8 +377,15 @@ async fn load_pending_invite(
 	SessionInvites::find_by_id(id)
 		.one(&state.database)
 		.await?
-		.filter(|invite| invite.status == SessionInviteStatus::Pending)
+		.filter(|invite| is_open(&invite.status))
 		.ok_or(SessionError::InviteMissing)
+}
+
+fn is_open(status: &SessionInviteStatus) -> bool {
+	matches!(
+		status,
+		SessionInviteStatus::Pending | SessionInviteStatus::Accepted
+	)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -383,7 +396,7 @@ async fn accept(
 ) -> Result<StatusCode, SessionError> {
 	use entities::prelude::*;
 
-	let invite = load_pending_invite(&state, id).await?;
+	let invite = load_open_invite(&state, id).await?;
 	if invite.recipient_id != player.id {
 		return Err(SessionError::InviteForbidden);
 	}
@@ -421,7 +434,7 @@ async fn decline(
 ) -> Result<StatusCode, SessionError> {
 	use entities::prelude::*;
 
-	let invite = load_pending_invite(&state, id).await?;
+	let invite = load_open_invite(&state, id).await?;
 	if invite.recipient_id != player.id {
 		return Err(SessionError::InviteForbidden);
 	}
@@ -448,4 +461,17 @@ async fn decline(
 		.await?;
 
 	Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn accepted_invites_stay_open_for_rejoining() {
+		assert!(is_open(&SessionInviteStatus::Pending));
+		assert!(is_open(&SessionInviteStatus::Accepted));
+		assert!(!is_open(&SessionInviteStatus::Declined));
+		assert!(!is_open(&SessionInviteStatus::Expired));
+	}
 }
