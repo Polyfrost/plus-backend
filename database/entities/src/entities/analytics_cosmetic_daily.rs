@@ -12,6 +12,7 @@ pub struct Model {
 	pub views: i64,
 	pub acquisitions: i32,
 	pub acquisitions_paid: i32,
+	pub acquisitions_free: i32,
 	pub acquisitions_granted: i32,
 	pub computed_at: DateTimeWithTimeZone,
 }

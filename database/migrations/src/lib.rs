@@ -54,6 +54,7 @@ mod m20260815_000007_create_ownership_events;
 mod m20260815_000008_transaction_amounts;
 mod m20260815_000009_revenue_columns;
 mod m20260815_000010_create_client_info;
+mod m20260818_000000_free_acquisitions;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -114,6 +115,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260815_000008_transaction_amounts::Migration),
 			Box::new(m20260815_000009_revenue_columns::Migration),
 			Box::new(m20260815_000010_create_client_info::Migration),
+			Box::new(m20260818_000000_free_acquisitions::Migration),
 		]
 	}
 }

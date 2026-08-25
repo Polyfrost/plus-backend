@@ -105,7 +105,16 @@ impl DatabaseTransactionExt for Transaction {
 			.one(db)
 			.await?
 		{
-			return Ok(existing);
+			if existing.amount_minor.is_some() || charged.amount_minor.is_none() {
+				return Ok(existing);
+			}
+
+			let mut update: transaction::ActiveModel = existing.into();
+			update.amount_minor = Set(charged.amount_minor);
+			update.currency = Set(charged.currency);
+			update.discount_minor = Set(charged.discount_minor);
+
+			return update.update(db).await;
 		}
 
 		Transaction::insert(transaction::ActiveModel {

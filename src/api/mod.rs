@@ -29,6 +29,8 @@ use crate::{
 	commands::ServeArgs,
 };
 
+pub(crate) use self::state::ANALYTICS_DAILY_JOB;
+
 pub(crate) const INTERNAL_MESSAGE: &str = "Internal server error";
 
 /// Turns an error into a response, logging rather than exposing the error

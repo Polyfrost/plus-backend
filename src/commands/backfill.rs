@@ -1,12 +1,13 @@
-use entities::{prelude::*, transaction};
+use entities::{analytics_job_state, prelude::*, transaction};
 use sea_orm::{
-	ActiveModelTrait as _, ColumnTrait as _, Database, EntityTrait, QueryFilter as _, Set,
+	ActiveModelTrait as _, ColumnTrait as _, Database, DatabaseConnection, DbErr,
+	EntityTrait, QueryFilter as _, Set,
 };
 use stripe_checkout::checkout_session::RetrieveCheckoutSession;
 use stripe_client::Client as StripeClient;
 use tracing::{info, warn};
 
-use crate::commands::BackfillStripeArgs;
+use crate::{api::ANALYTICS_DAILY_JOB, commands::BackfillStripeArgs};
 
 /// Fills `amount_minor`, `currency` and `discount_minor` on transactions that
 /// predate the webhook recording them, by re-reading each checkout session.
@@ -73,4 +74,22 @@ pub(crate) async fn run(args: BackfillStripeArgs) {
 	}
 
 	info!(filled, failed, dry_run = args.dry_run, "Backfill finished");
+
+	if filled > 0 && !args.dry_run {
+		match reset_rollup_watermark(&database).await {
+			Ok(()) => info!("Reset the analytics watermark; the rollup will recompute"),
+			Err(error) => warn!(
+				"Amounts were filled but the analytics watermark could not be reset, \
+				 so revenue stays at its old value: {error}"
+			),
+		}
+	}
+}
+
+async fn reset_rollup_watermark(database: &DatabaseConnection) -> Result<(), DbErr> {
+	AnalyticsJobState::delete_many()
+		.filter(analytics_job_state::Column::JobName.eq(ANALYTICS_DAILY_JOB))
+		.exec(database)
+		.await
+		.map(|_| ())
 }

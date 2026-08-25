@@ -30,7 +30,7 @@ const BACKFILL_INTERVAL: Duration = Duration::from_secs(30);
 const LATE_ARRIVAL_DAYS: u64 = 3;
 const MAX_DAYS_PER_RUN: u64 = 14;
 const STATEMENT_TIMEOUT: &str = "120s";
-pub(in crate::api) const ANALYTICS_DAILY_JOB: &str = "analytics_daily";
+pub(crate) const ANALYTICS_DAILY_JOB: &str = "analytics_daily";
 
 #[derive(Debug, Default, FromQueryResult)]
 pub(super) struct CountValue {
@@ -163,6 +163,7 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 				.update_columns([
 					analytics_cosmetic_daily::Column::Acquisitions,
 					analytics_cosmetic_daily::Column::AcquisitionsPaid,
+					analytics_cosmetic_daily::Column::AcquisitionsFree,
 					analytics_cosmetic_daily::Column::AcquisitionsGranted,
 					analytics_cosmetic_daily::Column::ComputedAt,
 				])

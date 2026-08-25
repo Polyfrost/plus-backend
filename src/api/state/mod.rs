@@ -21,8 +21,9 @@ use stripe_client::Client as StripeClient;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+pub(crate) use self::analytics_rollup::ANALYTICS_DAILY_JOB;
 pub(in crate::api) use self::{
-	analytics_rollup::{ANALYTICS_DAILY_JOB, SESSION_LENGTH_BUCKETS},
+	analytics_rollup::SESSION_LENGTH_BUCKETS,
 	instrumentation::Instrumentation,
 	persistence::{EquipmentPersistence, ParticleColorPersistence},
 	realtime::{

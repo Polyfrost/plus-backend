@@ -1,9 +1,11 @@
 use aide::transform::TransformOperation;
 use axum::{Json, extract::State};
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use entities::prelude::*;
+use entities::{analytics_daily, prelude::*};
 use schemars::JsonSchema;
-use sea_orm::{EntityTrait, PaginatorTrait as _};
+use sea_orm::{
+	ColumnTrait as _, EntityTrait, FromQueryResult, PaginatorTrait as _, QuerySelect as _,
+};
 use serde::Serialize;
 
 use super::{AnalyticsError, PrivateAnalyticsAuth};
@@ -15,7 +17,9 @@ pub(super) fn health_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Reports how current the precomputed analytics are. A growing \
 			 `watermark_age_days` or a non-null `last_error` means the rollup job is \
-			 behind and the other endpoints are serving stale numbers.",
+			 behind and the other endpoints are serving stale numbers.\n\n`earliest_day` \
+			 is the first day the rollup has a row for, which is the real start of an \
+			 all-time range.",
 		)
 		.tag("analytics")
 }
@@ -29,6 +33,13 @@ pub(super) struct HealthResponse {
 	last_run_ms: Option<i32>,
 	last_error: Option<String>,
 	rolled_up_days: u64,
+	/// First day the rollup has a row for.
+	earliest_day: Option<NaiveDate>,
+}
+
+#[derive(Debug, Default, FromQueryResult)]
+struct EarliestDay {
+	earliest: Option<NaiveDate>,
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -40,6 +51,14 @@ pub(super) async fn health_endpoint(
 		.one(&state.database)
 		.await?;
 	let rolled_up_days = AnalyticsDaily::find().count(&state.database).await?;
+	let earliest_day = AnalyticsDaily::find()
+		.select_only()
+		.column_as(analytics_daily::Column::Day.min(), "earliest")
+		.into_model::<EarliestDay>()
+		.one(&state.database)
+		.await?
+		.unwrap_or_default()
+		.earliest;
 	let today = Utc::now().date_naive();
 
 	Ok(Json(HealthResponse {
@@ -53,5 +72,6 @@ pub(super) async fn health_endpoint(
 		last_run_ms: job.as_ref().and_then(|job| job.last_run_ms),
 		last_error: job.and_then(|job| job.last_error),
 		rolled_up_days,
+		earliest_day,
 	}))
 }

@@ -18,6 +18,7 @@ pub struct Model {
 	pub sessions: i32,
 	pub cosmetics_acquired: i32,
 	pub cosmetics_acquired_paid: i32,
+	pub cosmetics_acquired_free: i32,
 	pub cosmetics_acquired_granted: i32,
 	pub transactions_completed: i32,
 	pub transactions_refunded: i32,

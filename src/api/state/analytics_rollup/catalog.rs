@@ -2,7 +2,7 @@ use chrono::{Datelike as _, Days, NaiveDate};
 use entities::{
 	analytics_cosmetic_daily, analytics_cosmetic_snapshot, analytics_slot_snapshot,
 	player_equipped_cosmetic, player_owned_cosmetic, prelude::*,
-	sea_orm_active_enums::TransactionProvider,
+	sea_orm_active_enums::TransactionProvider, transaction,
 };
 use sea_orm::{
 	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait,
@@ -17,6 +17,7 @@ use super::day_bounds;
 struct CosmeticAcquisitions {
 	cosmetic_id: i32,
 	acquisitions: i64,
+	stripe: i64,
 	paid: i64,
 	granted: i64,
 }
@@ -37,6 +38,7 @@ pub(super) async fn cosmetic_rows(
 	let (start, end) = day_bounds(day);
 
 	let rows = PlayerOwnedCosmetic::find()
+		.left_join(Transaction)
 		.filter(player_owned_cosmetic::Column::AcquiredAt.gte(start))
 		.filter(player_owned_cosmetic::Column::AcquiredAt.lt(end))
 		.select_only()
@@ -49,6 +51,16 @@ pub(super) async fn cosmetic_rows(
 			count_where(
 				player_owned_cosmetic::Column::AcquiredVia
 					.eq(TransactionProvider::Stripe),
+			),
+			"stripe",
+		)
+		// A checkout only records its session total, so every cosmetic in a
+		// mixed basket counts as paid.
+		.column_as(
+			count_where(
+				player_owned_cosmetic::Column::AcquiredVia
+					.eq(TransactionProvider::Stripe)
+					.and(transaction::Column::AmountMinor.gt(0)),
 			),
 			"paid",
 		)
@@ -73,6 +85,9 @@ pub(super) async fn cosmetic_rows(
 				row.acquisitions.try_into().unwrap_or(i32::MAX),
 			),
 			acquisitions_paid: ActiveValue::Set(row.paid.try_into().unwrap_or(i32::MAX)),
+			acquisitions_free: ActiveValue::Set(
+				(row.stripe - row.paid).try_into().unwrap_or(i32::MAX),
+			),
 			acquisitions_granted: ActiveValue::Set(
 				row.granted.try_into().unwrap_or(i32::MAX),
 			),

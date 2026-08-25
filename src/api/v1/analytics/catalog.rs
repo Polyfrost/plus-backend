@@ -57,10 +57,9 @@ pub(super) struct CatalogEntry {
 	views: i64,
 	acquisitions: i64,
 	acquisitions_paid: i64,
+	acquisitions_free: i64,
 	acquisitions_granted: i64,
-	/// `acquisitions / views`, absent when the cosmetic was never viewed.
 	conversion: Option<f64>,
-	/// From the most recent weekly snapshot at or before `end`.
 	owners: Option<i32>,
 	equipped: Option<i32>,
 	/// `equipped / owners`: how many owners actually wear it.
@@ -73,6 +72,7 @@ struct CatalogRow {
 	views: Option<i64>,
 	acquisitions: Option<i64>,
 	paid: Option<i64>,
+	free: Option<i64>,
 	granted: Option<i64>,
 }
 
@@ -83,7 +83,12 @@ pub(super) fn catalog_doc(op: TransformOperation) -> TransformOperation {
 			"Views and acquisitions per cosmetic over the period.\n\nViews are counted \
 			 on `/cosmetics/view/{id}` only, so a cosmetic seen in a list but never \
 			 opened does not count. Conversion is acquisitions divided by views and can \
-			 exceed 1 for cosmetics acquired in a bundle without being opened first.",
+			 exceed 1 for cosmetics acquired in a bundle without being opened first.\
+			 \n\n`acquisitions_paid` covers Stripe checkouts that charged money and \
+			 `acquisitions_free` the ones that came to zero; a checkout only records \
+			 its session total, so every cosmetic in a mixed basket counts as paid. \
+			 Acquisitions whose amount was never recorded read as free until \
+			 `backfill-stripe` fills them in.",
 		)
 		.tag("analytics")
 }
@@ -132,6 +137,12 @@ pub(super) async fn catalog_endpoint(
 				.sum()
 				.cast_as(Alias::new("bigint")),
 			"paid",
+		)
+		.column_as(
+			Expr::col(analytics_cosmetic_daily::Column::AcquisitionsFree)
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"free",
 		)
 		.column_as(
 			Expr::col(analytics_cosmetic_daily::Column::AcquisitionsGranted)
@@ -186,6 +197,7 @@ pub(super) async fn catalog_endpoint(
 				views,
 				acquisitions,
 				acquisitions_paid: row.paid.unwrap_or_default(),
+				acquisitions_free: row.free.unwrap_or_default(),
 				acquisitions_granted: row.granted.unwrap_or_default(),
 				#[expect(
 					clippy::cast_precision_loss,
@@ -208,4 +220,3 @@ pub(super) async fn catalog_endpoint(
 		cosmetics,
 	}))
 }
-

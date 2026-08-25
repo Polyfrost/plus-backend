@@ -34,7 +34,7 @@ struct PlaytimeTotals {
 }
 
 /// Overwritten on conflict, so a re-run replaces rather than accumulates.
-pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 28] {
+pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 29] {
 	use analytics_daily::Column as C;
 
 	[
@@ -49,6 +49,7 @@ pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 28] {
 		C::Sessions,
 		C::CosmeticsAcquired,
 		C::CosmeticsAcquiredPaid,
+		C::CosmeticsAcquiredFree,
 		C::CosmeticsAcquiredGranted,
 		C::TransactionsCompleted,
 		C::TransactionsRefunded,
@@ -76,6 +77,7 @@ pub(super) async fn collect_day(
 	let bounds = day_bounds(day);
 	let (day_start, day_end) = bounds;
 	let playtime = playtime_totals(txn, day).await?;
+	let (paid_cosmetics, free_cosmetics) = stripe_acquisitions(txn, bounds).await?;
 
 	Ok(analytics_daily::ActiveModel {
 		day: ActiveValue::Set(day),
@@ -118,18 +120,8 @@ pub(super) async fn collect_day(
 			)
 			.await?,
 		),
-		cosmetics_acquired_paid: ActiveValue::Set(
-			count_in_day(
-				txn,
-				PlayerOwnedCosmetic::find().filter(
-					player_owned_cosmetic::Column::AcquiredVia
-						.eq(TransactionProvider::Stripe),
-				),
-				player_owned_cosmetic::Column::AcquiredAt,
-				bounds,
-			)
-			.await?,
-		),
+		cosmetics_acquired_paid: ActiveValue::Set(paid_cosmetics),
+		cosmetics_acquired_free: ActiveValue::Set(free_cosmetics),
 		cosmetics_acquired_granted: ActiveValue::Set(
 			count_in_day(
 				txn,
@@ -264,6 +256,37 @@ pub(super) async fn collect_day(
 			.await?,
 		),
 	})
+}
+
+async fn stripe_acquisitions(
+	txn: &DatabaseTransaction,
+	bounds: (DateTimeWithTimeZone, DateTimeWithTimeZone),
+) -> Result<(i32, i32), DbErr> {
+	let stripe = PlayerOwnedCosmetic::find().filter(
+		player_owned_cosmetic::Column::AcquiredVia.eq(TransactionProvider::Stripe),
+	);
+
+	let total = count_in_day(
+		txn,
+		stripe.clone(),
+		player_owned_cosmetic::Column::AcquiredAt,
+		bounds,
+	)
+	.await?;
+
+	// An acquisition whose transaction never had an amount recorded counts as
+	// free; `backfill-stripe` fills those in from Stripe.
+	let paid = count_in_day(
+		txn,
+		stripe
+			.inner_join(Transaction)
+			.filter(transaction::Column::AmountMinor.gt(0)),
+		player_owned_cosmetic::Column::AcquiredAt,
+		bounds,
+	)
+	.await?;
+
+	Ok((paid, total - paid))
 }
 
 #[derive(Debug, Default, FromQueryResult)]
