@@ -13,8 +13,7 @@ use crate::api::{
 	ApiState,
 	v0::account::AuthenticatedPlayer,
 	v0::groups::{
-		GroupError, find_user_by_uuid, load_group, member_ids, special_chat_cooldown_target,
-		special_chat_cooldown_until,
+		GroupError, find_user_by_uuid, special_chat_cooldown_target, special_chat_cooldown_until,
 	},
 	v0::social::is_blocked_either_way,
 	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
@@ -72,13 +71,16 @@ async fn get_or_create_special_chat_group(
 		prelude::*,
 		sea_orm_active_enums::{GroupKind, GroupMemberRole},
 	};
+	use sea_orm::{ConnectionTrait, QueryOrder, Statement, TransactionTrait};
 
 	let mut targets = Vec::new();
+	let mut pending_target = false;
 	for target_uuid in &state.special_chat_targets {
 		if *target_uuid == player.minecraft_uuid {
 			continue;
 		}
 		let Ok(target) = find_user_by_uuid(state, *target_uuid).await else {
+			pending_target = true;
 			continue;
 		};
 		if is_blocked_either_way(state, player.id, target.id)
@@ -94,35 +96,68 @@ async fn get_or_create_special_chat_group(
 		return Ok(None);
 	}
 
-	let existing_group_id = GroupMembers::find()
+	let txn = state.database.begin().await.map_err(GroupError::from)?;
+
+	txn.execute(Statement::from_sql_and_values(
+		txn.get_database_backend(),
+		"SELECT pg_advisory_xact_lock(hashtext('special_chat'), $1)",
+		[player.id.into()],
+	))
+	.await
+	.map_err(GroupError::from)?;
+
+	let existing_group_ids = GroupMembers::find()
 		.filter(group_members::Column::UserId.eq(player.id))
 		.inner_join(Groups)
 		.filter(groups::Column::Kind.eq(GroupKind::Group))
 		.filter(groups::Column::OwnerId.is_null())
 		.filter(groups::Column::Name.is_null())
-		.all(&state.database)
+		.order_by_asc(group_members::Column::GroupId)
+		.all(&txn)
 		.await
 		.map_err(GroupError::from)?
 		.into_iter()
 		.map(|member| member.group_id)
-		.next();
+		.collect::<Vec<_>>();
 
-	if let Some(group_id) = existing_group_id {
-		let existing_member_ids = member_ids(state, group_id).await.map_err(GroupError::from)?;
-		for target in &targets {
-			if !existing_member_ids.contains(&target.id) {
-				GroupMembers::insert(group_members::ActiveModel {
-					group_id: Set(group_id),
-					user_id: Set(target.id),
-					role: Set(GroupMemberRole::Member),
-					joined_at: ActiveValue::NotSet,
-				})
-				.exec_without_returning(&state.database)
+	if let Some(&canonical_id) = existing_group_ids.first() {
+		for group_id in &existing_group_ids {
+			let existing_member_ids = GroupMembers::find()
+				.filter(group_members::Column::GroupId.eq(*group_id))
+				.all(&txn)
 				.await
-				.map_err(GroupError::from)?;
+				.map_err(GroupError::from)?
+				.into_iter()
+				.map(|member| member.user_id)
+				.collect::<Vec<_>>();
+
+			for target in &targets {
+				if !existing_member_ids.contains(&target.id) {
+					GroupMembers::insert(group_members::ActiveModel {
+						group_id: Set(*group_id),
+						user_id: Set(target.id),
+						role: Set(GroupMemberRole::Member),
+						joined_at: ActiveValue::NotSet,
+					})
+					.exec_without_returning(&txn)
+					.await
+					.map_err(GroupError::from)?;
+				}
 			}
 		}
-		return Ok(Some((false, load_group(state, group_id).await?, targets)));
+
+		let group = Groups::find_by_id(canonical_id)
+			.one(&txn)
+			.await
+			.map_err(GroupError::from)?
+			.ok_or(GroupError::GroupMissing)?;
+		txn.commit().await.map_err(GroupError::from)?;
+		return Ok(Some((false, group, targets)));
+	}
+
+	if pending_target {
+		txn.rollback().await.map_err(GroupError::from)?;
+		return Ok(None);
 	}
 
 	let group = Groups::insert(groups::ActiveModel {
@@ -132,7 +167,7 @@ async fn get_or_create_special_chat_group(
 		created_at: ActiveValue::NotSet,
 		..Default::default()
 	})
-	.exec_with_returning(&state.database)
+	.exec_with_returning(&txn)
 	.await
 	.map_err(GroupError::from)?;
 
@@ -143,10 +178,12 @@ async fn get_or_create_special_chat_group(
 			role: Set(GroupMemberRole::Member),
 			joined_at: ActiveValue::NotSet,
 		})
-		.exec_without_returning(&state.database)
+		.exec_without_returning(&txn)
 		.await
 		.map_err(GroupError::from)?;
 	}
+
+	txn.commit().await.map_err(GroupError::from)?;
 
 	Ok(Some((true, group, targets)))
 }
