@@ -25,7 +25,10 @@ impl PayNowClient {
 				&UpsertProduct {
 					slug: Some(slug),
 					name: Some(name),
-					description,
+					description: Some(&super::catalog::storefront_description(
+						name,
+						description,
+					)),
 					price: Some(price),
 					allow_one_time_purchase: Some(true),
 					allow_subscription: Some(false),

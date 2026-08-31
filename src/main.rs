@@ -16,7 +16,10 @@ async fn main() {
 	// Setup logging
 	tracing_subscriber::registry()
 		.with(fmt::layer())
-		.with(EnvFilter::from_default_env())
+		.with(
+			EnvFilter::try_from_default_env()
+				.unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn")),
+		)
 		.init();
 
 	// Setup TLS
