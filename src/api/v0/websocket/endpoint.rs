@@ -998,10 +998,11 @@ mod tests {
 		let populated = map.capacity();
 
 		map.retain(|key, _| *key < 48);
+		let retained = map.capacity();
 		shrink_map_if_sparse(&mut map);
 		assert_eq!(
 			map.capacity(),
-			populated,
+			retained,
 			"a mostly full map keeps its capacity"
 		);
 

@@ -179,12 +179,13 @@ mod tests {
 	fn special_chat_targets_are_deduplicated() {
 		let a = "a5331404-0e77-440e-8bef-24c071dac1ae";
 		let b = "b5331404-0e77-440e-8bef-24c071dac1ae";
-		let parsed = parse_special_chat_targets(format!("{a}, {b} ,{a},")).unwrap();
+		let parsed = parse_special_chat_targets(format!("{a}, {b} ,{a},"))
+			.expect("the sample targets are valid uuids");
 		assert_eq!(
 			parsed,
 			vec![
-				uuid::Uuid::parse_str(a).unwrap(),
-				uuid::Uuid::parse_str(b).unwrap()
+				uuid::Uuid::parse_str(a).expect("'a' is a valid uuid"),
+				uuid::Uuid::parse_str(b).expect("'b' is a valid uuid")
 			]
 		);
 		assert!(parse_special_chat_targets("not-a-uuid".to_owned()).is_err());
