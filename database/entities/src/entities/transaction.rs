@@ -11,8 +11,8 @@ pub struct Model {
 	pub id: i32,
 	pub player_id: i32,
 	pub provider: TransactionProvider,
-	#[sea_orm(column_type = "Text", nullable)]
-	pub stripe_payment_id: Option<String>,
+	#[sea_orm(column_type = "Text", nullable, unique)]
+	pub provider_transaction_id: Option<String>,
 	pub status: TransactionStatus,
 	pub created_at: DateTimeWithTimeZone,
 	#[sea_orm(column_type = "JsonBinary")]
@@ -24,12 +24,16 @@ pub struct Model {
 	pub currency: Option<String>,
 	pub discount_minor: Option<i64>,
 	pub refunded_at: Option<DateTimeWithTimeZone>,
+	pub refunded_minor: i64,
+	pub charged_back_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
 	#[sea_orm(has_many = "super::player_owned_cosmetic::Entity")]
 	PlayerOwnedCosmetic,
+	#[sea_orm(has_many = "super::transaction_line::Entity")]
+	TransactionLine,
 	#[sea_orm(
 		belongs_to = "super::user::Entity",
 		from = "Column::Buyer",
@@ -51,6 +55,12 @@ pub enum Relation {
 impl Related<super::player_owned_cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::PlayerOwnedCosmetic.def()
+	}
+}
+
+impl Related<super::transaction_line::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::TransactionLine.def()
 	}
 }
 

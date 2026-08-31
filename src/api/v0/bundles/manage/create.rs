@@ -16,11 +16,8 @@ use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use uuid::Uuid;
 
 use crate::{
-	api::{
-		ApiState,
-		admin_auth::AdminAuthenticationExtractor,
-		v0::{bundles::BundleInfo, stripe::products},
-	},
+	api::{ApiState, admin_auth::AdminAuthenticationExtractor, v0::bundles::BundleInfo},
+	paynow::{PayNowError, catalog},
 	utils::{hash::sha256_hex, money::to_cents},
 };
 
@@ -28,14 +25,14 @@ use crate::{
 pub enum CreateError {
 	#[error("A bundle name is required")]
 	MissingName,
-	#[error("A base price is required to create a new Stripe product")]
+	#[error("A base price is required to create a new storefront product")]
 	MissingPrice,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("S3 error: {0}")]
 	S3(#[from] s3::error::S3Error),
-	#[error("Stripe error: {0}")]
-	Stripe(#[from] stripe_client::StripeError),
+	#[error("PayNow error: {0}")]
+	PayNow(#[from] PayNowError),
 	#[error("Multipart error: {0}")]
 	Multipart(#[from] axum::extract::multipart::MultipartError),
 	#[error("Multipart rejection: {0}")]
@@ -49,7 +46,7 @@ impl IntoResponse for CreateError {
 				Self::MissingName | Self::MissingPrice | Self::Rejection(_) => {
 					StatusCode::BAD_REQUEST
 				}
-				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
+				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) | Self::S3(_) | Self::Multipart(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
@@ -64,8 +61,8 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Create a new bundle")
 		.description(
 			"Uploads a bundle's cover image to S3 (optional), registers the bundle \
-			 in the database with its contained cosmetics, then provisions a Stripe \
-			 product and price for it. Admin password required.",
+			 in the database with its contained cosmetics, then provisions a \
+			 storefront product for it. Admin password required.",
 		)
 		.tag("bundles")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<BundleInfo>, _>(|res| {
@@ -239,32 +236,41 @@ async fn endpoint(
 		None => None,
 	};
 
-	// Provision the Stripe product and its default price.
 	let base_price = base_price.ok_or(CreateError::MissingPrice)?;
-	let product_id =
-		products::create_product(&state.stripe.client, &name, description.as_deref())
-			.await?;
-	let price_id =
-		products::create_price(&state.stripe.client, &product_id, to_cents(base_price))
-			.await?;
-	products::set_default_price(&state.stripe.client, &product_id, &price_id).await?;
 
 	use entities::{bundles, bundles_cosmetics, prelude::*};
 
+	// Inserted first because the slug needs the row id. A failure to provision
+	// leaves a priced bundle that `provision-paynow` picks up.
 	let bundle = bundles::ActiveModel {
 		name: Set(name),
 		description: Set(description),
 		asset_id: Set(asset_id),
 		enabled: Set(true),
 		collection: Set(collection),
-		stripe_product_id: Set(Some(product_id)),
-		stripe_price_id: Set(Some(price_id)),
+		store_product_id: Set(None),
 		base_price: Set(Some(base_price)),
 		discount_rate: Set(None),
 		..Default::default()
 	}
 	.insert(&state.database)
 	.await?;
+
+	let product_id = state
+		.paynow
+		.client
+		.create_product(
+			&catalog::bundle_slug(bundle.id),
+			&bundle.name,
+			bundle.description.as_deref(),
+			to_cents(base_price),
+			false,
+		)
+		.await?;
+
+	let mut active: bundles::ActiveModel = bundle.into();
+	active.store_product_id = Set(Some(product_id));
+	let bundle = active.update(&state.database).await?;
 
 	if !cosmetic_ids.is_empty() {
 		BundlesCosmetics::insert_many(cosmetic_ids.iter().map(|cosmetic_id| {

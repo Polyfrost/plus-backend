@@ -55,6 +55,10 @@ mod m20260815_000008_transaction_amounts;
 mod m20260815_000009_revenue_columns;
 mod m20260815_000010_create_client_info;
 mod m20260818_000000_free_acquisitions;
+mod m20260826_000000_paynow_enum_variants;
+mod m20260826_000001_provider_neutral_columns;
+mod m20260826_000002_transaction_lines;
+mod m20260826_000003_analytics_chargebacks;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -116,6 +120,10 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260815_000009_revenue_columns::Migration),
 			Box::new(m20260815_000010_create_client_info::Migration),
 			Box::new(m20260818_000000_free_acquisitions::Migration),
+			Box::new(m20260826_000000_paynow_enum_variants::Migration),
+			Box::new(m20260826_000001_provider_neutral_columns::Migration),
+			Box::new(m20260826_000002_transaction_lines::Migration),
+			Box::new(m20260826_000003_analytics_chargebacks::Migration),
 		]
 	}
 }

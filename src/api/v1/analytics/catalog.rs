@@ -59,6 +59,14 @@ pub(super) struct CatalogEntry {
 	acquisitions_paid: i64,
 	acquisitions_free: i64,
 	acquisitions_granted: i64,
+	/// A line's total shared evenly between the cosmetics it delivered.
+	revenue_minor: i64,
+	/// Acquisitions taken back because the customer asked for their money.
+	refunded: i64,
+	/// Acquisitions taken back because the customer disputed the payment.
+	charged_back: i64,
+	refunded_minor: i64,
+	charged_back_minor: i64,
 	conversion: Option<f64>,
 	owners: Option<i32>,
 	equipped: Option<i32>,
@@ -74,6 +82,11 @@ struct CatalogRow {
 	paid: Option<i64>,
 	free: Option<i64>,
 	granted: Option<i64>,
+	revenue: Option<i64>,
+	refunded: Option<i64>,
+	charged_back: Option<i64>,
+	refunded_minor: Option<i64>,
+	charged_back_minor: Option<i64>,
 }
 
 pub(super) fn catalog_doc(op: TransformOperation) -> TransformOperation {
@@ -84,11 +97,15 @@ pub(super) fn catalog_doc(op: TransformOperation) -> TransformOperation {
 			 on `/cosmetics/view/{id}` only, so a cosmetic seen in a list but never \
 			 opened does not count. Conversion is acquisitions divided by views and can \
 			 exceed 1 for cosmetics acquired in a bundle without being opened first.\
-			 \n\n`acquisitions_paid` covers Stripe checkouts that charged money and \
-			 `acquisitions_free` the ones that came to zero; a checkout only records \
-			 its session total, so every cosmetic in a mixed basket counts as paid. \
-			 Acquisitions whose amount was never recorded read as free until \
-			 `backfill-stripe` fills them in.",
+			 \n\n`acquisitions_paid` covers purchases that charged money and \
+			 `acquisitions_free` the ones that came to zero, priced from the order \
+			 line that delivered each cosmetic. `revenue_minor` splits a line's \
+			 total evenly across the cosmetics it delivered, so a bundle's price is \
+			 shared between its contents.\n\n`refunded` and `charged_back` count \
+			 acquisitions taken back on the day they were taken back, kept apart \
+			 because a dispute says something different about a cosmetic than a \
+			 change of mind does. Both are read from the ownership trail, so they \
+			 survive a recompute; a dispute that was later won drops out.",
 		)
 		.tag("analytics")
 }
@@ -150,6 +167,36 @@ pub(super) async fn catalog_endpoint(
 				.cast_as(Alias::new("bigint")),
 			"granted",
 		)
+		.column_as(
+			Expr::col(analytics_cosmetic_daily::Column::RevenueMinor)
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"revenue",
+		)
+		.column_as(
+			Expr::col(analytics_cosmetic_daily::Column::Refunded)
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"refunded",
+		)
+		.column_as(
+			Expr::col(analytics_cosmetic_daily::Column::ChargedBack)
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"charged_back",
+		)
+		.column_as(
+			Expr::col(analytics_cosmetic_daily::Column::RefundedMinor)
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"refunded_minor",
+		)
+		.column_as(
+			Expr::col(analytics_cosmetic_daily::Column::ChargedBackMinor)
+				.sum()
+				.cast_as(Alias::new("bigint")),
+			"charged_back_minor",
+		)
 		.group_by(analytics_cosmetic_daily::Column::CosmeticId)
 		.order_by_desc(order)
 		.limit(limit)
@@ -199,6 +246,11 @@ pub(super) async fn catalog_endpoint(
 				acquisitions_paid: row.paid.unwrap_or_default(),
 				acquisitions_free: row.free.unwrap_or_default(),
 				acquisitions_granted: row.granted.unwrap_or_default(),
+				revenue_minor: row.revenue.unwrap_or_default(),
+				refunded: row.refunded.unwrap_or_default(),
+				charged_back: row.charged_back.unwrap_or_default(),
+				refunded_minor: row.refunded_minor.unwrap_or_default(),
+				charged_back_minor: row.charged_back_minor.unwrap_or_default(),
 				#[expect(
 					clippy::cast_precision_loss,
 					reason = "counts are far below the f64 mantissa"

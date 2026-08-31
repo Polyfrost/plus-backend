@@ -22,6 +22,8 @@ pub enum Relation {
 	Cosmetic,
 	#[sea_orm(has_many = "super::cosmetic_group_allowed_slot::Entity")]
 	CosmeticGroupAllowedSlot,
+	#[sea_orm(has_many = "super::transaction_line::Entity")]
+	TransactionLine,
 }
 
 impl Related<super::cosmetic::Entity> for Entity {
@@ -33,6 +35,12 @@ impl Related<super::cosmetic::Entity> for Entity {
 impl Related<super::cosmetic_group_allowed_slot::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::CosmeticGroupAllowedSlot.def()
+	}
+}
+
+impl Related<super::transaction_line::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::TransactionLine.def()
 	}
 }
 

@@ -22,9 +22,7 @@ pub struct Model {
 	pub model_variant: Option<String>,
 	pub variant_order: i32,
 	#[sea_orm(column_type = "Text", nullable)]
-	pub stripe_price_id: Option<String>,
-	#[sea_orm(column_type = "Text", nullable)]
-	pub stripe_product_id: Option<String>,
+	pub store_product_id: Option<String>,
 	#[sea_orm(column_type = "Float", nullable)]
 	pub base_price: Option<f32>,
 	pub discount_rate: Option<i32>,
@@ -73,6 +71,8 @@ pub enum Relation {
 	PlayerOwnedCosmetic,
 	#[sea_orm(has_many = "super::tags_cosmetic::Entity")]
 	TagsCosmetic,
+	#[sea_orm(has_many = "super::transaction_line::Entity")]
+	TransactionLine,
 }
 
 impl Related<super::asset::Entity> for Entity {
@@ -126,6 +126,12 @@ impl Related<super::player_owned_cosmetic::Entity> for Entity {
 impl Related<super::tags_cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::TagsCosmetic.def()
+	}
+}
+
+impl Related<super::transaction_line::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::TransactionLine.def()
 	}
 }
 

@@ -34,7 +34,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				.merge(manage::router())
 				.merge(grant::router())
 				.merge(search::router())
-				.merge(view::router())
+				.merge(view::router()),
 		)
 		.merge(list::router())
 }
@@ -106,9 +106,6 @@ pub(super) struct EmoteInfo {
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct CachedAssetInfo {
-	/// The hash of this cosmetic. A different hash indicates
-	/// the cosmetic has changed and should be redownlowded.
-	/// The hash format is unspecified
 	hash: String,
 }
 
@@ -145,7 +142,7 @@ impl VariantInfo {
 }
 
 /// Matches cosmetics that are not hidden by their group
-pub(super) fn in_enabled_group() -> sea_orm::Condition {
+pub(in crate::api) fn in_enabled_group() -> sea_orm::Condition {
 	use sea_orm::{ColumnTrait, Condition, sea_query::Query};
 
 	Condition::any()

@@ -15,6 +15,11 @@ pub struct Model {
 	pub acquisitions_free: i32,
 	pub acquisitions_granted: i32,
 	pub computed_at: DateTimeWithTimeZone,
+	pub revenue_minor: i64,
+	pub refunded: i32,
+	pub charged_back: i32,
+	pub refunded_minor: i64,
+	pub charged_back_minor: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

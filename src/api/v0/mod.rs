@@ -12,7 +12,6 @@ mod players;
 pub(super) mod sessions;
 mod social;
 mod special_chat;
-mod stripe;
 mod tags;
 mod transactions;
 pub(super) mod websocket;
@@ -23,7 +22,6 @@ use crate::api::ApiState;
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.nest("/stripe", stripe::setup_router().await)
 		.nest("/account", account::setup_router().await)
 		.nest("/transactions", transactions::setup_router().await)
 		.merge(assets::setup_router().await)

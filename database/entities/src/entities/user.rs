@@ -17,6 +17,9 @@ pub struct Model {
 	pub refund_count: i32,
 	pub eos_product_user_id: Option<String>,
 	pub username: Option<String>,
+	pub chargeback_count: i32,
+	#[sea_orm(column_type = "Text", nullable, unique)]
+	pub paynow_customer_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -29,6 +32,8 @@ pub enum Relation {
 	PlayerEquippedCosmetic,
 	#[sea_orm(has_many = "super::player_owned_cosmetic::Entity")]
 	PlayerOwnedCosmetic,
+	#[sea_orm(has_many = "super::transaction_line::Entity")]
+	TransactionLine,
 }
 
 impl Related<super::daily_playtime::Entity> for Entity {

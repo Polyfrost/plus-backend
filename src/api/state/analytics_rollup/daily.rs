@@ -8,7 +8,7 @@ use entities::{
 		RelationshipRequestStatus, SessionInviteStatus, TransactionProvider,
 		TransactionStatus,
 	},
-	session_invites, tracked_link_hits, transaction, user,
+	session_invites, tracked_link_hits, transaction, transaction_line, user,
 };
 use sea_orm::{
 	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait,
@@ -22,10 +22,15 @@ use super::{CountValue, count_in_day, day_bounds};
 const WEEKLY_WINDOW: u64 = 6;
 const MONTHLY_WINDOW: u64 = 29;
 
-/// A refund flips the row's status, so matching `Completed` alone would take
-/// the sale out of gross as well as into refunds, subtracting it twice.
-const SALE_STATUSES: [TransactionStatus; 2] =
-	[TransactionStatus::Completed, TransactionStatus::Refunded];
+const SALE_STATUSES: [TransactionStatus; 4] = [
+	TransactionStatus::Completed,
+	TransactionStatus::Refunded,
+	TransactionStatus::PartiallyRefunded,
+	TransactionStatus::Chargeback,
+];
+
+const PURCHASE_PROVIDERS: [TransactionProvider; 2] =
+	[TransactionProvider::Stripe, TransactionProvider::Paynow];
 
 #[derive(Debug, Default, FromQueryResult)]
 struct PlaytimeTotals {
@@ -34,7 +39,7 @@ struct PlaytimeTotals {
 }
 
 /// Overwritten on conflict, so a re-run replaces rather than accumulates.
-pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 29] {
+pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 32] {
 	use analytics_daily::Column as C;
 
 	[
@@ -67,6 +72,9 @@ pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 29] {
 		C::RefundAmountMinor,
 		C::DiscountAmountMinor,
 		C::PayingUsers,
+		C::ChargebackAmountMinor,
+		C::TransactionsChargedBack,
+		C::TransactionsPartiallyRefunded,
 	]
 }
 
@@ -77,7 +85,7 @@ pub(super) async fn collect_day(
 	let bounds = day_bounds(day);
 	let (day_start, day_end) = bounds;
 	let playtime = playtime_totals(txn, day).await?;
-	let (paid_cosmetics, free_cosmetics) = stripe_acquisitions(txn, bounds).await?;
+	let (paid_cosmetics, free_cosmetics) = paid_acquisitions(txn, bounds).await?;
 
 	Ok(analytics_daily::ActiveModel {
 		day: ActiveValue::Set(day),
@@ -145,7 +153,11 @@ pub(super) async fn collect_day(
 			count_in_day(
 				txn,
 				Transaction::find()
-					.filter(transaction::Column::Status.eq(TransactionStatus::Refunded)),
+					.filter(transaction::Column::RefundedAt.is_not_null())
+					.filter(
+						Expr::col(transaction::Column::RefundedMinor)
+							.gte(Expr::col(transaction::Column::AmountMinor)),
+					),
 				transaction::Column::CreatedAt,
 				bounds,
 			)
@@ -237,13 +249,53 @@ pub(super) async fn collect_day(
 			minor_sum(txn, sales_on_day(bounds), transaction::Column::AmountMinor)
 				.await?,
 		),
+		// The refunded amount, not the order total: a partial refund must not
+		// book the whole sale as returned.
 		refund_amount_minor: ActiveValue::Set(
-			minor_sum(txn, refunds_on_day(bounds), transaction::Column::AmountMinor)
-				.await?,
+			minor_sum(
+				txn,
+				refunds_on_day(bounds),
+				transaction::Column::RefundedMinor,
+			)
+			.await?,
+		),
+		// Net of anything already refunded, so a partial refund followed by a
+		// dispute is not subtracted twice.
+		chargeback_amount_minor: ActiveValue::Set(
+			sum_expr(
+				txn,
+				chargebacks_on_day(bounds),
+				Expr::col(transaction::Column::AmountMinor)
+					.sub(Expr::col(transaction::Column::RefundedMinor)),
+			)
+			.await?,
+		),
+		transactions_charged_back: ActiveValue::Set(
+			chargebacks_on_day(bounds)
+				.count(txn)
+				.await?
+				.try_into()
+				.unwrap_or(i32::MAX),
+		),
+		transactions_partially_refunded: ActiveValue::Set(
+			count_in_day(
+				txn,
+				refunds_on_day(bounds).filter(
+					Expr::col(transaction::Column::RefundedMinor)
+						.lt(Expr::col(transaction::Column::AmountMinor)),
+				),
+				transaction::Column::RefundedAt,
+				bounds,
+			)
+			.await?,
 		),
 		discount_amount_minor: ActiveValue::Set(
-			minor_sum(txn, sales_on_day(bounds), transaction::Column::DiscountMinor)
-				.await?,
+			minor_sum(
+				txn,
+				sales_on_day(bounds),
+				transaction::Column::DiscountMinor,
+			)
+			.await?,
 		),
 		paying_users: ActiveValue::Set(paying_users(txn, sales_on_day(bounds)).await?),
 		tracked_link_hits: ActiveValue::Set(
@@ -258,29 +310,43 @@ pub(super) async fn collect_day(
 	})
 }
 
-async fn stripe_acquisitions(
+/// Splits the day's purchases into paid and free, a free one being something
+/// like a fully discounted basket.
+async fn paid_acquisitions(
 	txn: &DatabaseTransaction,
 	bounds: (DateTimeWithTimeZone, DateTimeWithTimeZone),
 ) -> Result<(i32, i32), DbErr> {
-	let stripe = PlayerOwnedCosmetic::find().filter(
-		player_owned_cosmetic::Column::AcquiredVia.eq(TransactionProvider::Stripe),
-	);
+	let purchased = PlayerOwnedCosmetic::find()
+		.filter(player_owned_cosmetic::Column::AcquiredVia.is_in(PURCHASE_PROVIDERS));
 
 	let total = count_in_day(
 		txn,
-		stripe.clone(),
+		purchased.clone(),
 		player_owned_cosmetic::Column::AcquiredAt,
 		bounds,
 	)
 	.await?;
 
-	// An acquisition whose transaction never had an amount recorded counts as
-	// free; `backfill-stripe` fills those in from Stripe.
+	// Priced from its own line where one exists, falling back to the order
+	// total for rows that predate lines. No amount at all counts as free.
 	let paid = count_in_day(
 		txn,
-		stripe
-			.inner_join(Transaction)
-			.filter(transaction::Column::AmountMinor.gt(0)),
+		purchased
+			.left_join(Transaction)
+			.left_join(TransactionLine)
+			.filter(
+				Expr::expr(Func::coalesce([
+					Expr::col((
+						transaction_line::Entity,
+						transaction_line::Column::TotalMinor,
+					))
+					.into(),
+					Expr::col((transaction::Entity, transaction::Column::AmountMinor))
+						.into(),
+					Expr::value(0i64),
+				]))
+				.gt(0),
+			),
 		player_owned_cosmetic::Column::AcquiredAt,
 		bounds,
 	)
@@ -303,13 +369,25 @@ fn sales_on_day(
 		.filter(transaction::Column::Status.is_in(SALE_STATUSES))
 }
 
+/// Matched on the refund, not the row's current status: a later chargeback
+/// moves the status on, and the money still went back.
 fn refunds_on_day(
 	(start, end): (DateTimeWithTimeZone, DateTimeWithTimeZone),
 ) -> Select<Transaction> {
 	Transaction::find()
 		.filter(transaction::Column::RefundedAt.gte(start))
 		.filter(transaction::Column::RefundedAt.lt(end))
-		.filter(transaction::Column::Status.eq(TransactionStatus::Refunded))
+		.filter(transaction::Column::RefundedMinor.gt(0))
+}
+
+/// Booked on the day the dispute landed, not the day of the sale.
+fn chargebacks_on_day(
+	(start, end): (DateTimeWithTimeZone, DateTimeWithTimeZone),
+) -> Select<Transaction> {
+	Transaction::find()
+		.filter(transaction::Column::ChargedBackAt.gte(start))
+		.filter(transaction::Column::ChargedBackAt.lt(end))
+		.filter(transaction::Column::Status.eq(TransactionStatus::Chargeback))
 }
 
 async fn minor_sum(
@@ -317,9 +395,20 @@ async fn minor_sum(
 	select: Select<Transaction>,
 	column: transaction::Column,
 ) -> Result<i64, DbErr> {
+	sum_expr(txn, select, Expr::col(column)).await
+}
+
+async fn sum_expr(
+	txn: &DatabaseTransaction,
+	select: Select<Transaction>,
+	expression: impl Into<sea_orm::sea_query::SimpleExpr>,
+) -> Result<i64, DbErr> {
 	Ok(select
 		.select_only()
-		.column_as(column.sum().cast_as(Alias::new("bigint")), "total")
+		.column_as(
+			Expr::expr(expression).sum().cast_as(Alias::new("bigint")),
+			"total",
+		)
 		.into_model::<MoneyTotal>()
 		.one(txn)
 		.await?

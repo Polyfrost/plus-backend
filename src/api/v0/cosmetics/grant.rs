@@ -91,7 +91,7 @@ async fn endpoint(
 	let transaction = transaction::ActiveModel {
 		player_id: Set(player.id),
 		provider: Set(TransactionProvider::AdminGrant),
-		stripe_payment_id: Set(None),
+		provider_transaction_id: Set(None),
 		status: Set(TransactionStatus::Completed),
 		raw_metadata: Set(serde_json::json!({ "reason": "admin_grant" })),
 		..Default::default()
@@ -105,6 +105,7 @@ async fn endpoint(
 			cosmetic_id: Set(cosmetic_id),
 			acquired_via: Set(TransactionProvider::AdminGrant),
 			transaction_id: Set(Some(transaction.id)),
+			transaction_line_id: Set(None),
 			acquired_at: ActiveValue::NotSet,
 		}
 	}))
@@ -119,6 +120,7 @@ async fn endpoint(
 		OwnershipEventKind::Granted,
 		TransactionProvider::AdminGrant,
 		Some(transaction.id),
+		None,
 	)
 	.await?;
 

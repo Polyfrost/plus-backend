@@ -20,11 +20,9 @@ use crate::{
 	api::{
 		ApiState,
 		admin_auth::AdminAuthenticationExtractor,
-		v0::{
-			cosmetics::{CosmeticInfo, group_cosmetics},
-			stripe::products,
-		},
+		v0::cosmetics::{CosmeticInfo, group_cosmetics},
 	},
+	paynow::{PayNowError, catalog},
 	utils::{
 		hash::sha256_hex,
 		money::to_cents,
@@ -42,14 +40,14 @@ pub enum UploadError {
 	MissingSlots,
 	#[error("Invalid body slot")]
 	InvalidSlot,
-	#[error("A base price is required to create a new Stripe product")]
+	#[error("A base price is required to create a new storefront product")]
 	MissingPrice,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("S3 error: {0}")]
 	S3(#[from] s3::error::S3Error),
-	#[error("Stripe error: {0}")]
-	Stripe(#[from] stripe_client::StripeError),
+	#[error("PayNow error: {0}")]
+	PayNow(#[from] PayNowError),
 	#[error("Multipart error: {0}")]
 	Multipart(#[from] axum::extract::multipart::MultipartError),
 	#[error("Multipart rejection: {0}")]
@@ -69,7 +67,7 @@ impl IntoResponse for UploadError {
 				| Self::MissingPrice
 				| Self::Zip(_)
 				| Self::Rejection(_) => StatusCode::BAD_REQUEST,
-				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
+				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) | Self::S3(_) | Self::Multipart(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
@@ -482,48 +480,28 @@ async fn endpoint(
 
 	let resolved_name = name.unwrap_or_else(|| default_name(&cosmetic_type).to_string());
 
-	// Resolve the Stripe product/price: variants share one product and price, so
-	// reuse an existing group sibling's ids when present, otherwise create them.
+	// Variants share one product, so a new one reuses a sibling's ids.
 	let sibling = match &group {
 		Some(group) => {
 			Cosmetic::find()
 				.filter(cosmetic::Column::GroupId.eq(group.id))
-				.filter(cosmetic::Column::StripeProductId.is_not_null())
-				.filter(cosmetic::Column::StripePriceId.is_not_null())
+				.filter(cosmetic::Column::StoreProductId.is_not_null())
 				.one(&state.database)
 				.await?
 		}
 		None => None,
 	};
 
-	let (stripe_product_id, stripe_price_id, price_value, discount_rate) = match sibling {
+	let (store_product_id, price_value, discount_rate) = match sibling {
 		Some(sibling) => (
-			sibling.stripe_product_id,
-			sibling.stripe_price_id,
+			sibling.store_product_id,
 			sibling.base_price,
 			sibling.discount_rate,
 		),
+		// Provisioned after the insert: an ungrouped slug needs the row id.
 		None => {
-			let base_price = base_price.ok_or(UploadError::MissingPrice)?;
-			let product_name = group
-				.as_ref()
-				.map(|g| g.name.as_str())
-				.unwrap_or(resolved_name.as_str());
-			let product_id = products::create_product(
-				&state.stripe.client,
-				product_name,
-				description.as_deref(),
-			)
-			.await?;
-			let price_id = products::create_price(
-				&state.stripe.client,
-				&product_id,
-				to_cents(base_price),
-			)
-			.await?;
-			products::set_default_price(&state.stripe.client, &product_id, &price_id)
-				.await?;
-			(Some(product_id), Some(price_id), Some(base_price), None)
+			base_price.ok_or(UploadError::MissingPrice)?;
+			(None, base_price, None)
 		}
 	};
 
@@ -537,8 +515,7 @@ async fn endpoint(
 		variant_name: Set(variant_name),
 		model_variant: Set(model_variant),
 		variant_order: Set(variant_order),
-		stripe_product_id: Set(stripe_product_id),
-		stripe_price_id: Set(stripe_price_id),
+		store_product_id: Set(store_product_id),
 		base_price: Set(price_value),
 		discount_rate: Set(discount_rate),
 		collection: Set(collection),
@@ -547,6 +524,37 @@ async fn endpoint(
 	}
 	.insert(&state.database)
 	.await?;
+
+	// A failure here leaves a priced cosmetic with no product, which
+	// `provision-paynow` picks up on its next run.
+	let model = match (&model.store_product_id, price_value) {
+		(None, Some(base_price)) => {
+			let slug = match group.as_ref() {
+				Some(group) => catalog::cosmetic_group_slug(group.id),
+				None => catalog::cosmetic_slug(model.id),
+			};
+			let product_id = state
+				.paynow
+				.client
+				.create_product(
+					&slug,
+					group
+						.as_ref()
+						.map(|group| group.name.as_str())
+						.or(model.name.as_deref())
+						.unwrap_or(&slug),
+					model.description.as_deref(),
+					to_cents(base_price),
+					!model.enabled,
+				)
+				.await?;
+
+			let mut active: cosmetic::ActiveModel = model.into();
+			active.store_product_id = Set(Some(product_id));
+			active.update(&state.database).await?
+		}
+		_ => model,
+	};
 
 	if !slots.is_empty() {
 		cosmetic_allowed_slot::Entity::insert_many(slots.iter().map(|slot| {

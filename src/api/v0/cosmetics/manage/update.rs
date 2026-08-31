@@ -11,15 +11,16 @@ use sea_orm::{
 use serde::Deserialize;
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor, v0::stripe::products},
-	utils::money::to_cents,
+	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	paynow::{PayNowError, catalog, models::UpsertProduct},
+	utils::money::{discounted, to_cents},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum UpdateError {
 	#[error("The requested cosmetic does not exist")]
 	MissingCosmetic,
-	#[error("The cosmetic has no Stripe product to price")]
+	#[error("The cosmetic has no storefront product to price")]
 	MissingProduct,
 	#[error("The cosmetic has no base price to discount from")]
 	MissingBasePrice,
@@ -27,8 +28,8 @@ pub enum UpdateError {
 	InvalidDiscount,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
-	#[error("Stripe error: {0}")]
-	Stripe(#[from] stripe_client::StripeError),
+	#[error("PayNow error: {0}")]
+	PayNow(#[from] PayNowError),
 }
 
 impl IntoResponse for UpdateError {
@@ -39,7 +40,7 @@ impl IntoResponse for UpdateError {
 				Self::MissingProduct | Self::MissingBasePrice | Self::InvalidDiscount => {
 					StatusCode::BAD_REQUEST
 				}
-				Self::Stripe(_) => StatusCode::BAD_GATEWAY,
+				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
@@ -49,8 +50,9 @@ impl IntoResponse for UpdateError {
 
 /// The pricing columns a request resolves to, applied to every affected row.
 struct PriceUpdate {
-	stripe_product_id: String,
-	stripe_price_id: String,
+	store_product_id: String,
+	/// What PayNow should charge once the change lands, in minor units.
+	effective_minor: i64,
 	/// Set only on a silent increase; left untouched for a discount.
 	base_price: Option<f32>,
 	/// Always written: the rate for a discount, `None` to clear the discount on
@@ -127,27 +129,28 @@ async fn endpoint(
 		return Err(UpdateError::MissingCosmetic);
 	};
 
-	let existing_product = match cosmetic.stripe_product_id.clone() {
+	let existing_product = match cosmetic.store_product_id.clone() {
 		Some(product_id) => Some(product_id),
 		None => match cosmetic.group_id {
 			Some(group_id) => Cosmetic::find()
 				.filter(cosmetic::Column::GroupId.eq(group_id))
-				.filter(cosmetic::Column::StripeProductId.is_not_null())
+				.filter(cosmetic::Column::StoreProductId.is_not_null())
 				.one(&state.database)
 				.await?
-				.and_then(|sibling| sibling.stripe_product_id),
+				.and_then(|sibling| sibling.store_product_id),
 			None => None,
 		},
 	};
+	let visibility_product = existing_product.clone();
 
-	// Resolve the pricing change (if any) against Stripe before touching the
-	// database. Variants share one product and price, so this runs once.
+	// Resolved without calling PayNow yet: its price is a destructive patch,
+	// so the database has to commit first.
 	let price_update = if body.new_price.is_some() || body.discount {
 		if body.discount {
 			let product_id = existing_product.ok_or(UpdateError::MissingProduct)?;
 			let base = cosmetic.base_price.ok_or(UpdateError::MissingBasePrice)?;
-			let (discounted, rate) = match (body.discount_rate, body.new_price) {
-				(Some(rate), _) => (base * (1.0 - rate as f32 / 100.0), rate),
+			let (price, rate) = match (body.discount_rate, body.new_price) {
+				(Some(rate), _) => (discounted(base, rate), rate),
 				(None, Some(new_price)) => {
 					let rate = (((base - new_price) / base) * 100.0).round() as i32;
 					(new_price, rate)
@@ -155,16 +158,9 @@ async fn endpoint(
 				(None, None) => return Err(UpdateError::InvalidDiscount),
 			};
 
-			let price_id = products::create_price(
-				&state.stripe.client,
-				&product_id,
-				to_cents(discounted),
-			)
-			.await?;
-
 			Some(PriceUpdate {
-				stripe_product_id: product_id,
-				stripe_price_id: price_id,
+				store_product_id: product_id,
+				effective_minor: to_cents(price),
 				base_price: None,
 				discount_rate: Some(rate),
 			})
@@ -192,28 +188,29 @@ async fn endpoint(
 						Some(description) => description.clone(),
 						None => cosmetic.description.clone(),
 					};
+					let slug = match cosmetic.group_id {
+						Some(group_id) => catalog::cosmetic_group_slug(group_id),
+						None => catalog::cosmetic_slug(cosmetic.id),
+					};
 
-					products::create_product(
-						&state.stripe.client,
-						&product_name,
-						description.as_deref(),
-					)
-					.await?
+					// Additive, so safe before the transaction.
+					state
+						.paynow
+						.client
+						.create_product(
+							&slug,
+							&product_name,
+							description.as_deref(),
+							to_cents(new_price),
+							!cosmetic.enabled,
+						)
+						.await?
 				}
 			};
 
-			let price_id = products::create_price(
-				&state.stripe.client,
-				&product_id,
-				to_cents(new_price),
-			)
-			.await?;
-			products::set_default_price(&state.stripe.client, &product_id, &price_id)
-				.await?;
-
 			Some(PriceUpdate {
-				stripe_product_id: product_id,
-				stripe_price_id: price_id,
+				store_product_id: product_id,
+				effective_minor: to_cents(new_price),
 				base_price: Some(new_price),
 				discount_rate: None,
 			})
@@ -266,8 +263,7 @@ async fn endpoint(
 			changed = true;
 		}
 		if let Some(price) = &price_update {
-			active.stripe_product_id = Set(Some(price.stripe_product_id.clone()));
-			active.stripe_price_id = Set(Some(price.stripe_price_id.clone()));
+			active.store_product_id = Set(Some(price.store_product_id.clone()));
 			if let Some(base) = price.base_price {
 				active.base_price = Set(Some(base));
 			}
@@ -291,6 +287,33 @@ async fn endpoint(
 	}
 
 	txn.commit().await?;
+
+	if let Some(price) = &price_update {
+		state
+			.paynow
+			.client
+			.set_product_price(&price.store_product_id, price.effective_minor)
+			.await?;
+	}
+
+	if let Some(enabled) = body.enabled
+		&& let Some(product_id) = price_update
+			.as_ref()
+			.map(|price| price.store_product_id.clone())
+			.or(visibility_product)
+	{
+		state
+			.paynow
+			.client
+			.update_product(
+				&product_id,
+				&UpsertProduct {
+					is_hidden: Some(!enabled),
+					..Default::default()
+				},
+			)
+			.await?;
+	}
 
 	Ok(StatusCode::NO_CONTENT)
 }

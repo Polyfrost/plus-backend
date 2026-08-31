@@ -4,6 +4,8 @@ mod state;
 mod v0;
 mod v1;
 
+use std::net::SocketAddr;
+
 use aide::{
 	axum::ApiRouter,
 	openapi::{
@@ -29,15 +31,13 @@ use crate::{
 	commands::ServeArgs,
 };
 
-pub(crate) use self::state::ANALYTICS_DAILY_JOB;
-
 pub(crate) const INTERNAL_MESSAGE: &str = "Internal server error";
 
 /// Turns an error into a response, logging rather than exposing the error
 /// message whenever the status is a server error.
 pub(crate) fn error_response<E: std::error::Error>(
 	status: StatusCode,
-	error: E
+	error: E,
 ) -> Response {
 	if status.is_server_error() {
 		tracing::error!(%status, error = %error, "request failed");
@@ -181,7 +181,9 @@ pub(crate) async fn start(args: ServeArgs) {
 	}
 	assert!(!listeners.is_empty(), "No socket addresses could be bound");
 
-	let make_service = app.into_make_service();
+	// With connect info, or `ClientIpSource::ConnectInfo` (the default)
+	// rejects every request instead of resolving an address.
+	let make_service = app.into_make_service_with_connect_info::<SocketAddr>();
 	let servers = listeners.into_iter().map(|listener| {
 		let make_service = make_service.clone();
 		tokio::spawn(async move { axum::serve(listener, make_service).await })

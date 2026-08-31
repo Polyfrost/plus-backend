@@ -42,8 +42,8 @@ impl IntoResponse for ViewError {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ViewResponse {
-	/// The Stripe price id for this cosmetic, if one is set.
-	stripe_price_id: Option<String>,
+	/// The storefront product id for this cosmetic, if one is set.
+	store_product_id: Option<String>,
 	id: i32,
 	name: String,
 	description: Option<String>,
@@ -153,7 +153,7 @@ async fn endpoint(
 		};
 
 		Ok(Json(ViewResponse {
-			stripe_price_id: cosmetic.stripe_price_id,
+			store_product_id: cosmetic.store_product_id,
 			id: cosmetic.id,
 			name: group_name
 				.or(cosmetic.name)
