@@ -995,19 +995,20 @@ mod tests {
 	#[test]
 	fn reclaims_capacity_only_once_mostly_empty() {
 		let mut map = (0..64).map(|key| (key, ())).collect::<HashMap<_, _>>();
-		let populated = map.capacity();
 
 		map.retain(|key, _| *key < 48);
+		let mostly_full = map.capacity();
 		shrink_map_if_sparse(&mut map);
 		assert_eq!(
 			map.capacity(),
-			populated,
+			mostly_full,
 			"a mostly full map keeps its capacity"
 		);
 
 		map.retain(|key, _| *key < 4);
+		let mostly_holes = map.capacity();
 		shrink_map_if_sparse(&mut map);
-		assert!(map.capacity() < populated);
+		assert!(map.capacity() < mostly_holes);
 		assert_eq!(map.len(), 4);
 	}
 
