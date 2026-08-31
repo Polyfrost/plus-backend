@@ -25,9 +25,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-struct LookupResponse {
-	id: Uuid,
-	username: String,
+pub(in crate::api) struct LookupResponse {
+	pub id: Uuid,
+	pub username: String,
 }
 
 pub(super) fn router() -> aide::axum::ApiRouter<ApiState> {
@@ -66,22 +66,31 @@ async fn endpoint(
 	AuthenticatedPlayer(_player): AuthenticatedPlayer,
 	Path(username): Path<String>,
 ) -> Result<Json<LookupResponse>, PlayerError> {
+	Ok(Json(resolve_username(&state, &username).await?))
+}
+
+/// Resolves a username to the player behind it, creating the player row from
+/// the Mojang profile when they have never logged into PolyPlus.
+pub(in crate::api) async fn resolve_username(
+	state: &ApiState,
+	username: &str,
+) -> Result<LookupResponse, PlayerError> {
 	use entities::{prelude::*, user};
 
 	let existing = User::find()
 		.filter(user::Column::Username.is_not_null())
-		.filter(Expr::cust_with_values("username ILIKE $1", [username.clone()]))
+		.filter(Expr::cust_with_values("username ILIKE $1", [username]))
 		.one(&state.database)
 		.await?;
 
 	if let Some(player) = existing {
-		return Ok(Json(LookupResponse {
+		return Ok(LookupResponse {
 			id: player.minecraft_uuid,
 			username: player.username.expect("filtered to non-null above"),
-		}));
+		});
 	}
 
-	let profile = fetch_mojang_profile(&state, &username)
+	let profile = fetch_mojang_profile(state, username)
 		.await
 		.ok_or(PlayerError::PlayerMissing)?;
 	let uuid = Uuid::parse_str(&profile.id).map_err(|_| PlayerError::PlayerMissing)?;
@@ -91,8 +100,8 @@ async fn endpoint(
 		User::set_username(&state.database, player.id, &profile.name).await?;
 	}
 
-	Ok(Json(LookupResponse {
+	Ok(LookupResponse {
 		id: uuid,
 		username: profile.name,
-	}))
+	})
 }

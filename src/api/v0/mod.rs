@@ -8,7 +8,7 @@ pub(super) mod cosmetics;
 mod groups;
 mod links;
 pub(super) mod oidc;
-mod players;
+pub(super) mod players;
 pub(super) mod sessions;
 mod social;
 mod special_chat;

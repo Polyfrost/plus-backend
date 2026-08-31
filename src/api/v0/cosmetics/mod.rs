@@ -1,6 +1,6 @@
 mod cover;
 mod get_player;
-mod grant;
+pub(in crate::api) mod grant;
 mod list;
 mod manage;
 mod put_player;

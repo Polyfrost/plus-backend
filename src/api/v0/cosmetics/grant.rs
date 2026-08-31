@@ -66,10 +66,21 @@ async fn endpoint(
 	AdminPlayer(_admin): AdminPlayer,
 	Json(body): Json<GrantRequest>,
 ) -> Result<StatusCode, GrantError> {
+	grant_cosmetic(&state, body.player, body.cosmetic_id).await?;
+
+	Ok(StatusCode::NO_CONTENT)
+}
+
+/// Grants a cosmetic to a player and tells any connected client about it.
+pub(in crate::api) async fn grant_cosmetic(
+	state: &ApiState,
+	player_uuid: Uuid,
+	cosmetic_id: i32,
+) -> Result<Vec<i32>, GrantError> {
 	use entities::{cosmetic, player_owned_cosmetic, prelude::*, transaction};
 
 	let txn = state.database.begin().await?;
-	let Some(cosmetic) = Cosmetic::find_by_id(body.cosmetic_id).one(&txn).await? else {
+	let Some(cosmetic) = Cosmetic::find_by_id(cosmetic_id).one(&txn).await? else {
 		return Err(GrantError::MissingCosmetic);
 	};
 
@@ -87,7 +98,7 @@ async fn endpoint(
 		None => vec![cosmetic.id],
 	};
 
-	let player = User::get_or_create(&txn, body.player).await?;
+	let player = User::get_or_create(&txn, player_uuid).await?;
 	let transaction = transaction::ActiveModel {
 		player_id: Set(player.id),
 		provider: Set(TransactionProvider::AdminGrant),
@@ -131,7 +142,7 @@ async fn endpoint(
 		.connections_by_owner
 		.read()
 		.await
-		.get(&body.player)
+		.get(&player_uuid)
 		.cloned()
 		.unwrap_or_default();
 	if !connection_ids.is_empty() {
@@ -141,7 +152,7 @@ async fn endpoint(
 				continue;
 			};
 			let _ = connection.tx.send(ClientBoundPacket::OwnershipUpdated {
-				player: body.player,
+				player: player_uuid,
 				cosmetic_ids: cosmetic_ids.clone(),
 				emote_ids: Vec::new(),
 				revoked: false,
@@ -149,5 +160,5 @@ async fn endpoint(
 		}
 	}
 
-	Ok(StatusCode::NO_CONTENT)
+	Ok(cosmetic_ids)
 }
