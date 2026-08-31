@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::resolve::{Product, dedupe};
 use crate::{
 	api::{ApiState, state::CHECKOUTS_PER_COOLDOWN},
-	paynow::{PayNowError, models::CreateCheckoutLine},
+	paynow::{PayNowError, checkouts::NewCheckout, models::CreateCheckoutLine},
 };
 
 /// Wrapped so aide leaves it out of the OpenAPI document. `None` when the
@@ -55,6 +55,9 @@ impl FromRequestParts<ApiState> for BuyerIp {
 
 /// A basket larger than this is a bug or an attack, not a purchase.
 const MAX_CHECKOUT_LINES: usize = 25;
+/// Nobody legitimately stacks more codes than this, and PayNow rejects the
+/// whole checkout if any one of them is invalid.
+const MAX_PROMO_CODES: usize = 5;
 
 #[derive(Debug, thiserror::Error, OperationIo)]
 pub(super) enum CreateError {
@@ -70,6 +73,10 @@ pub(super) enum CreateError {
 	TooManyProducts,
 	#[error("Unknown product {0}")]
 	UnknownProduct(String),
+	#[error("At most {MAX_PROMO_CODES} promo codes may be applied")]
+	TooManyPromoCodes,
+	#[error("{0}")]
+	RejectedByProvider(String),
 	#[error("Too many checkout attempts, try again in a minute")]
 	RateLimited,
 	#[error("Unable to check existing ownership: {0}")]
@@ -88,7 +95,9 @@ impl IntoResponse for CreateError {
 				CreateError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
 				CreateError::NoProducts
 				| CreateError::TooManyProducts
-				| CreateError::UnknownProduct(_) => StatusCode::BAD_REQUEST,
+				| CreateError::UnknownProduct(_)
+				| CreateError::TooManyPromoCodes
+				| CreateError::RejectedByProvider(_) => StatusCode::BAD_REQUEST,
 			},
 			self,
 		)
@@ -103,6 +112,10 @@ pub(super) struct CreateRequest {
 	buyer: Option<Uuid>,
 	/// The storefront product ids to charge for, one checkout line each
 	products: Vec<String>,
+	/// Promo codes to apply. An invalid one fails the whole checkout, so the
+	/// buyer is told which.
+	#[serde(default)]
+	promo_codes: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -119,7 +132,7 @@ pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"the store product ids returned from the cosmetic and bundle view ",
 			"endpoints. Responds 409 naming the cosmetics if the receiving ",
 			"player already owns any of them, and 400 if a product id does not ",
-			"resolve to an enabled cosmetic or bundle."
+			"resolve to an enabled cosmetic or bundle or a promo code is rejected."
 		))
 		.tag("checkout")
 }
@@ -134,10 +147,22 @@ pub(super) async fn endpoint(
 		player,
 		products,
 		buyer,
+		promo_codes,
 	} = request;
 	let buyer = buyer.unwrap_or(player);
 
 	enforce_rate_limit(&state, ip).await?;
+
+	let promo_codes = dedupe(
+		promo_codes
+			.into_iter()
+			.map(|code| code.trim().to_owned())
+			.filter(|code| !code.is_empty())
+			.collect(),
+	);
+	if promo_codes.len() > MAX_PROMO_CODES {
+		return Err(CreateError::TooManyPromoCodes);
+	}
 
 	let products = dedupe(products);
 	if products.is_empty() {
@@ -190,15 +215,24 @@ pub(super) async fn endpoint(
 	let session = state
 		.paynow
 		.client
-		.create_checkout(
-			&buyer_customer,
+		.create_checkout(NewCheckout {
+			customer_id: &buyer_customer,
 			lines,
-			&state.paynow.return_url,
-			&state.paynow.cancel_url,
+			promo_codes,
+			return_url: &state.paynow.return_url,
+			cancel_url: &state.paynow.cancel_url,
 			metadata,
-			ip,
-		)
-		.await?;
+			customer_ip: ip,
+		})
+		.await
+		// Everything else was validated first, so PayNow blaming the request
+		// means a promo code the buyer can correct.
+		.map_err(|error| match error.message() {
+			Some(message) if error.is_client_error() => {
+				CreateError::RejectedByProvider(message.to_owned())
+			}
+			_ => CreateError::PayNow(error),
+		})?;
 
 	session
 		.url

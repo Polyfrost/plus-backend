@@ -39,6 +39,19 @@ impl PayNowError {
 	pub(crate) fn is_not_found(&self) -> bool {
 		matches!(self, Self::Api { status, .. } if *status == StatusCode::NOT_FOUND)
 	}
+
+	/// PayNow blaming the request rather than itself, which for a checkout
+	/// means the caller sent something a buyer can correct.
+	pub(crate) fn is_client_error(&self) -> bool {
+		matches!(self, Self::Api { status, .. } if status.is_client_error())
+	}
+
+	pub(crate) fn message(&self) -> Option<&str> {
+		match self {
+			Self::Api { message, .. } => Some(message),
+			_ => None,
+		}
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +160,20 @@ impl PayNowClient {
 		let url = self.url(suffix);
 		self.send_json(Method::PATCH, url, Some(body), Retry::Idempotent, None)
 			.await
+	}
+
+	/// Forwards a request to a store-scoped path and hands back the raw body,
+	/// empty for a 204. Used by the admin proxy, which has no opinion about
+	/// the shapes PayNow accepts.
+	pub(crate) async fn forward(
+		&self,
+		method: Method,
+		suffix: &str,
+		body: Option<&serde_json::Value>,
+		retry: Retry,
+	) -> Result<Vec<u8>, PayNowError> {
+		let url = self.url(suffix);
+		self.send(method, url, body, retry, None).await
 	}
 
 	async fn send_json<B: Serialize, T: DeserializeOwned>(

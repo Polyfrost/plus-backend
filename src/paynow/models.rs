@@ -82,6 +82,9 @@ pub(crate) struct CreateCheckout<'a> {
 	pub return_url: &'a str,
 	pub cancel_url: &'a str,
 	pub metadata: HashMap<String, String>,
+	/// PayNow rejects the whole checkout if any code is invalid.
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	pub promo_codes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
