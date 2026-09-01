@@ -193,6 +193,8 @@ async fn follow(
 ) -> Result<Redirect, LinksError> {
 	use entities::{prelude::*, tracked_link_hits, tracked_links};
 
+	let slug = slug.to_ascii_lowercase();
+
 	let link = TrackedLinks::find_by_id(&slug)
 		.one(&state.database)
 		.await?
@@ -289,7 +291,7 @@ async fn delete(
 ) -> Result<StatusCode, LinksError> {
 	use entities::prelude::*;
 
-	let result = TrackedLinks::delete_by_id(slug)
+	let result = TrackedLinks::delete_by_id(slug.to_ascii_lowercase())
 		.exec(&state.database)
 		.await?;
 
