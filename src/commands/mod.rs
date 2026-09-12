@@ -180,10 +180,37 @@ fn default_cors_origins() -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
 }
 
 fn parse_special_chat_targets(value: String) -> Result<Vec<uuid::Uuid>, uuid::Error> {
-	value
+	let mut targets = Vec::new();
+	for uuid in value
 		.split(',')
 		.map(str::trim)
 		.filter(|uuid| !uuid.is_empty())
-		.map(uuid::Uuid::parse_str)
-		.collect()
+	{
+		let uuid = uuid::Uuid::parse_str(uuid)?;
+		if !targets.contains(&uuid) {
+			targets.push(uuid);
+		}
+	}
+	Ok(targets)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::parse_special_chat_targets;
+
+	#[test]
+	fn special_chat_targets_are_deduplicated() {
+		let a = "a5331404-0e77-440e-8bef-24c071dac1ae";
+		let b = "b5331404-0e77-440e-8bef-24c071dac1ae";
+		let parsed = parse_special_chat_targets(format!("{a}, {b} ,{a},"))
+			.expect("the sample targets are valid uuids");
+		assert_eq!(
+			parsed,
+			vec![
+				uuid::Uuid::parse_str(a).expect("'a' is a valid uuid"),
+				uuid::Uuid::parse_str(b).expect("'b' is a valid uuid")
+			]
+		);
+		assert!(parse_special_chat_targets("not-a-uuid".to_owned()).is_err());
+	}
 }

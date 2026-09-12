@@ -32,6 +32,8 @@ pub enum GroupError {
 	NotOwner,
 	#[error("Direct messages cannot have members added or removed")]
 	DmImmutable,
+	#[error("The Special Chat group cannot be left")]
+	SpecialChatImmutable,
 	#[error("That group is full")]
 	GroupFull,
 	#[error("That player is already a member of this group")]
@@ -66,6 +68,7 @@ impl IntoResponse for GroupError {
 				| Self::Blocked
 				| Self::NotFriends
 				| Self::DmImmutable
+				| Self::SpecialChatImmutable
 				| Self::GroupFull
 				| Self::AlreadyMember
 				| Self::NotSpecialChatGroup

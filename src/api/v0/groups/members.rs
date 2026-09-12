@@ -99,6 +99,9 @@ async fn remove(
 	if group.kind == GroupKind::Dm {
 		return Err(GroupError::DmImmutable);
 	}
+	if group.owner_id.is_none() && group.name.is_none() {
+		return Err(GroupError::SpecialChatImmutable);
+	}
 
 	let target = find_user_by_uuid(&state, target).await?;
 	let is_self = target.id == player.id;
