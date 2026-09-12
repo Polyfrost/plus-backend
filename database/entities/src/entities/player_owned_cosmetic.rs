@@ -13,6 +13,7 @@ pub struct Model {
 	pub acquired_via: TransactionProvider,
 	pub transaction_id: Option<i32>,
 	pub acquired_at: DateTimeWithTimeZone,
+	pub transaction_line_id: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -34,6 +35,14 @@ pub enum Relation {
 	)]
 	Transaction,
 	#[sea_orm(
+		belongs_to = "super::transaction_line::Entity",
+		from = "Column::TransactionLineId",
+		to = "super::transaction_line::Column::Id",
+		on_update = "NoAction",
+		on_delete = "SetNull"
+	)]
+	TransactionLine,
+	#[sea_orm(
 		belongs_to = "super::user::Entity",
 		from = "Column::PlayerId",
 		to = "super::user::Column::Id",
@@ -52,6 +61,12 @@ impl Related<super::cosmetic::Entity> for Entity {
 impl Related<super::transaction::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::Transaction.def()
+	}
+}
+
+impl Related<super::transaction_line::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::TransactionLine.def()
 	}
 }
 

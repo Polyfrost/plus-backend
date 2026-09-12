@@ -29,22 +29,22 @@ pub(crate) trait DatabaseUserExt {
 	) -> Result<(), DbErr>;
 }
 
-/// What Stripe reported for a checkout session, in the currency's minor units.
+/// What the storefront reported for an order, in the currency's minor units.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct StripeCharge {
+pub(crate) struct OrderCharge {
 	pub amount_minor: Option<i64>,
 	pub currency: Option<String>,
 	pub discount_minor: Option<i64>,
 }
 
 pub(crate) trait DatabaseTransactionExt {
-	async fn get_or_create_stripe(
+	async fn get_or_create_paynow(
 		db: &impl ConnectionTrait,
 		player_id: i32,
 		buyer_id: Option<i32>,
-		transaction_id: &str,
+		order_id: &str,
 		raw_metadata: serde_json::Value,
-		charged: StripeCharge,
+		charged: OrderCharge,
 	) -> Result<transaction::Model, DbErr>;
 }
 
@@ -91,46 +91,57 @@ impl DatabaseUserExt for User {
 }
 
 impl DatabaseTransactionExt for Transaction {
-	async fn get_or_create_stripe(
+	async fn get_or_create_paynow(
 		db: &impl ConnectionTrait,
 		player_id: i32,
 		buyer_id: Option<i32>,
-		stripe_payment_id: &str,
+		order_id: &str,
 		raw_metadata: serde_json::Value,
-		charged: StripeCharge,
+		charged: OrderCharge,
 	) -> Result<transaction::Model, DbErr> {
-		if let Some(existing) = Transaction::find()
-			.filter(transaction::Column::Provider.eq(TransactionProvider::Stripe))
-			.filter(transaction::Column::StripePaymentId.eq(stripe_payment_id))
-			.one(db)
-			.await?
-		{
-			if existing.amount_minor.is_some() || charged.amount_minor.is_none() {
-				return Ok(existing);
-			}
-
-			let mut update: transaction::ActiveModel = existing.into();
-			update.amount_minor = Set(charged.amount_minor);
-			update.currency = Set(charged.currency);
-			update.discount_minor = Set(charged.discount_minor);
-
-			return update.update(db).await;
-		}
-
+		// Insert first rather than find-then-insert: two deliveries for the
+		// same order can both miss the find.
 		Transaction::insert(transaction::ActiveModel {
 			player_id: ActiveValue::Set(player_id),
-			provider: ActiveValue::Set(TransactionProvider::Stripe),
-			stripe_payment_id: ActiveValue::Set(Some(stripe_payment_id.to_string())),
+			provider: ActiveValue::Set(TransactionProvider::Paynow),
+			provider_transaction_id: ActiveValue::Set(Some(order_id.to_string())),
 			status: ActiveValue::Set(TransactionStatus::Completed),
 			buyer: ActiveValue::Set(buyer_id),
 			raw_metadata: ActiveValue::Set(raw_metadata),
 			amount_minor: ActiveValue::Set(charged.amount_minor),
-			currency: ActiveValue::Set(charged.currency),
+			currency: ActiveValue::Set(charged.currency.clone()),
 			discount_minor: ActiveValue::Set(charged.discount_minor),
 			..Default::default()
 		})
-		.exec_with_returning(db)
-		.await
+		.on_conflict(
+			OnConflict::column(transaction::Column::ProviderTransactionId)
+				.do_nothing()
+				.to_owned(),
+		)
+		.do_nothing()
+		.exec_without_returning(db)
+		.await?;
+
+		let existing = Transaction::find()
+			.filter(transaction::Column::Provider.eq(TransactionProvider::Paynow))
+			.filter(transaction::Column::ProviderTransactionId.eq(order_id))
+			.one(db)
+			.await?
+			.ok_or_else(|| {
+				DbErr::RecordNotFound(format!("transaction for order {order_id}"))
+			})?;
+
+		// A refund arriving first creates the row with no amount.
+		if existing.amount_minor.is_some() || charged.amount_minor.is_none() {
+			return Ok(existing);
+		}
+
+		let mut update: transaction::ActiveModel = existing.into();
+		update.amount_minor = Set(charged.amount_minor);
+		update.currency = Set(charged.currency);
+		update.discount_minor = Set(charged.discount_minor);
+
+		update.update(db).await
 	}
 }
 
@@ -239,6 +250,7 @@ pub(crate) async fn record_ownership_events(
 	kind: OwnershipEventKind,
 	provider: TransactionProvider,
 	transaction_id: Option<i32>,
+	transaction_line_id: Option<i64>,
 ) -> Result<(), DbErr> {
 	if cosmetic_ids.is_empty() {
 		return Ok(());
@@ -251,6 +263,7 @@ pub(crate) async fn record_ownership_events(
 			kind: Set(kind.clone()),
 			provider: Set(provider.clone()),
 			transaction_id: Set(transaction_id),
+			transaction_line_id: Set(transaction_line_id),
 			..Default::default()
 		}
 	}))

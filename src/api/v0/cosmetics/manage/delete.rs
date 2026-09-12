@@ -41,7 +41,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Delete a cosmetic")
 		.description(
 			"Soft-deletes a cosmetic by disabling it. For a grouped cosmetic the \
-			 whole group is disabled. Rows, assets, and Stripe products are left \
+			 whole group is disabled. Rows, assets, and storefront products are left \
 			 intact so the change is reversible. Admin password required.",
 		)
 		.tag("cosmetics")

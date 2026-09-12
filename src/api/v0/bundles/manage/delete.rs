@@ -40,7 +40,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("deleteBundle")
 		.summary("Delete a bundle")
 		.description(
-			"Soft-deletes a bundle by disabling it. Rows, assets, and Stripe products \
+			"Soft-deletes a bundle by disabling it. Rows, assets, and storefront products \
 			 are left intact so the change is reversible. Admin password required.",
 		)
 		.tag("bundles")

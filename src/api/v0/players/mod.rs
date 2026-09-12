@@ -1,4 +1,4 @@
-mod lookup;
+pub(in crate::api) mod lookup;
 mod resolve;
 mod role;
 

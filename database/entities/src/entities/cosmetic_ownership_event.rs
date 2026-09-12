@@ -14,10 +14,19 @@ pub struct Model {
 	pub provider: TransactionProvider,
 	pub transaction_id: Option<i32>,
 	pub occurred_at: DateTimeWithTimeZone,
+	pub transaction_line_id: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+	#[sea_orm(
+		belongs_to = "super::transaction_line::Entity",
+		from = "Column::TransactionLineId",
+		to = "super::transaction_line::Column::Id",
+		on_update = "NoAction",
+		on_delete = "SetNull"
+	)]
+	TransactionLine,
 	#[sea_orm(
 		belongs_to = "super::user::Entity",
 		from = "Column::PlayerId",
@@ -26,6 +35,12 @@ pub enum Relation {
 		on_delete = "Cascade"
 	)]
 	User,
+}
+
+impl Related<super::transaction_line::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::TransactionLine.def()
+	}
 }
 
 impl Related<super::user::Entity> for Entity {

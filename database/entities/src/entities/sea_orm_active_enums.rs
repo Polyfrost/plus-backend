@@ -283,6 +283,8 @@ pub enum TransactionProvider {
 	Ingame,
 	#[sea_orm(string_value = "admin_grant")]
 	AdminGrant,
+	#[sea_orm(string_value = "paynow")]
+	Paynow,
 }
 #[derive(
 	Debug,
@@ -307,6 +309,10 @@ pub enum TransactionStatus {
 	Failed,
 	#[sea_orm(string_value = "refunded")]
 	Refunded,
+	#[sea_orm(string_value = "chargeback")]
+	Chargeback,
+	#[sea_orm(string_value = "partially_refunded")]
+	PartiallyRefunded,
 }
 #[derive(
 	Debug,

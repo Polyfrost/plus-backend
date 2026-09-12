@@ -165,6 +165,11 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 					analytics_cosmetic_daily::Column::AcquisitionsPaid,
 					analytics_cosmetic_daily::Column::AcquisitionsFree,
 					analytics_cosmetic_daily::Column::AcquisitionsGranted,
+					analytics_cosmetic_daily::Column::RevenueMinor,
+					analytics_cosmetic_daily::Column::Refunded,
+					analytics_cosmetic_daily::Column::ChargedBack,
+					analytics_cosmetic_daily::Column::RefundedMinor,
+					analytics_cosmetic_daily::Column::ChargedBackMinor,
 					analytics_cosmetic_daily::Column::ComputedAt,
 				])
 				.to_owned(),

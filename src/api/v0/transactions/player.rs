@@ -56,7 +56,7 @@ pub struct TransactionsQuery {
 struct TransactionInfo {
 	id: i32,
 	provider: TransactionProvider,
-	stripe_payment_id: Option<String>,
+	provider_transaction_id: Option<String>,
 	status: TransactionStatus,
 	raw_metadata: serde_json::Value,
 	amount_minor: Option<i64>,
@@ -120,7 +120,7 @@ pub(super) async fn endpoint(
 			Ok::<_, TransactionsError>(TransactionInfo {
 				id: transaction.id,
 				provider: transaction.provider,
-				stripe_payment_id: transaction.stripe_payment_id,
+				provider_transaction_id: transaction.provider_transaction_id,
 				status: transaction.status,
 				raw_metadata: transaction.raw_metadata,
 				buyer,

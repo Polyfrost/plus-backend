@@ -5,7 +5,7 @@ mod instrumentation;
 mod persistence;
 mod realtime;
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};
 
 use entities::prelude::*;
 use migrations::{Migrator, MigratorTrait};
@@ -17,13 +17,11 @@ use pasetors::{
 use reqwest::{Client, ClientBuilder};
 use s3::{Bucket, creds::Credentials};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection, EntityTrait};
-use stripe_client::Client as StripeClient;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-pub(crate) use self::analytics_rollup::ANALYTICS_DAILY_JOB;
 pub(in crate::api) use self::{
-	analytics_rollup::SESSION_LENGTH_BUCKETS,
+	analytics_rollup::{ANALYTICS_DAILY_JOB, SESSION_LENGTH_BUCKETS},
 	instrumentation::Instrumentation,
 	persistence::{EquipmentPersistence, ParticleColorPersistence},
 	realtime::{
@@ -39,18 +37,22 @@ use crate::{
 		oidc::{self, AuthorizationCode, OidcSigningKey},
 	},
 	commands::ServeArgs,
+	paynow::PayNowClient,
 };
 
 /// How long to wait for a free database connection before giving up.
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a player must wait between global chat messages.
 const GLOBAL_CHAT_COOLDOWN: Duration = Duration::from_secs(2);
+/// The window one address's checkout attempts are counted over.
+const CHECKOUT_COOLDOWN: Duration = Duration::from_secs(60);
+pub(in crate::api) const CHECKOUTS_PER_COOLDOWN: u32 = 5;
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
 #[derive(Debug, Clone)]
 pub(super) struct ApiState {
-	pub(super) stripe: StripeApiState,
+	pub(super) paynow: PayNowApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
 	pub(super) render_client: Client,
@@ -63,6 +65,7 @@ pub(super) struct ApiState {
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
+	pub(super) checkout_cooldown: Cache<IpAddr, u32>,
 	pub(super) oidc_issuer: String,
 	pub(super) oidc_signing_key: Arc<OidcSigningKey>,
 	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
@@ -72,17 +75,17 @@ pub(super) struct ApiState {
 }
 
 #[derive(Clone)]
-pub(super) struct StripeApiState {
-	pub(super) client: StripeClient,
-	pub(super) webhook_secret: String,
-	pub(super) success_url: String,
+pub(super) struct PayNowApiState {
+	pub(super) client: PayNowClient,
+	pub(super) webhook_secret: Arc<str>,
+	pub(super) return_url: String,
 	pub(super) cancel_url: String,
 }
 
 // i love leaking secrets
-impl std::fmt::Debug for StripeApiState {
+impl std::fmt::Debug for PayNowApiState {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("StripeApiState").finish_non_exhaustive()
+		f.debug_struct("PayNowApiState").finish_non_exhaustive()
 	}
 }
 
@@ -108,7 +111,7 @@ impl ApiState {
 		let oidc_signing_key = oidc::load_or_generate_signing_key(&database).await;
 
 		ApiState {
-			stripe: StripeApiState::new(args),
+			paynow: PayNowApiState::new(args),
 			client: build_http_client(true),
 			render_client: build_http_client(false),
 			paseto_key: SymmetricKey::generate()
@@ -124,6 +127,7 @@ impl ApiState {
 			global_chat_cooldown: Cache::builder()
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
 				.build(),
+			checkout_cooldown: Cache::builder().time_to_live(CHECKOUT_COOLDOWN).build(),
 			oidc_issuer: args.oidc_issuer.clone(),
 			oidc_signing_key: Arc::new(oidc_signing_key),
 			oidc_codes: oidc::new_authorization_code_cache(),
@@ -160,13 +164,17 @@ impl ApiState {
 	}
 }
 
-impl StripeApiState {
+impl PayNowApiState {
 	fn new(args: &ServeArgs) -> Self {
-		StripeApiState {
-			client: StripeClient::new(args.stripe_secret.clone()),
-			webhook_secret: args.stripe_webhook_secret.clone(),
-			success_url: args.stripe_success_url.clone(),
-			cancel_url: args.stripe_cancel_url.clone(),
+		PayNowApiState {
+			client: PayNowClient::new(
+				&args.paynow_api_base,
+				&args.paynow_store_id,
+				&args.paynow_api_key,
+			),
+			webhook_secret: args.paynow_webhook_secret.as_str().into(),
+			return_url: args.paynow_return_url.clone(),
+			cancel_url: args.paynow_cancel_url.clone(),
 		}
 	}
 }

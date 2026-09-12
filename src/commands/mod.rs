@@ -1,4 +1,4 @@
-pub(crate) mod backfill;
+pub(crate) mod provision;
 
 use std::{net::SocketAddr, str::FromStr};
 
@@ -21,19 +21,32 @@ pub(crate) struct BackendArgs {
 pub(crate) enum Subcommand {
 	#[bpaf(command("serve"))]
 	Serve(#[bpaf(external(serve_args))] ServeArgs),
-	#[bpaf(command("backfill-stripe"))]
-	BackfillStripe(#[bpaf(external(backfill_stripe_args))] BackfillStripeArgs),
+	#[bpaf(command("provision-paynow"))]
+	ProvisionPaynow(#[bpaf(external(provision_paynow_args))] ProvisionPaynowArgs),
 }
 
 #[derive(Clone, Debug, Bpaf)]
-pub(crate) struct BackfillStripeArgs {
+pub(crate) struct ProvisionPaynowArgs {
 	#[bpaf(long("database-url"), env("DATABASE_URL"), argument("URL"))]
 	pub(crate) database_url: String,
-	#[bpaf(long("stripe-secret"), env("STRIPE_SECRET"), argument("SECRET"))]
-	pub(crate) stripe_secret: String,
-	/// Report what would be filled without writing anything.
+	#[bpaf(long("paynow-api-key"), env("PAYNOW_API_KEY"), argument("KEY"))]
+	pub(crate) paynow_api_key: String,
+	#[bpaf(long("paynow-store-id"), env("PAYNOW_STORE_ID"), argument("ID"))]
+	pub(crate) paynow_store_id: String,
+	#[bpaf(
+		long("paynow-api-base"),
+		env("PAYNOW_API_BASE"),
+		argument("URL"),
+		fallback(crate::paynow::DEFAULT_API_BASE.to_string())
+	)]
+	pub(crate) paynow_api_base: String,
+	/// Report what would be created without writing anything.
 	#[bpaf(long("dry-run"), switch)]
 	pub(crate) dry_run: bool,
+	/// Also push the current price of every already provisioned product,
+	/// repairing drift left behind by a failed price update.
+	#[bpaf(long("sync-prices"), switch)]
+	pub(crate) sync_prices: bool,
 }
 
 #[derive(Clone, Debug, Bpaf)]
@@ -50,18 +63,28 @@ pub(crate) struct ServeArgs {
 		fallback_with(default_bind_addrs)
 	)]
 	pub(crate) bind_addr: Vec<SocketAddr>,
-	/// The Stripe secret API key used to create checkout sessions
-	#[bpaf(long("stripe-secret"), env("STRIPE_SECRET"))]
-	pub(crate) stripe_secret: String,
-	/// The Stripe webhook signing secret used to validate webhook signatures
-	#[bpaf(long("stripe-webhook-secret"), env("STRIPE_WEBHOOK_SECRET"))]
-	pub(crate) stripe_webhook_secret: String,
-	/// The URL Stripe redirects the buyer to after a successful checkout
-	#[bpaf(long("stripe-success-url"), env("STRIPE_SUCCESS_URL"))]
-	pub(crate) stripe_success_url: String,
-	/// The URL Stripe redirects the buyer to if they cancel checkout
-	#[bpaf(long("stripe-cancel-url"), env("STRIPE_CANCEL_URL"))]
-	pub(crate) stripe_cancel_url: String,
+	/// The PayNow management API key used to create checkouts and products
+	#[bpaf(long("paynow-api-key"), env("PAYNOW_API_KEY"))]
+	pub(crate) paynow_api_key: String,
+	/// The id of the PayNow store to sell from
+	#[bpaf(long("paynow-store-id"), env("PAYNOW_STORE_ID"))]
+	pub(crate) paynow_store_id: String,
+	/// The PayNow webhook signing secret used to validate webhook signatures
+	#[bpaf(long("paynow-webhook-secret"), env("PAYNOW_WEBHOOK_SECRET"))]
+	pub(crate) paynow_webhook_secret: String,
+	/// The URL PayNow redirects the buyer to after a successful checkout
+	#[bpaf(long("paynow-return-url"), env("PAYNOW_RETURN_URL"))]
+	pub(crate) paynow_return_url: String,
+	/// The URL PayNow redirects the buyer to if they cancel checkout
+	#[bpaf(long("paynow-cancel-url"), env("PAYNOW_CANCEL_URL"))]
+	pub(crate) paynow_cancel_url: String,
+	/// The base URL of the PayNow API, overridable to point at a local stub
+	#[bpaf(
+		long("paynow-api-base"),
+		env("PAYNOW_API_BASE"),
+		fallback(crate::paynow::DEFAULT_API_BASE.to_string())
+	)]
+	pub(crate) paynow_api_base: String,
 	/// The URL to use for connecting to the database
 	#[bpaf(long("database-url"), env("DATABASE_URL"))]
 	pub(crate) database_url: String,
