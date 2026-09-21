@@ -8,7 +8,7 @@ use aide::{
 use axum::{
 	Json,
 	extract::{Query, State},
-	http::StatusCode,
+	http::{HeaderValue, StatusCode, header},
 	response::IntoResponse,
 };
 use chrono::{DateTime, FixedOffset};
@@ -16,11 +16,13 @@ use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryTrait};
 use serde::{Deserialize, Serialize};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::api::{
 	ApiState,
 	v0::cosmetics::{
-		CosmeticInfo, group_cosmetics, in_enabled_group, is_redundant_variant, load_groups,
+		CosmeticInfo, group_cosmetics, in_enabled_group, is_redundant_variant,
+		load_assets, load_groups,
 	},
 };
 
@@ -28,8 +30,8 @@ use crate::api::{
 pub enum ResponseError {
 	#[error("Unable to fetch user data from database: {0}")]
 	DatabaseFetch(#[from] sea_orm::error::DbErr),
-	#[error("Unable to presign S3 URLs: {0}")]
-	S3Presign(#[from] s3::error::S3Error),
+	#[error("Unable to read assets from object storage: {0}")]
+	S3(#[from] s3::error::S3Error),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -50,7 +52,7 @@ impl IntoResponse for ResponseError {
 	fn into_response(self) -> axum::response::Response {
 		crate::api::error_response(
 			match self {
-				ResponseError::S3Presign(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				ResponseError::S3(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
@@ -148,7 +150,12 @@ fn directed(ordering: Ordering, order: SortOrder) -> Ordering {
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route("/cosmetics", get_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new()
+		.api_route("/cosmetics", get_with(self::endpoint, self::endpoint_doc))
+		.layer(SetResponseHeaderLayer::overriding(
+			header::CACHE_CONTROL,
+			HeaderValue::from_static("public, max-age=300"),
+		))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -171,20 +178,22 @@ async fn endpoint(
 			.all(&state.database)
 			.await?;
 
+		let assets = load_assets(
+			&state.database,
+			cosmetics
+				.iter()
+				.flat_map(|(cosmetic, _)| [cosmetic.asset_id, cosmetic.cover_asset_id])
+				.flatten()
+				.collect(),
+		)
+		.await?;
+
 		let mut rows = Vec::with_capacity(cosmetics.len());
 		for (cosmetic, allowed) in cosmetics {
-			let asset = match cosmetic.asset_id {
-				Some(asset_id) => {
-					Asset::find_by_id(asset_id).one(&state.database).await?
-				}
-				None => None,
-			};
-			let cover_asset = match cosmetic.cover_asset_id {
-				Some(asset_id) => {
-					Asset::find_by_id(asset_id).one(&state.database).await?
-				}
-				None => None,
-			};
+			let asset = cosmetic.asset_id.and_then(|id| assets.get(&id).cloned());
+			let cover_asset = cosmetic
+				.cover_asset_id
+				.and_then(|id| assets.get(&id).cloned());
 			let allowed_slots = allowed.into_iter().map(|s| s.slot).collect();
 			rows.push((cosmetic, asset, cover_asset, allowed_slots));
 		}
@@ -210,6 +219,7 @@ async fn endpoint(
 			groups,
 			state.asset_cache.clone(),
 			state.s3_bucket.clone(),
+			&state.s3_public_url,
 			true,
 		)
 		.await?;

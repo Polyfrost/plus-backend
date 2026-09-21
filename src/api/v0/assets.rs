@@ -47,7 +47,7 @@ pub enum AssetError {
 	NotFound,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
-	#[error("Unable to presign asset url: {0}")]
+	#[error("Unable to read asset from object storage: {0}")]
 	S3(#[from] s3::error::S3Error),
 	#[error(transparent)]
 	Refresh(#[from] AssetCacheError),
@@ -89,8 +89,7 @@ pub struct RefreshAllResponse {
 	evicted: usize,
 }
 
-/// Resolve the direct url for the asset with the given id, presigning an S3
-/// object url when the asset is backed by object storage.
+/// Resolve the direct url for the asset with the given id.
 async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 	use entities::prelude::*;
 
@@ -99,11 +98,8 @@ async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 		.await?
 		.ok_or(AssetError::NotFound)?;
 
-	match (&asset.url, &asset.storage_path) {
-		(Some(url), _) => Ok(url.clone()),
-		(None, Some(path)) => Ok(state.s3_bucket.presign_get(path, 86400, None).await?), // 24h
-		(None, None) => Err(AssetError::NotFound),
-	}
+	CachedAssetInfo::asset_url(Some(&asset), &state.s3_public_url)
+		.ok_or(AssetError::NotFound)
 }
 
 fn redirect_doc(op: TransformOperation) -> TransformOperation {

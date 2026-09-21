@@ -20,7 +20,7 @@ use axum::{
 };
 use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
 	api::{
@@ -159,6 +159,7 @@ pub(crate) async fn start(args: ServeArgs) {
 	let app = app
 		.layer(Extension(args.client_ip_source))
 		.layer(TraceLayer::new_for_http())
+		.layer(CompressionLayer::new())
 		.layer(
 			CorsLayer::new()
 				.allow_origin(args.cors_origins)

@@ -9,8 +9,9 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
+use entities::{cosmetic_allowed_slot, sea_orm_active_enums::BodySlot};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait as _, EntityTrait, ModelTrait as _, QueryFilter};
+use sea_orm::{ColumnTrait as _, EntityTrait, QueryFilter, QueryTrait as _};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -20,7 +21,8 @@ use crate::api::{
 	v0::{
 		account::OptionalAuthenticationExtractor,
 		cosmetics::{
-			CosmeticInfo, EmoteInfo, EquippedCosmetics, group_cosmetics, load_groups,
+			CosmeticInfo, EmoteInfo, EquippedCosmetics, group_cosmetics, load_assets,
+			load_groups,
 		},
 	},
 };
@@ -31,15 +33,17 @@ pub enum ResponseError {
 	PlayerRequired,
 	#[error("Unable to fetch user data from database: {0}")]
 	DatabaseFetch(#[from] sea_orm::error::DbErr),
-	#[error("Unable to presign S3 URLs: {0}")]
-	S3Presign(#[from] s3::error::S3Error),
+	#[error("Unable to read assets from object storage: {0}")]
+	S3(#[from] s3::error::S3Error),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getPlayerCosmetics")
 		.summary("Get a player's cosmetic status")
 		.description(
-			"Lists all cosmetics owned by a player, along with all active cosmetics",
+			"Lists a player's equipped cosmetics. Every owned cosmetic is included \
+			 only when the request is authenticated as that player; for anyone else \
+			 the listing is narrowed to what they currently wear.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
@@ -61,7 +65,7 @@ impl IntoResponse for ResponseError {
 		crate::api::error_response(
 			match self {
 				ResponseError::PlayerRequired => StatusCode::BAD_REQUEST,
-				ResponseError::S3Presign(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				ResponseError::S3(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
@@ -87,6 +91,14 @@ pub struct Response {
 	particle_color: Option<i32>,
 }
 
+fn is_self(requested: Option<Uuid>, authenticated: Option<Uuid>) -> bool {
+	match (requested, authenticated) {
+		(None, Some(_)) => true,
+		(Some(requested), Some(authenticated)) => requested == authenticated,
+		(_, None) => false,
+	}
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new().api_route("/player", get_with(self::endpoint, self::endpoint_doc))
 }
@@ -94,76 +106,108 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	OptionalAuthenticationExtractor(player): OptionalAuthenticationExtractor,
+	OptionalAuthenticationExtractor(authenticated): OptionalAuthenticationExtractor,
 	Query(query): Query<QueryParams>,
 ) -> Result<Json<Response>, ResponseError> {
 	let mut response = Response::default();
-	let Some(player) = query.player.or(player) else {
+	let Some(uuid) = query.player.or(authenticated) else {
 		return Err(ResponseError::PlayerRequired);
 	};
+	let is_self = is_self(query.player, authenticated);
 
 	{
+		use std::collections::HashMap;
+
 		use entities::{
 			player_equipped_cosmetic, player_owned_cosmetic, prelude::*,
 			sea_orm_active_enums::CosmeticType, user,
 		};
 
-		let Some(player) = User::find()
-			.filter(user::Column::MinecraftUuid.eq(player))
+		let Some(target) = User::find()
+			.filter(user::Column::MinecraftUuid.eq(uuid))
 			.one(&state.database)
 			.await?
 		else {
 			return Ok(Json(response));
 		};
 
-		response.particle_color = player.particle_color;
+		response.particle_color = target.particle_color;
+
+		response.equipped.extend(
+			PlayerEquippedCosmetic::find()
+				.filter(player_equipped_cosmetic::Column::PlayerId.eq(target.id))
+				.find_also_related(Cosmetic)
+				.all(&state.database)
+				.await?
+				.into_iter()
+				.filter_map(|(equipment, cosmetic)| {
+					cosmetic.map(|_| (equipment.slot, equipment.cosmetic_id))
+				}),
+		);
 
 		let owned = PlayerOwnedCosmetic::find()
-			.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
+			.filter(player_owned_cosmetic::Column::PlayerId.eq(target.id))
+			.apply_if(
+				(!is_self)
+					.then(|| response.equipped.values().copied().collect::<Vec<_>>()),
+				|query, equipped| {
+					query
+						.filter(player_owned_cosmetic::Column::CosmeticId.is_in(equipped))
+				},
+			)
 			.find_also_related(Cosmetic)
 			.all(&state.database)
 			.await?;
 
-		// No enabled check here: a cosmetic the player owns is theirs for good,
+		let cosmetics: Vec<_> = owned.into_iter().filter_map(|(_, c)| c).collect();
+		let assets = load_assets(
+			&state.database,
+			cosmetics
+				.iter()
+				.flat_map(|c| [c.asset_id, c.cover_asset_id])
+				.flatten()
+				.collect(),
+		)
+		.await?;
+
+		let mut slots: HashMap<i32, Vec<BodySlot>> = HashMap::new();
+		for slot in CosmeticAllowedSlot::find()
+			.filter(
+				cosmetic_allowed_slot::Column::CosmeticId
+					.is_in(cosmetics.iter().map(|c| c.id).collect::<Vec<_>>()),
+			)
+			.all(&state.database)
+			.await?
+		{
+			slots.entry(slot.cosmetic_id).or_default().push(slot.slot);
+		}
+
 		let mut rows = Vec::new();
 		let mut emote_tasks = JoinSet::new();
-		for cosmetic in owned.into_iter().filter_map(|(_, c)| c) {
-			let asset = match cosmetic.asset_id {
-				Some(asset_id) => {
-					Asset::find_by_id(asset_id).one(&state.database).await?
-				}
-				None => None,
-			};
+		for cosmetic in cosmetics {
+			let asset = cosmetic.asset_id.and_then(|id| assets.get(&id).cloned());
 
 			if matches!(cosmetic.r#type, CosmeticType::Emote) {
 				let asset_cache = state.asset_cache.clone();
 				let s3_bucket = state.s3_bucket.clone();
+				let public_url = state.s3_public_url.clone();
 				emote_tasks.spawn(async move {
 					EmoteInfo::from_db_model(
 						&cosmetic,
 						asset.as_ref(),
 						asset_cache,
 						s3_bucket,
+						&public_url,
 					)
 					.await
 				});
 				continue;
 			}
 
-			let cover_asset = match cosmetic.cover_asset_id {
-				Some(asset_id) => {
-					Asset::find_by_id(asset_id).one(&state.database).await?
-				}
-				None => None,
-			};
-
-			let allowed_slots = cosmetic
-				.find_related(CosmeticAllowedSlot)
-				.all(&state.database)
-				.await?
-				.into_iter()
-				.map(|s| s.slot)
-				.collect();
+			let cover_asset = cosmetic
+				.cover_asset_id
+				.and_then(|id| assets.get(&id).cloned());
+			let allowed_slots = slots.remove(&cosmetic.id).unwrap_or_default();
 			rows.push((cosmetic, asset, cover_asset, allowed_slots));
 		}
 
@@ -173,6 +217,7 @@ async fn endpoint(
 			groups,
 			state.asset_cache.clone(),
 			state.s3_bucket.clone(),
+			&state.s3_public_url,
 			false,
 		)
 		.await?;
@@ -183,18 +228,6 @@ async fn endpoint(
 				.await
 				.into_iter()
 				.collect::<Result<Vec<_>, _>>()?,
-		);
-
-		response.equipped.extend(
-			PlayerEquippedCosmetic::find()
-				.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
-				.find_also_related(Cosmetic)
-				.all(&state.database)
-				.await?
-				.into_iter()
-				.filter_map(|(equipment, cosmetic)| {
-					cosmetic.map(|_| (equipment.slot, equipment.cosmetic_id))
-				}),
 		);
 	};
 

@@ -122,9 +122,10 @@ impl VariantInfo {
 		allowed_slots: Vec<BodySlot>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
+		public_url: &str,
 	) -> Result<Self, S3Error> {
 		let cached_info =
-			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
+			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket).await?;
 		Ok(Self {
 			id: value.id,
 			allowed_slots,
@@ -134,8 +135,8 @@ impl VariantInfo {
 				.or_else(|| value.name.clone())
 				.unwrap_or_else(|| format!("Cosmetic {}", value.id)),
 			model: value.model_variant.clone(),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket.clone()).await?,
-			cover_url: CachedAssetInfo::asset_url(cover_asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, public_url),
+			cover_url: CachedAssetInfo::asset_url(cover_asset, public_url),
 			cached_info,
 		})
 	}
@@ -180,6 +181,27 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 		.collect())
 }
 
+/// Fetches every asset in one query, keyed by id.
+pub(super) async fn load_assets<C: sea_orm::ConnectionTrait>(
+	db: &C,
+	ids: Vec<i32>,
+) -> Result<HashMap<i32, asset::Model>, sea_orm::DbErr> {
+	use entities::prelude::Asset;
+	use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+	if ids.is_empty() {
+		return Ok(HashMap::new());
+	}
+
+	Ok(Asset::find()
+		.filter(asset::Column::Id.is_in(ids))
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|asset| (asset.id, asset))
+		.collect())
+}
+
 pub(super) type CosmeticRow = (
 	cosmetic::Model,
 	Option<asset::Model>,
@@ -201,6 +223,7 @@ pub(super) async fn group_cosmetics(
 	groups: HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>,
 	cache: Cache<i32, CachedAssetInfo>,
 	s3_bucket: Arc<Bucket>,
+	public_url: &str,
 	hide_redundant_variants: bool,
 ) -> Result<Vec<CosmeticInfo>, S3Error> {
 	let mut buckets: BTreeMap<i32, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
@@ -220,6 +243,7 @@ pub(super) async fn group_cosmetics(
 			allowed_slots.clone(),
 			cache.clone(),
 			s3_bucket.clone(),
+			public_url,
 		)
 		.await?;
 
@@ -280,16 +304,17 @@ impl EmoteInfo {
 		asset: Option<&asset::Model>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
+		public_url: &str,
 	) -> Result<Self, S3Error> {
 		let cached_info =
-			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
+			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket).await?;
 		Ok(Self {
 			id: value.id,
 			name: value
 				.name
 				.clone()
 				.unwrap_or_else(|| format!("Emote {}", value.id)),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, public_url),
 			cached_info,
 		})
 	}
@@ -350,24 +375,22 @@ impl CachedAssetInfo {
 		Ok(info)
 	}
 
-	async fn asset_url(
+	/// The url an asset is served from: its own url when it has one, otherwise
+	/// its object served straight off the public bucket.
+	pub(in crate::api) fn asset_url(
 		asset: Option<&asset::Model>,
-		s3_bucket: Arc<Bucket>,
-	) -> Result<Option<String>, S3Error> {
-		let Some(asset) = asset else {
-			return Ok(None);
-		};
+		public_url: &str,
+	) -> Option<String> {
+		let asset = asset?;
 
 		if let Some(url) = &asset.url {
-			return Ok(Some(url.clone()));
+			return Some(url.clone());
 		}
 
-		match &asset.storage_path {
-			Some(path) => Ok(Some(
-				s3_bucket.as_ref().presign_get(path, 604800, None).await?,
-			)),
-			None => Ok(None),
-		}
+		asset
+			.storage_path
+			.as_ref()
+			.map(|path| format!("{public_url}/{path}"))
 	}
 }
 
