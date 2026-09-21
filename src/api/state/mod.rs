@@ -71,6 +71,7 @@ pub(super) struct ApiState {
 	pub(super) render_client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
+	pub(super) s3_public_url: Arc<str>,
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
 	pub(super) realtime: RealtimeState,
 	pub(super) equipment_persist_tx: mpsc::Sender<EquipmentPersistence>,
@@ -156,6 +157,7 @@ impl ApiState {
 			special_chat_targets: args.special_chat_targets.clone(),
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			instrumentation,
+			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
 			database,
 		}

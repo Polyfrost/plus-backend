@@ -85,7 +85,7 @@ pub struct RefreshAllResponse {
 	evicted: usize,
 }
 
-/// Resolve the public url for the asset with the given id.
+/// Resolve the direct url for the asset with the given id.
 async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 	use entities::prelude::*;
 
@@ -94,7 +94,8 @@ async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 		.await?
 		.ok_or(AssetError::NotFound)?;
 
-	CachedAssetInfo::asset_url(Some(&asset), &state.s3_bucket).ok_or(AssetError::NotFound)
+	CachedAssetInfo::asset_url(Some(&asset), &state.s3_public_url)
+		.ok_or(AssetError::NotFound)
 }
 
 fn redirect_doc(op: TransformOperation) -> TransformOperation {
