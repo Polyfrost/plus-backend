@@ -192,7 +192,7 @@ pub(crate) struct ClientInfo {
 }
 
 impl ClientInfo {
-	fn is_empty(&self) -> bool {
+	pub(crate) fn is_empty(&self) -> bool {
 		self.client_version.is_none()
 			&& self.minecraft_version.is_none()
 			&& self.loader.is_none()

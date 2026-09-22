@@ -28,7 +28,7 @@ use crate::api::{
 		PlaytimeSession, RealtimeConnection,
 	},
 	v0::{
-		account::AuthenticatedPlayer,
+		account::{AuthenticatedPlayer, ClientKind},
 		websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 	},
 };
@@ -326,6 +326,7 @@ async fn register_connection(
 	state: &ApiState,
 	player_id: i32,
 	owner: Uuid,
+	kind: ClientKind,
 	tx: mpsc::UnboundedSender<ClientBoundPacket>,
 	equipped: HashMap<BodySlot, i32>,
 	particle_color: Option<i32>,
@@ -338,6 +339,7 @@ async fn register_connection(
 			owner,
 			tx,
 			subscriptions: HashSet::new(),
+			kind,
 		},
 	);
 	let is_first_connection = {
@@ -898,6 +900,7 @@ async fn handle_packet(
 async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	kind: ClientKind,
 	ws: WebSocketUpgrade,
 ) -> Response<Body> {
 	ws.on_upgrade(async move |mut socket| {
@@ -913,6 +916,7 @@ async fn endpoint(
 			&state,
 			player.id,
 			player.minecraft_uuid,
+			kind,
 			tx,
 			equipped,
 			player.particle_color,

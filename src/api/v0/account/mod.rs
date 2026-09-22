@@ -9,7 +9,11 @@ use axum::{
 };
 use http::StatusCode;
 use pasetors::{
-	Local, claims::ClaimsValidationRules, local, token::UntrustedToken, version4::V4,
+	Local,
+	claims::{Claims, ClaimsValidationRules},
+	local,
+	token::UntrustedToken,
+	version4::V4,
 };
 use reqwest::header::AUTHORIZATION;
 use uuid::Uuid;
@@ -34,6 +38,13 @@ pub struct AuthenticationExtractor(pub Uuid);
 pub struct OptionalAuthenticationExtractor(pub Option<Uuid>);
 #[derive(Debug)]
 pub struct AuthenticatedPlayer(pub user::Model);
+/// What kind of client a token was issued to, as claimed at login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClientKind {
+	Game,
+	#[default]
+	Other,
+}
 #[derive(Debug)]
 pub struct AdminPlayer(pub user::Model);
 
@@ -90,6 +101,49 @@ const INSUFFICIENT_ROLE_ERR: (StatusCode, &str) = (
 	"Authenticated player does not have permission",
 );
 
+impl ClientKind {
+	/// Claim `/login` stamps when the caller reported mod and platform details,
+	/// which only the in-game mod does.
+	pub const CLAIM: &'static str = "game";
+
+	fn from_claim(claim: Option<&serde_json::Value>) -> Self {
+		match claim.and_then(serde_json::Value::as_bool) {
+			Some(true) => Self::Game,
+			_ => Self::Other,
+		}
+	}
+}
+
+/// Decrypts and validates the bearer token, handing back its claims.
+fn token_claims(
+	parts: &Parts,
+	state: &ApiState,
+) -> Result<Claims, (StatusCode, &'static str)> {
+	let header = parts
+		.headers
+		.get(AUTHORIZATION)
+		.ok_or(MISSING_AUTHORIZATION_ERR)?
+		.to_str()
+		.map_err(|_| INVALID_AUTHORIZATION_ERR)?;
+
+	let Some(token) = header.strip_prefix("Bearer ") else {
+		return Err(INVALID_AUTHORIZATION_ERR);
+	};
+
+	local::decrypt(
+		&state.paseto_key,
+		&UntrustedToken::<Local, V4>::try_from(token)
+			.map_err(|_| INVALID_AUTHORIZATION_ERR)?,
+		&ClaimsValidationRules::new(),
+		None,
+		PASETO_IMPLICIT_ASSERT,
+	)
+	.map_err(|_| INVALID_AUTHORIZATION_ERR)?
+	.payload_claims()
+	.cloned()
+	.ok_or(MISSING_AUTHORIZATION_ERR)
+}
+
 impl FromRequestParts<ApiState> for AuthenticationExtractor {
 	type Rejection = Response;
 
@@ -97,30 +151,7 @@ impl FromRequestParts<ApiState> for AuthenticationExtractor {
 		parts: &mut Parts,
 		state: &ApiState,
 	) -> Result<Self, Self::Rejection> {
-		let header = parts
-			.headers
-			.get(AUTHORIZATION)
-			.ok_or(MISSING_AUTHORIZATION_ERR)
-			.map_err(IntoResponse::into_response)?
-			.to_str()
-			.map_err(|_| INVALID_AUTHORIZATION_ERR.into_response())?;
-
-		let Some(token) = header.strip_prefix("Bearer ") else {
-			return Err(INVALID_AUTHORIZATION_ERR.into_response());
-		};
-
-		let token = local::decrypt(
-			&state.paseto_key,
-			&UntrustedToken::<Local, V4>::try_from(token)
-				.map_err(|_| INVALID_AUTHORIZATION_ERR.into_response())?,
-			&ClaimsValidationRules::new(),
-			None,
-			PASETO_IMPLICIT_ASSERT,
-		)
-		.map_err(|_| INVALID_AUTHORIZATION_ERR.into_response())?;
-		let claims = token
-			.payload_claims()
-			.ok_or(MISSING_AUTHORIZATION_ERR.into_response())?;
+		let claims = token_claims(parts, state).map_err(IntoResponse::into_response)?;
 
 		let sub = claims
 			.get_claim("sub")
@@ -131,6 +162,21 @@ impl FromRequestParts<ApiState> for AuthenticationExtractor {
 		Uuid::parse_str(sub)
 			.map(Self)
 			.map_err(|_| MISSING_AUTHORIZATION_ERR.into_response())
+	}
+}
+
+impl FromRequestParts<ApiState> for ClientKind {
+	type Rejection = Response;
+
+	async fn from_request_parts(
+		parts: &mut Parts,
+		state: &ApiState,
+	) -> Result<Self, Self::Rejection> {
+		Ok(Self::from_claim(
+			token_claims(parts, state)
+				.map_err(IntoResponse::into_response)?
+				.get_claim(Self::CLAIM),
+		))
 	}
 }
 
@@ -219,7 +265,25 @@ fn role_rank(role: &sea_orm_active_enums::PlayerRole) -> u8 {
 mod tests {
 	use entities::sea_orm_active_enums::PlayerRole;
 
-	use super::role_at_least;
+	use super::{ClientKind, role_at_least};
+
+	#[test]
+	fn client_kind_defaults_to_other_without_a_truthy_claim() {
+		assert_eq!(
+			ClientKind::from_claim(Some(&serde_json::Value::Bool(true))),
+			ClientKind::Game
+		);
+		assert_eq!(
+			ClientKind::from_claim(Some(&serde_json::Value::Bool(false))),
+			ClientKind::Other
+		);
+		// Tokens minted before the claim existed, and junk values.
+		assert_eq!(ClientKind::from_claim(None), ClientKind::Other);
+		assert_eq!(
+			ClientKind::from_claim(Some(&serde_json::Value::String("yes".into()))),
+			ClientKind::Other
+		);
+	}
 
 	#[test]
 	fn role_order_allows_elevated_access() {

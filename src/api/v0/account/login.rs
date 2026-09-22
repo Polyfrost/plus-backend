@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-	api::{ApiState, v0::account::PASETO_IMPLICIT_ASSERT},
+	api::{
+		ApiState,
+		v0::account::{ClientKind, PASETO_IMPLICIT_ASSERT},
+	},
 	database::{
 		ClientInfo, DatabaseUserExt, record_client_info, record_monthly_active_login,
 	},
@@ -161,19 +164,19 @@ async fn endpoint(
 		.await?;
 
 	record_monthly_active_login(&state.database, player.id).await?;
-	record_client_info(
-		&state.database,
-		player.id,
-		ClientInfo {
-			client_version: normalize_client_field(query.client_version),
-			minecraft_version: normalize_client_field(query.minecraft_version),
-			loader: normalize_client_field(query.loader),
-			os: normalize_client_field(query.os),
-			os_version: normalize_client_field(query.os_version),
-			java_version: normalize_client_field(query.java_version),
-		},
-	)
-	.await?;
+
+	let client_info = ClientInfo {
+		client_version: normalize_client_field(query.client_version),
+		minecraft_version: normalize_client_field(query.minecraft_version),
+		loader: normalize_client_field(query.loader),
+		os: normalize_client_field(query.os),
+		os_version: normalize_client_field(query.os_version),
+		java_version: normalize_client_field(query.java_version),
+	};
+	// Only the mod reports these, so they are what marks a token as a game client.
+	let is_game_client = !client_info.is_empty();
+
+	record_client_info(&state.database, player.id, client_info).await?;
 
 	let token = local::encrypt(
 		&state.paseto_key,
@@ -182,6 +185,7 @@ async fn endpoint(
 
 			claims.set_expires_in(&Duration::from_secs(60 * 60 * 2 /* 2h */))?;
 			claims.subject(&parsed.id.as_hyphenated().to_string())?;
+			claims.add_additional(ClientKind::CLAIM, is_game_client)?;
 
 			claims
 		},
