@@ -32,9 +32,13 @@ pub(in crate::api) use self::{
 use uuid::Uuid;
 
 use crate::{
-	api::v0::{
-		cosmetics::CachedAssetInfo,
-		oidc::{self, AuthorizationCode, OidcSigningKey},
+	api::{
+		api_tokens::ApiTokens,
+		rate_limit::{RateLimiter, RequestLimits},
+		v0::{
+			cosmetics::CachedAssetInfo,
+			oidc::{self, AuthorizationCode, OidcSigningKey},
+		},
 	},
 	commands::ServeArgs,
 	paynow::PayNowClient,
@@ -47,6 +51,15 @@ const GLOBAL_CHAT_COOLDOWN: Duration = Duration::from_secs(2);
 /// The window one address's checkout attempts are counted over.
 const CHECKOUT_COOLDOWN: Duration = Duration::from_secs(60);
 pub(in crate::api) const CHECKOUTS_PER_COOLDOWN: u32 = 5;
+/// The window every address's requests are counted over.
+const REQUEST_WINDOW: Duration = Duration::from_secs(60);
+const REQUESTS_PER_WINDOW: u32 = 600;
+/// Asset lookups are one cheap row read each, and a client loading a wardrobe
+/// asks for a lot of them at once, so they are only limited to catch abuse.
+const ASSET_REQUESTS_PER_WINDOW: u32 = 6000;
+/// The window one player's chat messages are counted over.
+const CHAT_WINDOW: Duration = Duration::from_secs(10);
+const CHAT_MESSAGES_PER_WINDOW: u32 = 10;
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
@@ -66,6 +79,9 @@ pub(super) struct ApiState {
 	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
 	pub(super) checkout_cooldown: Cache<IpAddr, u32>,
+	pub(super) request_limits: RequestLimits,
+	pub(super) api_tokens: ApiTokens,
+	pub(super) chat_limit: RateLimiter<i32>,
 	pub(super) oidc_issuer: String,
 	pub(super) oidc_signing_key: Arc<OidcSigningKey>,
 	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
@@ -128,6 +144,12 @@ impl ApiState {
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
 				.build(),
 			checkout_cooldown: Cache::builder().time_to_live(CHECKOUT_COOLDOWN).build(),
+			request_limits: RequestLimits {
+				default: RateLimiter::new(REQUESTS_PER_WINDOW, REQUEST_WINDOW),
+				assets: RateLimiter::new(ASSET_REQUESTS_PER_WINDOW, REQUEST_WINDOW),
+			},
+			api_tokens: ApiTokens::new(database.clone()),
+			chat_limit: RateLimiter::new(CHAT_MESSAGES_PER_WINDOW, CHAT_WINDOW),
 			oidc_issuer: args.oidc_issuer.clone(),
 			oidc_signing_key: Arc::new(oidc_signing_key),
 			oidc_codes: oidc::new_authorization_code_cache(),

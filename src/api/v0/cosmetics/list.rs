@@ -28,8 +28,8 @@ use crate::api::{
 pub enum ResponseError {
 	#[error("Unable to fetch user data from database: {0}")]
 	DatabaseFetch(#[from] sea_orm::error::DbErr),
-	#[error("Unable to presign S3 URLs: {0}")]
-	S3Presign(#[from] s3::error::S3Error),
+	#[error("Unable to read asset metadata from object storage: {0}")]
+	S3(#[from] s3::error::S3Error),
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -50,7 +50,7 @@ impl IntoResponse for ResponseError {
 	fn into_response(self) -> axum::response::Response {
 		crate::api::error_response(
 			match self {
-				ResponseError::S3Presign(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				ResponseError::S3(_) => StatusCode::INTERNAL_SERVER_ERROR,
 				ResponseError::DatabaseFetch(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,

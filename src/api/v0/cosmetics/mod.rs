@@ -134,8 +134,8 @@ impl VariantInfo {
 				.or_else(|| value.name.clone())
 				.unwrap_or_else(|| format!("Cosmetic {}", value.id)),
 			model: value.model_variant.clone(),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket.clone()).await?,
-			cover_url: CachedAssetInfo::asset_url(cover_asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, &s3_bucket),
+			cover_url: CachedAssetInfo::asset_url(cover_asset, &s3_bucket),
 			cached_info,
 		})
 	}
@@ -289,7 +289,7 @@ impl EmoteInfo {
 				.name
 				.clone()
 				.unwrap_or_else(|| format!("Emote {}", value.id)),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, &s3_bucket),
 			cached_info,
 		})
 	}
@@ -350,24 +350,21 @@ impl CachedAssetInfo {
 		Ok(info)
 	}
 
-	async fn asset_url(
+	pub(in crate::api) fn asset_url(
 		asset: Option<&asset::Model>,
-		s3_bucket: Arc<Bucket>,
-	) -> Result<Option<String>, S3Error> {
-		let Some(asset) = asset else {
-			return Ok(None);
-		};
+		s3_bucket: &Bucket,
+	) -> Option<String> {
+		let asset = asset?;
 
 		if let Some(url) = &asset.url {
-			return Ok(Some(url.clone()));
+			return Some(url.clone());
 		}
 
-		match &asset.storage_path {
-			Some(path) => Ok(Some(
-				s3_bucket.as_ref().presign_get(path, 604800, None).await?,
-			)),
-			None => Ok(None),
-		}
+		// Storage paths are always `{prefix}/{uuid}.{extension}`
+		asset
+			.storage_path
+			.as_ref()
+			.map(|path| format!("{}/{path}", s3_bucket.url()))
 	}
 }
 
@@ -383,11 +380,71 @@ pub(super) struct PartialEquippedCosmetics {
 
 #[cfg(test)]
 mod tests {
+	use entities::{asset, sea_orm_active_enums::AssetKind};
+	use s3::Bucket;
+
 	use super::CachedAssetInfo;
 	use crate::utils::hash::sha256_hex;
 
 	#[test]
 	fn default_hash_is_sha256_of_null() {
 		assert_eq!(CachedAssetInfo::DEFAULT_HASH, sha256_hex(b"null"));
+	}
+
+	fn test_bucket() -> Bucket {
+		*Bucket::new(
+			"local",
+			s3::Region::Custom {
+				region: "local".to_owned(),
+				endpoint: "https://objects.example".to_owned(),
+			},
+			s3::creds::Credentials::anonymous().expect("anonymous credentials are valid"),
+		)
+		.expect("the test bucket is valid")
+		.with_path_style()
+	}
+
+	fn test_asset(storage_path: Option<&str>, url: Option<&str>) -> asset::Model {
+		asset::Model {
+			id: 1,
+			storage_path: storage_path.map(str::to_owned),
+			url: url.map(str::to_owned),
+			asset_kind: AssetKind::Image,
+			content_type: None,
+			hash: None,
+			created_at: Default::default(),
+			updated_at: Default::default(),
+		}
+	}
+
+	#[test]
+	fn asset_urls_are_plain_public_object_urls() {
+		let bucket = test_bucket();
+
+		assert_eq!(
+			CachedAssetInfo::asset_url(
+				Some(&test_asset(Some("capes/abc.png"), None)),
+				&bucket
+			),
+			Some("https://objects.example/local/capes/abc.png".to_owned())
+		);
+
+		// An explicitly stored url wins over object storage.
+		assert_eq!(
+			CachedAssetInfo::asset_url(
+				Some(&test_asset(
+					Some("capes/abc.png"),
+					Some("https://cdn/x.png")
+				)),
+				&bucket
+			),
+			Some("https://cdn/x.png".to_owned())
+		);
+
+		assert_eq!(
+			CachedAssetInfo::asset_url(Some(&test_asset(None, None)), &bucket),
+			None
+		);
+		assert_eq!(CachedAssetInfo::asset_url(None, &bucket), None);
 	}
 }

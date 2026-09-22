@@ -3,6 +3,7 @@ mod grants;
 mod hello;
 mod paynow;
 mod store;
+mod tokens;
 
 use aide::axum::ApiRouter;
 
@@ -15,5 +16,6 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.nest("/store", store::setup_router().await)
 		.merge(grants::router())
 		.merge(hello::router())
+		.merge(tokens::router())
 		.merge(analytics::setup_router().await)
 }
