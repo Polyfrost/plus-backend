@@ -50,7 +50,7 @@ const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 const GLOBAL_CHAT_COOLDOWN: Duration = Duration::from_secs(2);
 /// The window one address's checkout attempts are counted over.
 const CHECKOUT_COOLDOWN: Duration = Duration::from_secs(60);
-pub(in crate::api) const CHECKOUTS_PER_COOLDOWN: u32 = 5;
+const CHECKOUTS_PER_COOLDOWN: u32 = 5;
 /// The window every address's requests are counted over.
 const REQUEST_WINDOW: Duration = Duration::from_secs(60);
 const REQUESTS_PER_WINDOW: u32 = 600;
@@ -79,7 +79,7 @@ pub(super) struct ApiState {
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
-	pub(super) checkout_cooldown: Cache<IpAddr, u32>,
+	pub(super) checkout_limit: RateLimiter<IpAddr>,
 	pub(super) request_limits: RequestLimits,
 	pub(super) api_tokens: ApiTokens,
 	pub(super) chat_limit: RateLimiter<i32>,
@@ -144,7 +144,7 @@ impl ApiState {
 			global_chat_cooldown: Cache::builder()
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
 				.build(),
-			checkout_cooldown: Cache::builder().time_to_live(CHECKOUT_COOLDOWN).build(),
+			checkout_limit: RateLimiter::new(CHECKOUTS_PER_COOLDOWN, CHECKOUT_COOLDOWN),
 			request_limits: RequestLimits {
 				default: RateLimiter::new(REQUESTS_PER_WINDOW, REQUEST_WINDOW),
 				assets: RateLimiter::new(ASSET_REQUESTS_PER_WINDOW, REQUEST_WINDOW),

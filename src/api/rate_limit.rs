@@ -1,6 +1,6 @@
 use std::{
 	hash::Hash,
-	net::IpAddr,
+	net::{IpAddr, Ipv6Addr},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -60,6 +60,16 @@ impl<K: Hash + Eq + Send + Sync + 'static> RateLimiter<K> {
 	}
 }
 
+/// IPv6 clients usually hold a whole /64, so it is limited as one address.
+pub(in crate::api) fn address_key(ip: IpAddr) -> IpAddr {
+	match ip.to_canonical() {
+		IpAddr::V6(ip) => {
+			IpAddr::V6(Ipv6Addr::from_bits(ip.to_bits() & !u128::from(u64::MAX)))
+		}
+		ip => ip,
+	}
+}
+
 /// The per-address limits, picked per request by path.
 #[derive(Debug, Clone)]
 pub(in crate::api) struct RequestLimits {
@@ -94,25 +104,25 @@ pub(in crate::api) async fn limit_by_address(
 	request: Request,
 	next: Next,
 ) -> Response {
-	let path = request.uri().path().to_owned();
+	let path = request.uri().path();
 	let token = request
 		.headers()
 		.get(TOKEN_HEADER)
-		.and_then(|token| token.to_str().ok())
-		.map(str::to_owned);
+		.and_then(|token| token.to_str().ok());
 
 	let Ok(ClientIp(ip)) = client_ip else {
 		tracing::debug!("Unable to resolve the client's address; not rate limiting");
 		return next.run(request).await;
 	};
+	let ip = address_key(ip);
 
 	if let Some(token) = token
-		&& state.tokens.exempts(&token, &path, ip).await
+		&& state.tokens.exempts(token, path, ip).await
 	{
 		return next.run(request).await;
 	}
 
-	match state.limits.for_path(&path).check(ip).await {
+	match state.limits.for_path(path).check(ip).await {
 		Some(retry_after) => (
 			StatusCode::TOO_MANY_REQUESTS,
 			[(header::RETRY_AFTER, retry_after.as_secs().to_string())],
@@ -160,11 +170,11 @@ mod tests {
 			.resolved
 			.insert(
 				sha256_hex(b"asset-reader"),
-				Some(Arc::from(vec!["/asset/".to_owned()])),
+				Arc::from(vec!["/asset/".to_owned()]),
 			)
 			.await;
 		// Cached as unresolvable, so the disconnected database stays untouched.
-		tokens.resolved.insert(sha256_hex(b"revoked"), None).await;
+		tokens.rejected.insert(sha256_hex(b"revoked"), ()).await;
 
 		RateLimitState {
 			limits: RequestLimits {
@@ -219,6 +229,18 @@ mod tests {
 			StatusCode::TOO_MANY_REQUESTS
 		);
 		assert_eq!(send("10.0.0.2", "/", None).await, StatusCode::OK);
+		assert_eq!(
+			send("::ffff:10.0.0.2", "/", None).await,
+			StatusCode::TOO_MANY_REQUESTS
+		);
+
+		// A whole IPv6 /64 is one address.
+		assert_eq!(send("2001:db8::1", "/", None).await, StatusCode::OK);
+		assert_eq!(
+			send("2001:db8::2", "/", None).await,
+			StatusCode::TOO_MANY_REQUESTS
+		);
+		assert_eq!(send("2001:db8:0:1::1", "/", None).await, StatusCode::OK);
 
 		// Assets are counted against their own, looser limit.
 		for _ in 0..3 {

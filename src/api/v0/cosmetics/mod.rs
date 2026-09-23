@@ -412,7 +412,6 @@ pub(super) struct PartialEquippedCosmetics {
 #[cfg(test)]
 mod tests {
 	use entities::{asset, sea_orm_active_enums::AssetKind};
-	use s3::Bucket;
 
 	use super::CachedAssetInfo;
 	use crate::utils::hash::sha256_hex;
@@ -420,19 +419,6 @@ mod tests {
 	#[test]
 	fn default_hash_is_sha256_of_null() {
 		assert_eq!(CachedAssetInfo::DEFAULT_HASH, sha256_hex(b"null"));
-	}
-
-	fn test_bucket() -> Bucket {
-		*Bucket::new(
-			"local",
-			s3::Region::Custom {
-				region: "local".to_owned(),
-				endpoint: "https://objects.example".to_owned(),
-			},
-			s3::creds::Credentials::anonymous().expect("anonymous credentials are valid"),
-		)
-		.expect("the test bucket is valid")
-		.with_path_style()
 	}
 
 	fn test_asset(storage_path: Option<&str>, url: Option<&str>) -> asset::Model {
@@ -450,12 +436,12 @@ mod tests {
 
 	#[test]
 	fn asset_urls_are_plain_public_object_urls() {
-		let bucket = test_bucket();
+		let public_url = "https://objects.example/local";
 
 		assert_eq!(
 			CachedAssetInfo::asset_url(
 				Some(&test_asset(Some("capes/abc.png"), None)),
-				&bucket
+				public_url
 			),
 			Some("https://objects.example/local/capes/abc.png".to_owned())
 		);
@@ -467,15 +453,15 @@ mod tests {
 					Some("capes/abc.png"),
 					Some("https://cdn/x.png")
 				)),
-				&bucket
+				public_url
 			),
 			Some("https://cdn/x.png".to_owned())
 		);
 
 		assert_eq!(
-			CachedAssetInfo::asset_url(Some(&test_asset(None, None)), &bucket),
+			CachedAssetInfo::asset_url(Some(&test_asset(None, None)), public_url),
 			None
 		);
-		assert_eq!(CachedAssetInfo::asset_url(None, &bucket), None);
+		assert_eq!(CachedAssetInfo::asset_url(None, public_url), None);
 	}
 }

@@ -14,26 +14,18 @@ use axum::{
 };
 use chrono::{DateTime, FixedOffset, Utc};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, Set};
+use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
 	ApiState, admin_auth::AdminAuthenticationExtractor, api_tokens::generate_token,
 };
 
-/// Long enough to say what a token is for, short enough to stay a label.
-const MAX_LABEL_LENGTH: usize = 100;
-const MAX_PREFIXES: usize = 20;
-const MAX_PREFIX_LENGTH: usize = 200;
-
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum TokenError {
-	#[error("A label between 1 and {MAX_LABEL_LENGTH} characters is required")]
+	#[error("A label is required")]
 	InvalidLabel,
-	#[error(
-		"Between 1 and {MAX_PREFIXES} exempt prefixes are required, each an \
-		 absolute path of at most {MAX_PREFIX_LENGTH} characters"
-	)]
+	#[error("At least one exempt prefix is required, each an absolute path")]
 	InvalidPrefixes,
 	#[error("No such token")]
 	NotFound,
@@ -138,11 +130,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 /// Prefixes have to be absolute, so that a token scoped to `/asset/` cannot be
 /// tricked into matching by a path that merely contains it.
 fn validate_prefixes(prefixes: &[String]) -> bool {
-	!prefixes.is_empty()
-		&& prefixes.len() <= MAX_PREFIXES
-		&& prefixes
-			.iter()
-			.all(|prefix| prefix.starts_with('/') && prefix.len() <= MAX_PREFIX_LENGTH)
+	!prefixes.is_empty() && prefixes.iter().all(|prefix| prefix.starts_with('/'))
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
@@ -154,21 +142,19 @@ async fn create(
 	use entities::{api_token, prelude::*};
 
 	let label = body.label.trim();
-	if label.is_empty() || label.chars().count() > MAX_LABEL_LENGTH {
+	if label.is_empty() {
 		return Err(TokenError::InvalidLabel);
 	}
 	if !validate_prefixes(&body.exempt_prefixes) {
 		return Err(TokenError::InvalidPrefixes);
 	}
 
-	let (token, token_hash) = generate_token();
+	let generated = generate_token();
 
 	let created = ApiToken::insert(api_token::ActiveModel {
 		label: Set(label.to_owned()),
-		token_hash: Set(token_hash),
+		token_hash: Set(generated.hash),
 		exempt_prefixes: Set(body.exempt_prefixes),
-		created_at: ActiveValue::NotSet,
-		revoked_at: Set(None),
 		..Default::default()
 	})
 	.exec_with_returning(&state.database)
@@ -180,7 +166,7 @@ async fn create(
 		StatusCode::CREATED,
 		Json(CreatedToken {
 			info: created.into(),
-			token,
+			token: generated.token,
 		}),
 	))
 }
@@ -190,10 +176,11 @@ async fn list(
 	State(state): State<ApiState>,
 	_auth: AdminAuthenticationExtractor,
 ) -> Result<Json<Vec<TokenInfo>>, TokenError> {
-	use entities::prelude::*;
+	use entities::{api_token, prelude::*};
 
 	Ok(Json(
 		ApiToken::find()
+			.order_by_asc(api_token::Column::Id)
 			.all(&state.database)
 			.await?
 			.into_iter()
@@ -214,13 +201,16 @@ async fn revoke(
 		.one(&state.database)
 		.await?
 		.ok_or(TokenError::NotFound)?;
+	if token.revoked_at.is_some() {
+		return Ok(Json(token.into()));
+	}
 
-	let token_hash = token.token_hash.clone();
 	let mut active: entities::api_token::ActiveModel = token.into();
 	active.revoked_at = Set(Some(Utc::now().into()));
 	let revoked = active.update(&state.database).await?;
 
-	state.api_tokens.forget(&token_hash).await;
+	// Immediate on this replica; the others catch up within the cache ttl.
+	state.api_tokens.resolved.invalidate(&revoked.token_hash).await;
 	tracing::info!(id = revoked.id, label = %revoked.label, "Revoked an api token");
 
 	Ok(Json(revoked.into()))
