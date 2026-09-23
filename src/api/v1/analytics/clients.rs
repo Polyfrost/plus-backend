@@ -22,6 +22,7 @@ pub(super) struct ClientsResponse {
 	minecraft_versions: Vec<ClientBreakdown>,
 	loaders: Vec<ClientBreakdown>,
 	operating_systems: Vec<ClientBreakdown>,
+	countries: Vec<ClientBreakdown>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -51,9 +52,11 @@ pub(super) fn clients_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Get client version and platform breakdown")
 		.description(
 			"Active players by reported client version, Minecraft version, mod loader \
-			 and operating system.\n\nThese are reported by the client at login and are \
-			 optional, so an empty `value` means the client did not send that field. \
-			 Counts are player-days: a player active on five days contributes five.",
+			 and operating system, plus the country the edge proxy resolved them \
+			 to.\n\nThe client fields are reported by the client at login and are \
+			 optional. The country is derived from the request address. An empty \
+			 `value` means the dimension was not available. Counts are player-days: \
+			 a player active on five days contributes five.",
 		)
 		.tag("analytics")
 }
@@ -77,6 +80,7 @@ pub(super) async fn clients_endpoint(
 	let mut minecraft_versions = std::collections::HashMap::new();
 	let mut loaders = std::collections::HashMap::new();
 	let mut operating_systems = std::collections::HashMap::new();
+	let mut countries = std::collections::HashMap::new();
 
 	for row in rows {
 		let players = i64::from(row.active_players);
@@ -84,6 +88,7 @@ pub(super) async fn clients_endpoint(
 		*minecraft_versions.entry(row.minecraft_version).or_insert(0) += players;
 		*loaders.entry(row.loader).or_insert(0) += players;
 		*operating_systems.entry(row.os).or_insert(0) += players;
+		*countries.entry(row.country).or_insert(0) += players;
 	}
 
 	Ok(Json(ClientsResponse {
@@ -93,5 +98,6 @@ pub(super) async fn clients_endpoint(
 		minecraft_versions: rank(minecraft_versions),
 		loaders: rank(loaders),
 		operating_systems: rank(operating_systems),
+		countries: rank(countries),
 	}))
 }

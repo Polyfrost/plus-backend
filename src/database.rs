@@ -1,7 +1,7 @@
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use entities::{
 	cosmetic_ownership_event, daily_playtime, monthly_active_login, player_client_info,
-	prelude::*,
+	player_geo, prelude::*,
 	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
 	transaction, user,
 };
@@ -192,7 +192,7 @@ pub(crate) struct ClientInfo {
 }
 
 impl ClientInfo {
-	fn is_empty(&self) -> bool {
+	pub(crate) fn is_empty(&self) -> bool {
 		self.client_version.is_none()
 			&& self.minecraft_version.is_none()
 			&& self.loader.is_none()
@@ -235,6 +235,28 @@ pub(crate) async fn record_client_info(
 				player_client_info::Column::LastSeenAt,
 				Expr::current_timestamp(),
 			)
+			.to_owned(),
+	)
+	.exec_without_returning(db)
+	.await?;
+
+	Ok(())
+}
+
+pub(crate) async fn record_player_geo(
+	db: &impl ConnectionTrait,
+	player_id: i32,
+	country: &str,
+) -> Result<(), DbErr> {
+	PlayerGeo::insert(player_geo::ActiveModel {
+		player_id: Set(player_id),
+		country: Set(country.to_owned()),
+		..Default::default()
+	})
+	.on_conflict(
+		OnConflict::column(player_geo::Column::PlayerId)
+			.update_column(player_geo::Column::Country)
+			.value(player_geo::Column::LastSeenAt, Expr::current_timestamp())
 			.to_owned(),
 	)
 	.exec_without_returning(db)

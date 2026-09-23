@@ -3,12 +3,13 @@ use std::time::Duration;
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::post_with},
+	operation::OperationInput,
 	transform::TransformOperation,
 };
 use axum::{
 	Json,
-	extract::{Query, State, rejection::QueryRejection},
-	http::StatusCode,
+	extract::{FromRequestParts, Query, State, rejection::QueryRejection},
+	http::{StatusCode, request::Parts},
 	response::IntoResponse,
 };
 use pasetors::{claims::Claims, local};
@@ -17,9 +18,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-	api::{ApiState, v0::account::PASETO_IMPLICIT_ASSERT},
+	api::{
+		ApiState,
+		v0::account::{ClientKind, PASETO_IMPLICIT_ASSERT},
+	},
 	database::{
 		ClientInfo, DatabaseUserExt, record_client_info, record_monthly_active_login,
+		record_player_geo,
 	},
 };
 
@@ -96,6 +101,45 @@ struct LoginQuery {
 	java_version: Option<String>,
 }
 
+struct ClientCountry(Option<String>);
+
+/// Cloudflare's placeholders: `XX` for an unresolvable address, `T1` for Tor.
+const UNRESOLVED_COUNTRIES: [&str; 2] = ["XX", "T1"];
+
+fn normalize_country(value: &str) -> Option<String> {
+	let country = value.trim().to_ascii_uppercase();
+
+	(country.len() == 2
+		&& country.bytes().all(|b| b.is_ascii_uppercase())
+		&& !UNRESOLVED_COUNTRIES.contains(&country.as_str()))
+	.then_some(country)
+}
+
+impl OperationInput for ClientCountry {
+	fn operation_input(
+		_ctx: &mut aide::generate::GenContext,
+		_operation: &mut aide::openapi::Operation,
+	) {
+	}
+}
+
+impl<S: Sync> FromRequestParts<S> for ClientCountry {
+	type Rejection = std::convert::Infallible;
+
+	async fn from_request_parts(
+		parts: &mut Parts,
+		_state: &S,
+	) -> Result<Self, Self::Rejection> {
+		Ok(Self(
+			parts
+				.headers
+				.get("cf-ipcountry")
+				.and_then(|value| value.to_str().ok())
+				.and_then(normalize_country),
+		))
+	}
+}
+
 /// Drops anything that does not look like a version or platform string, so
 /// a malformed value cannot skew the rollup.
 fn normalize_client_field(value: Option<String>) -> Option<String> {
@@ -128,6 +172,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
+	ClientCountry(country): ClientCountry,
 	Query(query): Query<LoginQuery>,
 ) -> Result<Json<LoginResponse>, LoginError> {
 	let response = state
@@ -161,19 +206,23 @@ async fn endpoint(
 		.await?;
 
 	record_monthly_active_login(&state.database, player.id).await?;
-	record_client_info(
-		&state.database,
-		player.id,
-		ClientInfo {
-			client_version: normalize_client_field(query.client_version),
-			minecraft_version: normalize_client_field(query.minecraft_version),
-			loader: normalize_client_field(query.loader),
-			os: normalize_client_field(query.os),
-			os_version: normalize_client_field(query.os_version),
-			java_version: normalize_client_field(query.java_version),
-		},
-	)
-	.await?;
+
+	let client_info = ClientInfo {
+		client_version: normalize_client_field(query.client_version),
+		minecraft_version: normalize_client_field(query.minecraft_version),
+		loader: normalize_client_field(query.loader),
+		os: normalize_client_field(query.os),
+		os_version: normalize_client_field(query.os_version),
+		java_version: normalize_client_field(query.java_version),
+	};
+	// Only the mod reports these, so they are what marks a token as a game client.
+	let is_game_client = !client_info.is_empty();
+
+	record_client_info(&state.database, player.id, client_info).await?;
+
+	if let Some(country) = country {
+		record_player_geo(&state.database, player.id, &country).await?;
+	}
 
 	let token = local::encrypt(
 		&state.paseto_key,
@@ -182,6 +231,7 @@ async fn endpoint(
 
 			claims.set_expires_in(&Duration::from_secs(60 * 60 * 2 /* 2h */))?;
 			claims.subject(&parsed.id.as_hyphenated().to_string())?;
+			claims.add_additional(ClientKind::CLAIM, is_game_client)?;
 
 			claims
 		},
@@ -193,4 +243,23 @@ async fn endpoint(
 	tracing::debug!(%token, %player.id, "authenticated player");
 
 	Ok(Json(LoginResponse { token }))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::normalize_country;
+
+	#[test]
+	fn keeps_country_codes_and_drops_everything_else() {
+		assert_eq!(normalize_country("pl").as_deref(), Some("PL"));
+		assert_eq!(normalize_country("DE").as_deref(), Some("DE"));
+
+		for unresolved in ["XX", "T1", "", "GBR", "1", "P1", "  "] {
+			assert_eq!(
+				normalize_country(unresolved),
+				None,
+				"{unresolved:?} is not a country we can store",
+			);
+		}
+	}
 }

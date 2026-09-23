@@ -60,7 +60,10 @@ mod m20260826_000001_provider_neutral_columns;
 mod m20260826_000002_transaction_lines;
 mod m20260826_000003_analytics_chargebacks;
 mod m20260826_000004_clear_stripe_product_ids;
+mod m20260921_000000_create_player_geo;
+mod m20260921_000001_add_geo_to_client_daily;
 mod m20260922_000000_create_api_tokens;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -127,7 +130,9 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260826_000002_transaction_lines::Migration),
 			Box::new(m20260826_000003_analytics_chargebacks::Migration),
 			Box::new(m20260826_000004_clear_stripe_product_ids::Migration),
-			Box::new(m20260922_000000_create_api_tokens::Migration),
+			Box::new(m20260921_000000_create_player_geo::Migration),
+			Box::new(m20260921_000001_add_geo_to_client_daily::Migration),
+      Box::new(m20260922_000000_create_api_tokens::Migration),
 		]
 	}
 }

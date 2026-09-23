@@ -25,8 +25,8 @@ pub(in crate::api) use self::{
 	instrumentation::Instrumentation,
 	persistence::{EquipmentPersistence, ParticleColorPersistence},
 	realtime::{
-		ConnectionId, PlayerRuntimeState, PlaytimeSession, RealtimeConnection,
-		RealtimeState,
+		ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
+		RealtimeConnection, RealtimeState,
 	},
 };
 use uuid::Uuid;
