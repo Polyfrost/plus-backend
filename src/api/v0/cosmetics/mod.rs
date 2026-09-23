@@ -113,7 +113,7 @@ impl VariantInfo {
 	#[tracing::instrument(
 		name = "convert_db_variant_info",
 		level = "debug",
-		skip(cache, s3_bucket)
+		skip(cache, s3_bucket, public_url)
 	)]
 	async fn from_db_model(
 		value: &cosmetic::Model,
@@ -184,11 +184,16 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 /// Fetches every asset in one query, keyed by id.
 pub(super) async fn load_assets<C: sea_orm::ConnectionTrait>(
 	db: &C,
-	ids: Vec<i32>,
+	cosmetics: impl IntoIterator<Item = &cosmetic::Model>,
 ) -> Result<HashMap<i32, asset::Model>, sea_orm::DbErr> {
 	use entities::prelude::Asset;
 	use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
+	let ids: Vec<_> = cosmetics
+		.into_iter()
+		.flat_map(|c| [c.asset_id, c.cover_asset_id])
+		.flatten()
+		.collect();
 	if ids.is_empty() {
 		return Ok(HashMap::new());
 	}
@@ -297,7 +302,7 @@ impl EmoteInfo {
 	#[tracing::instrument(
 		name = "convert_db_emote_info",
 		level = "debug",
-		skip(cache, s3_bucket)
+		skip(cache, s3_bucket, public_url)
 	)]
 	pub async fn from_db_model(
 		value: &cosmetic::Model,

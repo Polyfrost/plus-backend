@@ -91,14 +91,6 @@ pub struct Response {
 	particle_color: Option<i32>,
 }
 
-fn is_self(requested: Option<Uuid>, authenticated: Option<Uuid>) -> bool {
-	match (requested, authenticated) {
-		(None, Some(_)) => true,
-		(Some(requested), Some(authenticated)) => requested == authenticated,
-		(_, None) => false,
-	}
-}
-
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new().api_route("/player", get_with(self::endpoint, self::endpoint_doc))
 }
@@ -113,7 +105,7 @@ async fn endpoint(
 	let Some(uuid) = query.player.or(authenticated) else {
 		return Err(ResponseError::PlayerRequired);
 	};
-	let is_self = is_self(query.player, authenticated);
+	let is_self = Some(uuid) == authenticated;
 
 	{
 		use std::collections::HashMap;
@@ -160,15 +152,10 @@ async fn endpoint(
 			.await?;
 
 		let cosmetics: Vec<_> = owned.into_iter().filter_map(|(_, c)| c).collect();
-		let assets = load_assets(
-			&state.database,
-			cosmetics
-				.iter()
-				.flat_map(|c| [c.asset_id, c.cover_asset_id])
-				.flatten()
-				.collect(),
-		)
-		.await?;
+		if cosmetics.is_empty() {
+			return Ok(Json(response));
+		}
+		let assets = load_assets(&state.database, &cosmetics).await?;
 
 		let mut slots: HashMap<i32, Vec<BodySlot>> = HashMap::new();
 		for slot in CosmeticAllowedSlot::find()
@@ -182,7 +169,7 @@ async fn endpoint(
 			slots.entry(slot.cosmetic_id).or_default().push(slot.slot);
 		}
 
-		let mut rows = Vec::new();
+		let mut rows = Vec::with_capacity(cosmetics.len());
 		let mut emote_tasks = JoinSet::new();
 		for cosmetic in cosmetics {
 			let asset = cosmetic.asset_id.and_then(|id| assets.get(&id).cloned());

@@ -178,15 +178,8 @@ async fn endpoint(
 			.all(&state.database)
 			.await?;
 
-		let assets = load_assets(
-			&state.database,
-			cosmetics
-				.iter()
-				.flat_map(|(cosmetic, _)| [cosmetic.asset_id, cosmetic.cover_asset_id])
-				.flatten()
-				.collect(),
-		)
-		.await?;
+		let assets =
+			load_assets(&state.database, cosmetics.iter().map(|(c, _)| c)).await?;
 
 		let mut rows = Vec::with_capacity(cosmetics.len());
 		for (cosmetic, allowed) in cosmetics {
