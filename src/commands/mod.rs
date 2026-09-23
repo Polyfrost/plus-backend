@@ -109,6 +109,9 @@ pub(crate) struct ServeArgs {
 	/// The endpoint of the s3 bucket to use
 	#[bpaf(long("s3-bucket-endpoint"), env("S3_BUCKET_ENDPOINT"))]
 	pub(crate) s3_bucket_endpoint: String,
+	/// The public base url assets are served from
+	#[bpaf(long("s3-public-url"), env("S3_PUBLIC_URL"))]
+	pub(crate) s3_public_url: String,
 	/// Password for admin operations
 	#[bpaf(long("admin-password"), env("ADMIN_PASSWORD"))]
 	pub(crate) admin_password: String,

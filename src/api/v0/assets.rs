@@ -47,8 +47,6 @@ pub enum AssetError {
 	NotFound,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
-	#[error("Unable to presign asset url: {0}")]
-	S3(#[from] s3::error::S3Error),
 	#[error(transparent)]
 	Refresh(#[from] AssetCacheError),
 }
@@ -58,9 +56,7 @@ impl IntoResponse for AssetError {
 		crate::api::error_response(
 			match self {
 				Self::NotFound => StatusCode::NOT_FOUND,
-				Self::Database(_) | Self::S3(_) | Self::Refresh(_) => {
-					StatusCode::INTERNAL_SERVER_ERROR
-				}
+				Self::Database(_) | Self::Refresh(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
 		)
@@ -89,8 +85,7 @@ pub struct RefreshAllResponse {
 	evicted: usize,
 }
 
-/// Resolve the direct url for the asset with the given id, presigning an S3
-/// object url when the asset is backed by object storage.
+/// Resolve the direct url for the asset with the given id.
 async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 	use entities::prelude::*;
 
@@ -99,20 +94,19 @@ async fn resolve_url(state: &ApiState, id: i32) -> Result<String, AssetError> {
 		.await?
 		.ok_or(AssetError::NotFound)?;
 
-	match (&asset.url, &asset.storage_path) {
-		(Some(url), _) => Ok(url.clone()),
-		(None, Some(path)) => Ok(state.s3_bucket.presign_get(path, 86400, None).await?), // 24h
-		(None, None) => Err(AssetError::NotFound),
-	}
+	CachedAssetInfo::asset_url(Some(&asset), &state.s3_public_url)
+		.ok_or(AssetError::NotFound)
 }
 
 fn redirect_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAsset")
 		.summary("Get an asset")
 		.description(
-			"Redirects to the resolved url for the given asset. Prefer `/asset/{id}/url` \
-			 from browser JavaScript, since following this redirect to object storage is \
-			 subject to CORS. Returns 404 when no asset with that id has a resolvable url.",
+			"Redirects to the public url for the given asset. That same url is already \
+			 embedded in every cosmetic response, so prefer using it directly over \
+			 spending a request here. Prefer `/asset/{id}/url` from browser JavaScript, \
+			 since following this redirect to object storage is subject to CORS. Returns \
+			 404 when no asset with that id has a resolvable url.",
 		)
 		.tag("assets")
 }
@@ -121,10 +115,10 @@ fn url_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAssetUrl")
 		.summary("Get an asset's url")
 		.description(
-			"Returns the resolved url for the given asset as JSON, without redirecting. \
-			 Use this from browser JavaScript to fetch the asset directly and avoid the \
-			 CORS pitfalls of a cross-origin redirect. Returns 404 when no asset with \
-			 that id has a resolvable url.",
+			"Returns the public url for the given asset as JSON, without redirecting. \
+			 That same url is already embedded in every cosmetic response, so prefer \
+			 using it directly over spending a request here. Returns 404 when no asset \
+			 with that id has a resolvable url.",
 		)
 		.tag("assets")
 }

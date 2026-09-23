@@ -1,5 +1,7 @@
 pub(crate) mod admin_auth;
+mod api_tokens;
 mod docs;
+mod rate_limit;
 mod state;
 mod v0;
 mod v1;
@@ -20,11 +22,12 @@ use axum::{
 };
 use schemars::{JsonSchema, schema_for};
 use tokio::net::TcpListener;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
 	api::{
 		docs::{DocPage, DocVersion},
+		rate_limit::RateLimitState,
 		state::ApiState,
 		v0::websocket::structs::{ClientBoundPacket, ServerBoundPacket},
 	},
@@ -97,6 +100,19 @@ fn init_openapi_spec<'a>(
 			},
 		)
 		.security_scheme(
+			api_tokens::OPENAPI_SECURITY_NAME,
+			SecurityScheme::ApiKey {
+				location: ApiKeyLocation::Header,
+				name: api_tokens::TOKEN_HEADER.to_string(),
+				description: Some(
+					"A token that lifts the rate limit on the paths it is \
+					 scoped to. Grants no access of its own."
+						.to_string(),
+				),
+				extensions: Default::default(),
+			},
+		)
+		.security_scheme(
 			"Admin Password",
 			SecurityScheme::ApiKey {
 				location: ApiKeyLocation::Header,
@@ -140,7 +156,7 @@ pub(crate) async fn start(args: ServeArgs) {
 	let mut openapi_v1 = OpenApi::default();
 	let v1 = ApiRouter::new()
 		.nest("/v1", v1::setup_router().await)
-		.with_state(state)
+		.with_state(state.clone())
 		.finish_api_with(&mut openapi_v1, |spec| init_openapi_spec(spec, docs::V1));
 
 	// Final router object
@@ -155,10 +171,17 @@ pub(crate) async fn start(args: ServeArgs) {
 		}
 	}
 
-	// Add middleware
 	let app = app
+		.layer(axum::middleware::from_fn_with_state(
+			RateLimitState {
+				limits: state.request_limits.clone(),
+				tokens: state.api_tokens.clone(),
+			},
+			rate_limit::limit_by_address,
+		))
 		.layer(Extension(args.client_ip_source))
 		.layer(TraceLayer::new_for_http())
+		.layer(CompressionLayer::new())
 		.layer(
 			CorsLayer::new()
 				.allow_origin(args.cors_origins)

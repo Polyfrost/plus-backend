@@ -32,9 +32,13 @@ pub(in crate::api) use self::{
 use uuid::Uuid;
 
 use crate::{
-	api::v0::{
-		cosmetics::CachedAssetInfo,
-		oidc::{self, AuthorizationCode, OidcSigningKey},
+	api::{
+		api_tokens::ApiTokens,
+		rate_limit::{RateLimiter, RequestLimits},
+		v0::{
+			cosmetics::CachedAssetInfo,
+			oidc::{self, AuthorizationCode, OidcSigningKey},
+		},
 	},
 	commands::ServeArgs,
 	paynow::PayNowClient,
@@ -46,7 +50,16 @@ const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
 const GLOBAL_CHAT_COOLDOWN: Duration = Duration::from_secs(2);
 /// The window one address's checkout attempts are counted over.
 const CHECKOUT_COOLDOWN: Duration = Duration::from_secs(60);
-pub(in crate::api) const CHECKOUTS_PER_COOLDOWN: u32 = 5;
+const CHECKOUTS_PER_COOLDOWN: u32 = 5;
+/// The window every address's requests are counted over.
+const REQUEST_WINDOW: Duration = Duration::from_secs(60);
+const REQUESTS_PER_WINDOW: u32 = 600;
+/// Asset lookups are one cheap row read each, and a client loading a wardrobe
+/// asks for a lot of them at once, so they are only limited to catch abuse.
+const ASSET_REQUESTS_PER_WINDOW: u32 = 6000;
+/// The window one player's chat messages are counted over.
+const CHAT_WINDOW: Duration = Duration::from_secs(10);
+const CHAT_MESSAGES_PER_WINDOW: u32 = 10;
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
@@ -58,6 +71,7 @@ pub(super) struct ApiState {
 	pub(super) render_client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
+	pub(super) s3_public_url: Arc<str>,
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
 	pub(super) realtime: RealtimeState,
 	pub(super) equipment_persist_tx: mpsc::Sender<EquipmentPersistence>,
@@ -65,7 +79,10 @@ pub(super) struct ApiState {
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
-	pub(super) checkout_cooldown: Cache<IpAddr, u32>,
+	pub(super) checkout_limit: RateLimiter<IpAddr>,
+	pub(super) request_limits: RequestLimits,
+	pub(super) api_tokens: ApiTokens,
+	pub(super) chat_limit: RateLimiter<i32>,
 	pub(super) oidc_issuer: String,
 	pub(super) oidc_signing_key: Arc<OidcSigningKey>,
 	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
@@ -127,13 +144,20 @@ impl ApiState {
 			global_chat_cooldown: Cache::builder()
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
 				.build(),
-			checkout_cooldown: Cache::builder().time_to_live(CHECKOUT_COOLDOWN).build(),
+			checkout_limit: RateLimiter::new(CHECKOUTS_PER_COOLDOWN, CHECKOUT_COOLDOWN),
+			request_limits: RequestLimits {
+				default: RateLimiter::new(REQUESTS_PER_WINDOW, REQUEST_WINDOW),
+				assets: RateLimiter::new(ASSET_REQUESTS_PER_WINDOW, REQUEST_WINDOW),
+			},
+			api_tokens: ApiTokens::new(database.clone()),
+			chat_limit: RateLimiter::new(CHAT_MESSAGES_PER_WINDOW, CHAT_WINDOW),
 			oidc_issuer: args.oidc_issuer.clone(),
 			oidc_signing_key: Arc::new(oidc_signing_key),
 			oidc_codes: oidc::new_authorization_code_cache(),
 			special_chat_targets: args.special_chat_targets.clone(),
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			instrumentation,
+			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
 			database,
 		}

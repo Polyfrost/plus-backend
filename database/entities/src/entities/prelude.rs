@@ -9,6 +9,7 @@ pub use super::analytics_hourly::Entity as AnalyticsHourly;
 pub use super::analytics_job_state::Entity as AnalyticsJobState;
 pub use super::analytics_session_length_daily::Entity as AnalyticsSessionLengthDaily;
 pub use super::analytics_slot_snapshot::Entity as AnalyticsSlotSnapshot;
+pub use super::api_token::Entity as ApiToken;
 pub use super::asset::Entity as Asset;
 pub use super::blocks::Entity as Blocks;
 pub use super::bundles::Entity as Bundles;

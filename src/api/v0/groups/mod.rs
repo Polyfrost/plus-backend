@@ -49,6 +49,8 @@ pub enum GroupError {
 		 hours"
 	)]
 	RateLimited,
+	#[error("You are sending messages too quickly, please slow down")]
+	TooManyMessages,
 	#[error("Only the eagerly-created Special Chat group can be converted this way")]
 	NotSpecialChatGroup,
 	#[error("Only Special Chat accounts may convert this group")]
@@ -77,7 +79,9 @@ impl IntoResponse for GroupError {
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN
 				}
-				Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+				Self::RateLimited | Self::TooManyMessages => {
+					StatusCode::TOO_MANY_REQUESTS
+				}
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,

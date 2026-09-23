@@ -11,6 +11,7 @@ pub mod analytics_hourly;
 pub mod analytics_job_state;
 pub mod analytics_session_length_daily;
 pub mod analytics_slot_snapshot;
+pub mod api_token;
 pub mod asset;
 pub mod blocks;
 pub mod bundles;
