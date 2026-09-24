@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::get_with},
@@ -10,12 +12,15 @@ use axum::{
 	response::IntoResponse,
 };
 use chrono::{DateTime, FixedOffset};
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::sea_orm_active_enums::{CosmeticType, TagType};
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait, Condition, ConnectionTrait, EntityTrait, FromQueryResult, JoinType,
-	Order, QueryFilter, QueryOrder, QuerySelect, QueryTrait, RelationTrait, Select,
-	sea_query::{Alias, Asterisk, Expr, SimpleExpr},
+	ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+	FromQueryResult, JoinType, Order, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
+	RelationTrait, Select,
+	sea_query::{
+		Alias, Asterisk, Expr, Func, SimpleExpr, extension::postgres::PgExpr,
+	},
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +29,7 @@ use crate::{
 		ApiState,
 		v0::{
 			cosmetics::view::VariantView,
-			tags::{CosmeticTags, tags_for_cosmetics},
+			tags::{CosmeticTags, TagInfo, tags_for_cosmetics},
 		},
 	},
 	utils::{pagination::MAX_PAGE_SIZE, serde::deserialize_comma_list},
@@ -69,7 +74,7 @@ pub enum Sort {
 /// partial words without drowning results in noise.
 const SIMILARITY_THRESHOLD: f64 = 0.3;
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SearchQuery {
 	/// The number of results per page, capped at 100.
 	#[serde(default = "crate::utils::pagination::default_page_size")]
@@ -282,11 +287,110 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 	find
 }
 
-pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route(
-		"/search",
-		get_with(self::endpoint, self::endpoint_doc),
+fn buckets(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
+	use entities::cosmetic;
+
+	filtered(query)
+		.select_only()
+		.column(cosmetic::Column::GroupId)
+		.expr_as(solo_id_expr(), "solo_id")
+		.group_by(Expr::col((cosmetic::Entity, cosmetic::Column::GroupId)))
+		.group_by(solo_id_expr())
+}
+
+fn relevance(text: &str) -> SimpleExpr {
+	Expr::cust_with_values(
+		"GREATEST(\
+			MAX(word_similarity($1, cosmetic.name)), \
+			MAX(COALESCE(word_similarity($2, cosmetic_group.name), 0))\
+		)",
+		[sea_orm::Value::from(text), sea_orm::Value::from(text)],
 	)
+}
+
+type Members = HashMap<BucketKey, Vec<entities::cosmetic::Model>>;
+
+/// Loads each bucket's listed variants, representative first, and the names of
+/// the groups among them.
+async fn load_members(
+	db: &DatabaseConnection,
+	page: &[BucketRow],
+) -> Result<(Members, HashMap<i32, String>), DbErr> {
+	use entities::{cosmetic, cosmetic_group, prelude::*};
+
+	let group_ids: Vec<i32> = page.iter().filter_map(|row| row.group_id).collect();
+	let solo_ids: Vec<i32> = page.iter().filter_map(|row| row.solo_id).collect();
+
+	let mut members = Members::new();
+	if !page.is_empty() {
+		let mut belongs = Condition::any();
+		if !group_ids.is_empty() {
+			belongs = belongs.add(cosmetic::Column::GroupId.is_in(group_ids.clone()));
+		}
+		if !solo_ids.is_empty() {
+			belongs = belongs.add(cosmetic::Column::Id.is_in(solo_ids));
+		}
+
+		let cosmetics = Cosmetic::find()
+			.filter(cosmetic::Column::Enabled.eq(true))
+			.filter(super::in_enabled_group())
+			.filter(cosmetic::Column::BasePrice.is_not_null())
+			.filter(belongs)
+			.order_by_asc(cosmetic::Column::VariantOrder)
+			.order_by_asc(cosmetic::Column::Id)
+			.all(db)
+			.await?;
+
+		for cosmetic in cosmetics {
+			if super::is_redundant_variant(cosmetic.variant_name.as_deref()) {
+				continue;
+			}
+			members
+				.entry(bucket_key_of(&cosmetic))
+				.or_default()
+				.push(cosmetic);
+		}
+	}
+
+	let group_names: HashMap<i32, String> = if group_ids.is_empty() {
+		HashMap::new()
+	} else {
+		CosmeticGroup::find()
+			.filter(cosmetic_group::Column::Id.is_in(group_ids))
+			.all(db)
+			.await?
+			.into_iter()
+			.map(|group| (group.id, group.name))
+			.collect()
+	};
+
+	Ok((members, group_names))
+}
+
+fn entry_name(
+	row: &BucketRow,
+	representative: &entities::cosmetic::Model,
+	group_names: &HashMap<i32, String>,
+) -> String {
+	match row.group_id.and_then(|id| group_names.get(&id)) {
+		Some(name) => name.clone(),
+		None => representative
+			.name
+			.clone()
+			.unwrap_or_else(|| format!("Cosmetic {}", representative.id)),
+	}
+}
+
+pub(super) fn router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.api_route(
+			"/search",
+			get_with(self::endpoint, self::endpoint_doc),
+		)
+		.api_route(
+			"/suggest",
+			get_with(self::suggest_endpoint, self::suggest_doc),
+		)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -294,9 +398,7 @@ async fn endpoint(
 	State(state): State<ApiState>,
 	Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, SearchError> {
-	use std::collections::HashMap;
-
-	use entities::{cosmetic, cosmetic_group, prelude::*};
+	use entities::cosmetic;
 
 	let nb = query.nb.min(MAX_PAGE_SIZE);
 	let offset = nb.saturating_mul(query.page.saturating_sub(1));
@@ -324,12 +426,7 @@ async fn endpoint(
 		),
 	};
 
-	let mut buckets: Select<Cosmetic> = filtered(&query)
-		.select_only()
-		.column(cosmetic::Column::GroupId)
-		.expr_as(solo_id_expr(), "solo_id")
-		.group_by(Expr::col((cosmetic::Entity, cosmetic::Column::GroupId)))
-		.group_by(solo_id_expr());
+	let mut buckets = buckets(&query);
 
 	let total_items = {
 		let count = sea_orm::sea_query::Query::select()
@@ -351,17 +448,7 @@ async fn endpoint(
 	// With a search text, best matches lead; the requested `sort` only breaks
 	// ties between equally-relevant results. Without text, `sort` drives fully.
 	if let Some(text) = &query.text {
-		let relevance = Expr::cust_with_values(
-			"GREATEST(\
-				MAX(word_similarity($1, cosmetic.name)), \
-				MAX(COALESCE(word_similarity($2, cosmetic_group.name), 0))\
-			)",
-			[
-				sea_orm::Value::from(text.clone()),
-				sea_orm::Value::from(text.clone()),
-			],
-		);
-		buckets = buckets.order_by(relevance, Order::Desc);
+		buckets = buckets.order_by(relevance(text), Order::Desc);
 	}
 
 	let page: Vec<BucketRow> = buckets
@@ -376,51 +463,7 @@ async fn endpoint(
 		.all(&state.database)
 		.await?;
 
-	let group_ids: Vec<i32> = page.iter().filter_map(|row| row.group_id).collect();
-	let solo_ids: Vec<i32> = page.iter().filter_map(|row| row.solo_id).collect();
-
-	let mut members: HashMap<BucketKey, Vec<cosmetic::Model>> = HashMap::new();
-	if !page.is_empty() {
-		let mut belongs = Condition::any();
-		if !group_ids.is_empty() {
-			belongs = belongs.add(cosmetic::Column::GroupId.is_in(group_ids.clone()));
-		}
-		if !solo_ids.is_empty() {
-			belongs = belongs.add(cosmetic::Column::Id.is_in(solo_ids));
-		}
-
-		let cosmetics = Cosmetic::find()
-			.filter(cosmetic::Column::Enabled.eq(true))
-			.filter(super::in_enabled_group())
-			.filter(cosmetic::Column::BasePrice.is_not_null())
-			.filter(belongs)
-			.order_by_asc(cosmetic::Column::VariantOrder)
-			.order_by_asc(cosmetic::Column::Id)
-			.all(&state.database)
-			.await?;
-
-		for cosmetic in cosmetics {
-			if super::is_redundant_variant(cosmetic.variant_name.as_deref()) {
-				continue;
-			}
-			members
-				.entry(bucket_key_of(&cosmetic))
-				.or_default()
-				.push(cosmetic);
-		}
-	}
-
-	let group_names: HashMap<i32, String> = if group_ids.is_empty() {
-		HashMap::new()
-	} else {
-		CosmeticGroup::find()
-			.filter(cosmetic_group::Column::Id.is_in(group_ids))
-			.all(&state.database)
-			.await?
-			.into_iter()
-			.map(|group| (group.id, group.name))
-			.collect()
-	};
+	let (mut members, group_names) = load_members(&state.database, &page).await?;
 
 	let representative_ids: Vec<i32> = page
 		.iter()
@@ -447,13 +490,7 @@ async fn endpoint(
 			continue;
 		};
 
-		let name = match row.group_id.and_then(|id| group_names.get(&id)) {
-			Some(name) => name.clone(),
-			None => representative
-				.name
-				.clone()
-				.unwrap_or_else(|| format!("Cosmetic {}", representative.id)),
-		};
+		let name = entry_name(row, &representative, &group_names);
 		let tags = tags.remove(&representative.id).unwrap_or_default();
 
 		results.push(CosmeticSearchInfo::from_cosmetic(
@@ -475,4 +512,125 @@ async fn endpoint(
 		results,
 		pagination,
 	}))
+}
+
+const SUGGESTIONS: u64 = 5;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SuggestQuery {
+	text: String,
+}
+
+/// A store entry, collapsed like a `/cosmetics/search` result.
+#[derive(Debug, Serialize, JsonSchema)]
+struct CosmeticSuggestion {
+	/// The representative variant's id. Pass this to `/cosmetics/view/{id}`.
+	id: i32,
+	name: String,
+	r#type: CosmeticType,
+	/// Load through `/asset/{id}`.
+	cover_asset_id: Option<i32>,
+}
+
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct SuggestResponse {
+	tags: Vec<TagInfo>,
+	cosmetics: Vec<CosmeticSuggestion>,
+}
+
+fn suggest_doc(op: TransformOperation) -> TransformOperation {
+	op.id("suggestStore")
+		.summary("Suggest tags and cosmetics while typing")
+		.description(
+			"Returns the tags and cosmetics best matching `text`, up to 5 of each, \
+			 for a search bar's dropdown. Cosmetics match exactly as in \
+			 `/cosmetics/search`, ranked by relevance then popularity.",
+		)
+		.tag("cosmetics")
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn suggest_endpoint(
+	State(state): State<ApiState>,
+	Query(query): Query<SuggestQuery>,
+) -> Result<Json<SuggestResponse>, SearchError> {
+	use entities::{cosmetic, prelude::*, tags};
+
+	let text = query.text.trim();
+	if text.is_empty() {
+		return Ok(Json(SuggestResponse::default()));
+	}
+
+	let similarity = |column: tags::Column| -> SimpleExpr {
+		Func::cust(Alias::new("word_similarity"))
+			.arg(text)
+			.arg(Expr::col((tags::Entity, column)))
+			.into()
+	};
+	let pattern = format!("%{text}%");
+
+	let tags = Tags::find()
+		.filter(tags::Column::TagType.ne(TagType::Category))
+		.filter(
+			Condition::any()
+				.add(Expr::col((tags::Entity, tags::Column::Name)).ilike(pattern.as_str()))
+				.add(
+					Expr::col((tags::Entity, tags::Column::DisplayName))
+						.ilike(pattern.as_str()),
+				)
+				.add(Expr::expr(similarity(tags::Column::Name)).gte(SIMILARITY_THRESHOLD))
+				.add(
+					Expr::expr(similarity(tags::Column::DisplayName))
+						.gte(SIMILARITY_THRESHOLD),
+				),
+		)
+		.order_by(
+			SimpleExpr::from(Func::greatest([
+				similarity(tags::Column::Name),
+				similarity(tags::Column::DisplayName),
+			])),
+			Order::Desc,
+		)
+		.order_by_asc(tags::Column::Name)
+		.limit(SUGGESTIONS)
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(TagInfo::from_tag)
+		.collect();
+
+	let search = SearchQuery {
+		text: Some(text.to_owned()),
+		..Default::default()
+	};
+	let page: Vec<BucketRow> = buckets(&search)
+		.order_by(relevance(text), Order::Desc)
+		.order_by(
+			Expr::col((cosmetic::Entity, cosmetic::Column::PurchaseCount)).sum(),
+			Order::Desc,
+		)
+		.order_by(
+			Expr::col((cosmetic::Entity, cosmetic::Column::Id)).min(),
+			Order::Asc,
+		)
+		.limit(SUGGESTIONS)
+		.into_model()
+		.all(&state.database)
+		.await?;
+
+	let (mut members, group_names) = load_members(&state.database, &page).await?;
+	let cosmetics = page
+		.iter()
+		.filter_map(|row| {
+			let representative = members.remove(&row.key())?.into_iter().next()?;
+			Some(CosmeticSuggestion {
+				name: entry_name(row, &representative, &group_names),
+				id: representative.id,
+				r#type: representative.r#type,
+				cover_asset_id: representative.cover_asset_id,
+			})
+		})
+		.collect();
+
+	Ok(Json(SuggestResponse { tags, cosmetics }))
 }

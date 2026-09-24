@@ -4,12 +4,12 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::TagType;
 use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 
+use super::TagInfo;
 use crate::api::ApiState;
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -26,30 +26,6 @@ impl IntoResponse for ListError {
 			},
 			self,
 		)
-	}
-}
-
-/// A single tag that may be applied to cosmetics.
-#[derive(Debug, Serialize, JsonSchema)]
-struct TagInfo {
-	id: i32,
-	name: String,
-	display_name: Option<String>,
-	description: Option<String>,
-	tag_type: TagType,
-	created_at: DateTime<FixedOffset>,
-}
-
-impl TagInfo {
-	fn from_tag(tag: entities::tags::Model) -> Self {
-		TagInfo {
-			id: tag.id,
-			name: tag.name,
-			display_name: tag.display_name,
-			description: tag.description,
-			tag_type: tag.tag_type,
-			created_at: tag.created_at,
-		}
 	}
 }
 
