@@ -64,8 +64,10 @@ pub(super) async fn mods_endpoint(
 		.select_only()
 	};
 
+	let players = || Expr::col(player_mod::Column::PlayerId);
+
 	let reporting_players = reported()
-		.column_as(Expr::cust("COUNT(DISTINCT player_id)"), "players")
+		.column_as(players().count_distinct(), "players")
 		.into_tuple::<i64>()
 		.one(&state.database)
 		.await?
@@ -73,9 +75,9 @@ pub(super) async fn mods_endpoint(
 
 	let mods = reported()
 		.column(player_mod::Column::ModId)
-		.column_as(Expr::cust("COUNT(*)"), "players")
+		.column_as(players().count(), "players")
 		.group_by(player_mod::Column::ModId)
-		.order_by_desc(Expr::cust("players"))
+		.order_by_desc(players().count())
 		.order_by_asc(player_mod::Column::ModId)
 		.into_model::<ModUsage>()
 		.all(&state.database)

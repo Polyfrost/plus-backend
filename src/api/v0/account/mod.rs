@@ -83,6 +83,8 @@ impl OperationInput for AuthenticatedPlayer {
 	}
 }
 
+impl OperationInput for ClientKind {}
+
 impl OperationInput for AdminPlayer {
 	fn operation_input(
 		ctx: &mut aide::generate::GenContext,

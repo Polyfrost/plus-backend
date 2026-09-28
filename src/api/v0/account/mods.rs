@@ -18,7 +18,10 @@ use sea_orm::{
 };
 use serde::Deserialize;
 
-use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
+use crate::api::{
+	ApiState,
+	v0::account::{AuthenticatedPlayer, ClientKind},
+};
 
 const MAX_MODS: usize = 1000;
 const MAX_FIELD_LEN: usize = 64;
@@ -81,8 +84,13 @@ fn valid_version(version: &str) -> bool {
 async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	client: ClientKind,
 	Json(body): Json<RequestBody>,
 ) -> Result<NoContent, ModsError> {
+	if client != ClientKind::Game {
+		return Ok(NoContent);
+	}
+
 	let rows: Vec<_> = body
 		.mods
 		.into_iter()

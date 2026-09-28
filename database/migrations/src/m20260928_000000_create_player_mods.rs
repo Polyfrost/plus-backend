@@ -44,16 +44,6 @@ impl MigrationTrait for Migration {
 					)
 					.to_owned(),
 			)
-			.await?;
-
-		manager
-			.create_index(
-				Index::create()
-					.name("idx_player_mod_reported_at")
-					.table(PlayerMod::Table)
-					.col(PlayerMod::ReportedAt)
-					.to_owned(),
-			)
 			.await
 	}
 
