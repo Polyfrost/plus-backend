@@ -37,6 +37,7 @@ pub mod play_session;
 pub mod player_client_info;
 pub mod player_equipped_cosmetic;
 pub mod player_geo;
+pub mod player_mod;
 pub mod player_owned_cosmetic;
 pub mod relationship_requests;
 pub mod relationships;

@@ -1,5 +1,6 @@
 mod link_puid;
 mod login;
+mod mods;
 
 use aide::{OperationInput, axum::ApiRouter, openapi::SecurityRequirement};
 use axum::{
@@ -30,6 +31,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.merge(login::router())
 		.merge(link_puid::router())
+		.merge(mods::router())
 }
 
 #[derive(Debug)]

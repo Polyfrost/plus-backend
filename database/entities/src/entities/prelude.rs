@@ -35,6 +35,7 @@ pub use super::play_session::Entity as PlaySession;
 pub use super::player_client_info::Entity as PlayerClientInfo;
 pub use super::player_equipped_cosmetic::Entity as PlayerEquippedCosmetic;
 pub use super::player_geo::Entity as PlayerGeo;
+pub use super::player_mod::Entity as PlayerMod;
 pub use super::player_owned_cosmetic::Entity as PlayerOwnedCosmetic;
 pub use super::relationship_requests::Entity as RelationshipRequests;
 pub use super::relationships::Entity as Relationships;

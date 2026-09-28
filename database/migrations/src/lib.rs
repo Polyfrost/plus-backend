@@ -63,6 +63,7 @@ mod m20260826_000004_clear_stripe_product_ids;
 mod m20260921_000000_create_player_geo;
 mod m20260921_000001_add_geo_to_client_daily;
 mod m20260922_000000_create_api_tokens;
+mod m20260928_000000_create_player_mods;
 
 pub struct Migrator;
 
@@ -133,6 +134,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260921_000000_create_player_geo::Migration),
 			Box::new(m20260921_000001_add_geo_to_client_daily::Migration),
       Box::new(m20260922_000000_create_api_tokens::Migration),
+			Box::new(m20260928_000000_create_player_mods::Migration),
 		]
 	}
 }
