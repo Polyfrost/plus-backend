@@ -12,8 +12,9 @@ use serde::Deserialize;
 
 use crate::{
 	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	storefront,
 	paynow::{PayNowError, models::UpsertProduct},
-	utils::money::{discounted, to_cents},
+	utils::money::to_cents,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -22,10 +23,6 @@ pub enum UpdateError {
 	MissingBundle,
 	#[error("The bundle has no storefront product to price")]
 	MissingProduct,
-	#[error("The bundle has no base price to discount from")]
-	MissingBasePrice,
-	#[error("A discount requires either a discount rate or a new price")]
-	InvalidDiscount,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("PayNow error: {0}")]
@@ -37,9 +34,7 @@ impl IntoResponse for UpdateError {
 		crate::api::error_response(
 			match self {
 				Self::MissingBundle => StatusCode::NOT_FOUND,
-				Self::MissingProduct | Self::MissingBasePrice | Self::InvalidDiscount => {
-					StatusCode::BAD_REQUEST
-				}
+				Self::MissingProduct => StatusCode::BAD_REQUEST,
 				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
@@ -51,13 +46,7 @@ impl IntoResponse for UpdateError {
 /// The pricing columns a request resolves to.
 struct PriceUpdate {
 	store_product_id: String,
-	/// What PayNow should charge once the change lands, in minor units.
-	effective_minor: i64,
-	/// Set only on a silent increase; left untouched for a discount.
-	base_price: Option<f32>,
-	/// Always written: the rate for a discount, `None` to clear the discount on
-	/// a silent increase (which restores the full default price).
-	discount_rate: Option<i32>,
+	base_price: f32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -76,15 +65,9 @@ struct UpdateRequest {
 	description: Option<Option<String>>,
 	/// When present, replaces the bundle's contained cosmetics with this set.
 	cosmetic_ids: Option<Vec<i32>>,
-	/// A new price in USD major units. Without `discount` this is a silent
-	/// increase; with `discount` it is the discounted price.
+	/// The bundle's list price in USD major units. Sales and coupons are run
+	/// from `/v1/admin/discounts`, not from here.
 	new_price: Option<f32>,
-	/// Whether this update creates a discount rather than a silent price change.
-	#[serde(default)]
-	discount: bool,
-	/// The discount percentage. Optional when `new_price` is given (then it is
-	/// computed); required otherwise.
-	discount_rate: Option<i32>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -92,9 +75,9 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Update a bundle")
 		.description(
 			"Updates a bundle's metadata (enabled, name, collection, description), \
-			 optionally replaces its contained cosmetics, and drives its storefront \
-			 pricing. A silent price increase creates a new default price; a discount \
-			 creates a non-default price and records the rate. Admin password required.",
+			 optionally replaces its contained cosmetics, and sets its list price on \
+			 PayNow. Discounts are not set here: run a sale or a coupon from \
+			 `/v1/admin/discounts`. Admin password required.",
 		)
 		.tag("bundles")
 		.response_with::<{ StatusCode::NO_CONTENT.as_u16() }, (), _>(|res| {
@@ -129,42 +112,15 @@ async fn endpoint(
 
 	// Resolved without calling PayNow yet: its price is a destructive patch,
 	// so the database has to commit first.
-	let price_update = if body.new_price.is_some() || body.discount {
-		let product_id = bundle
-			.store_product_id
-			.clone()
-			.ok_or(UpdateError::MissingProduct)?;
-
-		if body.discount {
-			let base = bundle.base_price.ok_or(UpdateError::MissingBasePrice)?;
-			let (price, rate) = match (body.discount_rate, body.new_price) {
-				(Some(rate), _) => (discounted(base, rate), rate),
-				(None, Some(new_price)) => {
-					let rate = (((base - new_price) / base) * 100.0).round() as i32;
-					(new_price, rate)
-				}
-				(None, None) => return Err(UpdateError::InvalidDiscount),
-			};
-
-			Some(PriceUpdate {
-				store_product_id: product_id,
-				effective_minor: to_cents(price),
-				base_price: None,
-				discount_rate: Some(rate),
-			})
-		} else {
-			// Silent increase: new_price is guaranteed present by the guard above.
-			let new_price = body.new_price.ok_or(UpdateError::InvalidDiscount)?;
-
-			Some(PriceUpdate {
-				store_product_id: product_id,
-				effective_minor: to_cents(new_price),
-				base_price: Some(new_price),
-				discount_rate: None,
-			})
-		}
-	} else {
-		None
+	let price_update = match body.new_price {
+		Some(new_price) => Some(PriceUpdate {
+			store_product_id: bundle
+				.store_product_id
+				.clone()
+				.ok_or(UpdateError::MissingProduct)?,
+			base_price: new_price,
+		}),
+		None => None,
 	};
 	let visibility_product = bundle.store_product_id.clone();
 
@@ -190,10 +146,7 @@ async fn endpoint(
 		changed = true;
 	}
 	if let Some(price) = &price_update {
-		if let Some(base) = price.base_price {
-			active.base_price = Set(Some(base));
-		}
-		active.discount_rate = Set(price.discount_rate);
+		active.base_price = Set(Some(price.base_price));
 		changed = true;
 	}
 
@@ -229,7 +182,7 @@ async fn endpoint(
 		state
 			.paynow
 			.client
-			.set_product_price(&price.store_product_id, price.effective_minor)
+			.set_product_price(&price.store_product_id, to_cents(price.base_price))
 			.await?;
 	}
 
@@ -247,6 +200,16 @@ async fn endpoint(
 				},
 			)
 			.await?;
+	}
+
+	// A new collection changes which PayNow sales and coupons reach it.
+	if body.collection.is_some() {
+		storefront::sync_bundle_tags_or_warn(
+			&state.database,
+			&state.paynow.client,
+			&[body.bundle_id],
+		)
+		.await;
 	}
 
 	Ok(StatusCode::NO_CONTENT)

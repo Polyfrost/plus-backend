@@ -1,8 +1,11 @@
 mod analytics;
+mod discounts;
 mod grants;
 mod hello;
+mod listings;
 mod paynow;
-mod store;
+
+pub(super) use paynow::spawn_expiry_sweeper;
 
 use aide::axum::ApiRouter;
 
@@ -12,8 +15,9 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.nest("/checkout", paynow::checkout_router().await)
 		.nest("/paynow", paynow::webhook_router().await)
-		.nest("/store", store::setup_router().await)
+		.merge(discounts::router())
 		.merge(grants::router())
+		.merge(listings::router())
 		.merge(hello::router())
 		.merge(analytics::setup_router().await)
 }

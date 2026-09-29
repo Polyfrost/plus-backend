@@ -47,6 +47,24 @@ pub(crate) struct Product {
 	pub id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct Tag {
+	pub id: String,
+	pub slug: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct UpsertTag<'a> {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub slug: Option<&'a str>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub name: Option<&'a str>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub description: Option<&'a str>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub enabled: Option<bool>,
+}
+
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct UpsertProduct<'a> {
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -64,6 +82,19 @@ pub(crate) struct UpsertProduct<'a> {
 	pub allow_subscription: Option<bool>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub is_hidden: Option<bool>,
+	/// Storefront tag ids. Sent whole: PayNow replaces the set rather than
+	/// merging, so a partial list would silently untag the product.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tags: Option<Vec<String>>,
+	/// `Some(None)` sends null, which clears the window.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub enabled_at: Option<Option<String>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub enabled_until: Option<Option<String>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub is_gifting_disabled: Option<bool>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub is_coupons_disabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +116,50 @@ pub(crate) struct CreateCheckout<'a> {
 	/// PayNow rejects the whole checkout if any code is invalid.
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	pub promo_codes: Vec<String>,
+}
+
+/// A PayNow sale. Every field is sent, so an update replaces the whole thing.
+#[derive(Debug, Serialize)]
+pub(crate) struct UpsertSale<'a> {
+	pub name: &'a str,
+	pub enabled: bool,
+	pub discount_type: &'a str,
+	pub discount_amount: i64,
+	pub duration: &'a str,
+	pub minimum_order_value: i64,
+	pub apply_to_product_ids: &'a [String],
+	pub apply_to_tag_ids: &'a [String],
+	pub begins_at: String,
+	pub ends_at: Option<String>,
+}
+
+/// A PayNow coupon. Every field is sent, so an update replaces the whole thing.
+#[derive(Debug, Serialize)]
+pub(crate) struct UpsertCoupon<'a> {
+	pub code: &'a str,
+	pub note: Option<&'a str>,
+	pub enabled: bool,
+	pub discount_type: &'a str,
+	pub discount_amount: i64,
+	pub discount_apply_individually: bool,
+	pub discount_apply_before_sales: bool,
+	pub duration: &'a str,
+	pub minimum_order_value: i64,
+	pub apply_to_products: &'a [String],
+	pub apply_to_tags: &'a [String],
+	pub redeem_limit_store_enabled: bool,
+	pub redeem_limit_store_amount: i32,
+	pub redeem_limit_customer_enabled: bool,
+	pub redeem_limit_customer_amount: i32,
+	pub usable_on_one_time_purchase: bool,
+	pub usable_on_subscription: bool,
+	pub usable_at: Option<String>,
+	pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Created {
+	pub id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +191,9 @@ pub(crate) struct OrderLine {
 	pub total_amount: i64,
 	#[serde(default)]
 	pub gift_to_customer: Option<Customer>,
+	/// The PayNow sale that priced this line, if any.
+	#[serde(default)]
+	pub sale_id: Option<String>,
 	/// Present on the order read back from the API, absent on the webhook.
 	#[serde(default)]
 	pub refunded_amount: Option<i64>,
@@ -139,6 +217,13 @@ pub(crate) struct Order {
 	pub checkout: Option<CheckoutSummary>,
 	#[serde(default)]
 	pub lines: Vec<OrderLine>,
+	#[serde(default)]
+	pub applied_coupons: Vec<AppliedCoupon>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AppliedCoupon {
+	pub coupon_id: String,
 }
 
 #[derive(Debug, Deserialize)]

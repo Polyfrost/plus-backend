@@ -8,7 +8,8 @@ use tracing::{info, warn};
 use crate::{
 	commands::ProvisionPaynowArgs,
 	paynow::{PayNowClient, PayNowError, catalog},
-	utils::money::effective_cents,
+	product_settings::{self, Key},
+	utils::money::to_cents,
 };
 
 /// `to_cents` assumes USD; anything else misprices the whole catalogue.
@@ -20,6 +21,9 @@ struct Totals {
 	adopted: usize,
 	skipped: usize,
 	synced: usize,
+	tagged: usize,
+	settings: usize,
+	discounts: usize,
 	failed: usize,
 }
 
@@ -72,15 +76,169 @@ pub(crate) async fn run(args: ProvisionPaynowArgs) {
 		}
 	}
 
+	// After the products exist: a tag set can only be pushed onto a product
+	// that has been provisioned.
+	if args.sync_tags && !args.dry_run {
+		totals.tagged = sync_tags(&database, &client, &mut totals).await;
+	}
+	if args.sync_settings && !args.dry_run {
+		sync_settings(&database, &client, &mut totals).await;
+	}
+	// After tags: a discount scoped to a tag needs it on PayNow first.
+	if args.sync_discounts && !args.dry_run {
+		sync_discounts(&database, &client, &mut totals).await;
+	}
+
 	info!(
 		created = totals.created,
 		adopted = totals.adopted,
 		synced = totals.synced,
+		tagged = totals.tagged,
+		settings = totals.settings,
+		discounts = totals.discounts,
 		skipped = totals.skipped,
 		failed = totals.failed,
 		dry_run = args.dry_run,
 		"Provisioning finished"
 	);
+}
+
+/// Mirrors every tag and pushes each product's set, one product at a time so
+/// a single rejection does not lose the rest.
+async fn sync_tags(
+	database: &DatabaseConnection,
+	client: &PayNowClient,
+	totals: &mut Totals,
+) -> usize {
+	let cosmetic_ids: Vec<i32> = match Cosmetic::find()
+		.filter(cosmetic::Column::StoreProductId.is_not_null())
+		.all(database)
+		.await
+	{
+		Ok(rows) => rows.into_iter().map(|row| row.id).collect(),
+		Err(error) => {
+			warn!("Unable to read cosmetics to tag: {error}");
+			totals.failed += 1;
+			return 0;
+		}
+	};
+
+	info!(count = cosmetic_ids.len(), "Syncing storefront tags");
+
+	let bundle_ids: Vec<i32> = match Bundles::find()
+		.filter(bundles::Column::StoreProductId.is_not_null())
+		.all(database)
+		.await
+	{
+		Ok(rows) => rows.into_iter().map(|row| row.id).collect(),
+		Err(error) => {
+			warn!("Unable to read bundles to tag: {error}");
+			totals.failed += 1;
+			return 0;
+		}
+	};
+
+	// One pass: variants share a product, so pushing per cosmetic would send
+	// the same set once per variant.
+	let pushed = match crate::storefront::sync_cosmetic_tags(database, client, &cosmetic_ids)
+		.await
+	{
+		Ok(pushed) => pushed,
+		Err(error) => {
+			totals.failed += 1;
+			// Adoption is by slug and pushing a set twice is harmless, so the
+			// repair for a partial run is to run it again.
+			warn!("Unable to sync tags; re-run to continue: {error}");
+			0
+		}
+	};
+
+	pushed
+		+ match crate::storefront::sync_bundle_tags(database, client, &bundle_ids).await {
+			Ok(pushed) => pushed,
+			Err(error) => {
+				totals.failed += 1;
+				warn!("Unable to sync bundle tags; re-run to continue: {error}");
+				0
+			}
+		}
+}
+
+async fn sync_discounts(
+	database: &DatabaseConnection,
+	client: &PayNowClient,
+	totals: &mut Totals,
+) {
+	let rows = match Discount::find().all(database).await {
+		Ok(rows) => rows,
+		Err(error) => {
+			warn!("Unable to read discounts: {error}");
+			totals.failed += 1;
+			return;
+		}
+	};
+	let mut targets = match crate::pricing::targets_by_discount(database, &rows).await {
+		Ok(targets) => targets,
+		Err(error) => {
+			warn!("Unable to read discount targets: {error}");
+			totals.failed += 1;
+			return;
+		}
+	};
+
+	for row in rows {
+		let own = targets.remove(&row.id).unwrap_or_default();
+		let id = row.id;
+		// Passed as its own previous version, so an existing copy is updated
+		// rather than duplicated.
+		let previous = row.clone();
+		match crate::storefront::push_and_store(database, client, Some(&previous), row, &own)
+			.await
+		{
+			Ok(_) => totals.discounts += 1,
+			Err(error) => {
+				totals.failed += 1;
+				warn!(discount = id, "Unable to push discount: {error}");
+			}
+		}
+	}
+}
+
+async fn sync_settings(
+	database: &DatabaseConnection,
+	client: &PayNowClient,
+	totals: &mut Totals,
+) {
+	let rows = match ProductSettings::find().all(database).await {
+		Ok(rows) => rows,
+		Err(error) => {
+			warn!("Unable to read product settings: {error}");
+			totals.failed += 1;
+			return;
+		}
+	};
+
+	for row in rows {
+		let Some(key) = Key::of_row(&row) else {
+			continue;
+		};
+		let pushed = match key.product_id(database).await {
+			Ok(Some(product_id)) => product_settings::push(client, &product_id, &row)
+				.await
+				.map_err(|error| error.to_string()),
+			// Not provisioned yet; the next run with this flag picks it up.
+			Ok(None) => continue,
+			Err(error) => Err(error.to_string()),
+		};
+
+		match pushed {
+			Ok(()) => totals.settings += 1,
+			Err(error) => {
+				totals.failed += 1;
+				warn!(?key, "Unable to push product settings: {error}");
+			}
+		}
+	}
 }
 
 async fn provision(
@@ -216,10 +374,7 @@ async fn collect(database: &DatabaseConnection) -> Result<Vec<Listing>, DbErr> {
 					.clone()
 					.unwrap_or_else(|| format!("Cosmetic #{}", cosmetic.id)),
 				description: cosmetic.description.clone(),
-				price_minor: effective_cents(
-					cosmetic.base_price.unwrap_or_default(),
-					cosmetic.discount_rate,
-				),
+				price_minor: to_cents(cosmetic.base_price.unwrap_or_default()),
 				hidden: !cosmetic.enabled,
 				existing_product_id: cosmetic.store_product_id.clone(),
 				cosmetic_ids: vec![cosmetic.id],
@@ -241,10 +396,7 @@ async fn collect(database: &DatabaseConnection) -> Result<Vec<Listing>, DbErr> {
 				.or_else(|| reference.name.clone())
 				.unwrap_or_else(|| format!("Cosmetic group #{group_id}")),
 			description: reference.description.clone(),
-			price_minor: effective_cents(
-				reference.base_price.unwrap_or_default(),
-				reference.discount_rate,
-			),
+			price_minor: to_cents(reference.base_price.unwrap_or_default()),
 			hidden: !group
 				.map(|group| group.enabled)
 				.unwrap_or(reference.enabled),
@@ -265,10 +417,7 @@ async fn collect(database: &DatabaseConnection) -> Result<Vec<Listing>, DbErr> {
 			slug: catalog::bundle_slug(bundle.id),
 			name: bundle.name.clone(),
 			description: bundle.description.clone(),
-			price_minor: effective_cents(
-				bundle.base_price.unwrap_or_default(),
-				bundle.discount_rate,
-			),
+			price_minor: to_cents(bundle.base_price.unwrap_or_default()),
 			hidden: !bundle.enabled,
 			existing_product_id: bundle.store_product_id.clone(),
 			cosmetic_ids: Vec::new(),

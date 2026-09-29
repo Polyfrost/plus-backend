@@ -25,7 +25,6 @@ pub struct Model {
 	pub store_product_id: Option<String>,
 	#[sea_orm(column_type = "Float", nullable)]
 	pub base_price: Option<f32>,
-	pub discount_rate: Option<i32>,
 	pub collection: Option<i32>,
 	#[sea_orm(column_type = "Text", nullable)]
 	pub description: Option<String>,

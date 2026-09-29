@@ -2,19 +2,26 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use entities::{
-	cosmetic, cosmetic_ownership_event, player_owned_cosmetic,
+	cosmetic, ownership_grant,
 	prelude::*,
 	sea_orm_active_enums::{
 		CosmeticType, OwnershipEventKind, TransactionProvider, TransactionStatus,
 	},
 	transaction, transaction_line, user,
 };
-use sea_orm::{ActiveValue, DbErr, QuerySelect, Set, prelude::*, sea_query::OnConflict};
+use sea_orm::{
+	DbErr, QuerySelect, Set, prelude::*, sea_query::OnConflict,
+};
 use tracing::warn;
 use uuid::Uuid;
 
 use super::resolve::{Product, resolve_products};
-use crate::{database::DatabaseUserExt, paynow::models::OrderLine};
+use crate::{
+	database::DatabaseUserExt,
+	ownership::{self, Settled},
+	paynow::models::OrderLine,
+	product_settings,
+};
 
 /// What changed for one player, ready to push over the websocket.
 #[derive(Debug, Default)]
@@ -24,7 +31,7 @@ pub(super) struct OwnershipGrant {
 }
 
 impl OwnershipGrant {
-	fn push(&mut self, cosmetic: &cosmetic::Model) {
+	pub(super) fn push(&mut self, cosmetic: &cosmetic::Model) {
 		if matches!(cosmetic.r#type, CosmeticType::Emote) {
 			self.emote_ids.push(cosmetic.id);
 		} else {
@@ -90,49 +97,51 @@ pub(super) async fn grant_lines(
 			continue;
 		}
 
-		let granted =
-			PlayerOwnedCosmetic::insert_many(cosmetics.iter().map(|cosmetic| {
-				player_owned_cosmetic::ActiveModel {
-					player_id: Set(recipient.id),
-					cosmetic_id: Set(cosmetic.id),
-					acquired_via: Set(TransactionProvider::Paynow),
-					transaction_id: Set(Some(context.transaction.id)),
-					transaction_line_id: Set(Some(stored.id)),
-					acquired_at: ActiveValue::NotSet,
-				}
-			}))
-			.on_conflict(
-				OnConflict::columns([
-					player_owned_cosmetic::Column::PlayerId,
-					player_owned_cosmetic::Column::CosmeticId,
-				])
-				.do_nothing()
-				.to_owned(),
-			)
-			.exec_without_returning(txn)
-			.await?;
-
-		if granted == 0 {
-			continue;
-		}
-
-		// The insert reports how many rows landed but not which.
-		let granted_ids = owned_from_line(txn, stored.id).await?;
-		if granted_ids.is_empty() {
-			continue;
-		}
-
-		bump_purchase_count(txn, &granted_ids, 1).await?;
-		crate::database::record_ownership_events(
+		let rental_days = product_settings::load(txn, &[product.key()])
+			.await?
+			.remove(&product.key())
+			.and_then(|settings| settings.model.expires_after_days);
+		let cosmetic_ids: Vec<i32> = cosmetics.iter().map(|cosmetic| cosmetic.id).collect();
+		ownership::record(
 			txn,
 			recipient.id,
-			&granted_ids,
-			OwnershipEventKind::Granted,
+			&cosmetic_ids,
 			TransactionProvider::Paynow,
 			Some(context.transaction.id),
 			Some(stored.id),
+			rental_days,
 		)
 		.await?;
+
+		// New or extended. A copy already owned for good is left as it was.
+		let granted: Vec<(i32, Option<DateTimeWithTimeZone>)> =
+			ownership::settle(txn, recipient.id, &cosmetic_ids)
+				.await?
+				.into_iter()
+				.filter_map(|(id, settled)| match settled {
+					Settled::Added(held) | Settled::Changed(held) => Some((id, held.expires_at())),
+					Settled::Removed | Settled::Unchanged => None,
+				})
+				.collect();
+		if granted.is_empty() {
+			continue;
+		}
+		let granted_ids: Vec<i32> = granted.iter().map(|(id, _)| *id).collect();
+
+		bump_purchase_count(txn, &granted_ids, 1).await?;
+		for (expires_at, cosmetic_ids) in by_expiry(&granted) {
+			crate::database::record_ownership_events(
+				txn,
+				recipient.id,
+				&cosmetic_ids,
+				OwnershipEventKind::Granted,
+				TransactionProvider::Paynow,
+				Some(context.transaction.id),
+				Some(stored.id),
+				expires_at,
+			)
+			.await?;
+		}
 
 		let grant = grants.entry(recipient_uuid).or_default();
 		for cosmetic in cosmetics {
@@ -146,6 +155,17 @@ pub(super) async fn grant_lines(
 	Ok(grants)
 }
 
+/// Events carry the expiry, so one call per distinct expiry.
+fn by_expiry(
+	rows: &[(i32, Option<DateTimeWithTimeZone>)],
+) -> HashMap<Option<DateTimeWithTimeZone>, Vec<i32>> {
+	let mut grouped: HashMap<Option<DateTimeWithTimeZone>, Vec<i32>> = HashMap::new();
+	for (cosmetic_id, expires_at) in rows {
+		grouped.entry(*expires_at).or_default().push(*cosmetic_id);
+	}
+	grouped
+}
+
 /// Inserts the line, returning `None` when it was already recorded.
 async fn insert_line(
 	txn: &impl ConnectionTrait,
@@ -155,7 +175,7 @@ async fn insert_line(
 	recipient_id: i32,
 ) -> Result<Option<transaction_line::Model>, DbErr> {
 	let (bundle_id, group_id, cosmetic_id) = match product {
-		Some(Product::Bundle { bundle_id, .. }) => (Some(*bundle_id), None, None),
+		Some(Product::Bundle { bundle, .. }) => (Some(bundle.id), None, None),
 		Some(Product::CosmeticGroup { group_id, .. }) => (None, Some(*group_id), None),
 		Some(Product::Cosmetic(cosmetic)) => (None, None, Some(cosmetic.id)),
 		None => (None, None, None),
@@ -197,82 +217,79 @@ async fn insert_line(
 		.await
 }
 
-/// Revokes everything the given lines granted and marks them returned.
+/// Takes back what the given lines granted and marks them returned. Anything
+/// the player also holds through another purchase stays, for whatever time
+/// that purchase leaves.
 pub(super) async fn revoke_lines(
 	txn: &impl ConnectionTrait,
-	transaction_id: i32,
 	line_ids: &[i64],
 	returned_at: chrono::DateTime<Utc>,
 	status: TransactionStatus,
 ) -> Result<Grants, DbErr> {
-	if line_ids.is_empty() {
+	let revoked = ownership::set_lines_active(txn, line_ids, false).await?;
+	let grants = settle_moved(txn, &revoked, OwnershipEventKind::Revoked).await?;
+	mark_lines(txn, line_ids, returned_at, status).await?;
+	Ok(grants)
+}
+
+/// Settles every player whose grants just moved, with one event per grant.
+async fn settle_moved(
+	txn: &impl ConnectionTrait,
+	moved: &[ownership_grant::Model],
+	kind: OwnershipEventKind,
+) -> Result<Grants, DbErr> {
+	let restoring = matches!(kind, OwnershipEventKind::Granted);
+	let mut by_player: HashMap<i32, Vec<&ownership_grant::Model>> = HashMap::new();
+	for grant in moved {
+		by_player.entry(grant.player_id).or_default().push(grant);
+	}
+	if by_player.is_empty() {
 		return Ok(Grants::new());
 	}
 
-	let owned = PlayerOwnedCosmetic::find()
-		.filter(player_owned_cosmetic::Column::TransactionLineId.is_in(line_ids.to_vec()))
-		.all(txn)
-		.await?;
-	if owned.is_empty() {
-		return mark_lines(txn, line_ids, returned_at, status)
-			.await
-			.map(|()| Grants::new());
-	}
-
-	let cosmetics = cosmetics_by_id(
-		txn,
-		owned.iter().map(|row| row.cosmetic_id).collect::<Vec<_>>(),
-	)
-	.await?;
-	let uuids = uuids_by_id(
-		txn,
-		owned.iter().map(|row| row.player_id).collect::<Vec<_>>(),
-	)
-	.await?;
-
-	// Grouped by line as well as player: once the owned rows are gone these
-	// events are all a won chargeback has to restore from.
-	let mut by_line: HashMap<(i32, Option<i64>), Vec<i32>> = HashMap::new();
-	for row in &owned {
-		by_line
-			.entry((row.player_id, row.transaction_line_id))
-			.or_default()
-			.push(row.cosmetic_id);
-	}
+	let cosmetics =
+		cosmetics_by_id(txn, moved.iter().map(|grant| grant.cosmetic_id).collect()).await?;
+	let uuids = uuids_by_id(txn, by_player.keys().copied().collect()).await?;
 
 	let mut grants = Grants::new();
-	for ((player_id, line_id), cosmetic_ids) in &by_line {
-		// Per group, not over the whole set: two players can have held the
-		// same cosmetic through two lines of one order.
-		bump_purchase_count(txn, cosmetic_ids, -1).await?;
-		crate::database::record_ownership_events(
-			txn,
-			*player_id,
-			cosmetic_ids,
-			OwnershipEventKind::Revoked,
-			TransactionProvider::Paynow,
-			Some(transaction_id),
-			*line_id,
-		)
-		.await?;
+	for (player_id, moved) in by_player {
+		let ids: Vec<i32> = moved.iter().map(|grant| grant.cosmetic_id).collect();
+		let settled = ownership::settle(txn, player_id, &ids).await?;
 
-		let Some(uuid) = uuids.get(player_id) else {
+		bump_purchase_count(txn, &ids, if restoring { 1 } else { -1 }).await?;
+		for grant in &moved {
+			let expires_at = match settled.get(&grant.cosmetic_id) {
+				Some(Settled::Added(held) | Settled::Changed(held)) => held.expires_at(),
+				_ => None,
+			};
+			crate::database::record_ownership_events(
+				txn,
+				player_id,
+				&[grant.cosmetic_id],
+				kind.clone(),
+				grant.provider.clone(),
+				grant.transaction_id,
+				grant.transaction_line_id,
+				expires_at,
+			)
+			.await?;
+		}
+
+		let Some(uuid) = uuids.get(&player_id) else {
 			continue;
 		};
 		let grant = grants.entry(*uuid).or_default();
-		for cosmetic_id in cosmetic_ids {
-			if let Some(cosmetic) = cosmetics.get(cosmetic_id) {
+		for (cosmetic_id, settled) in &settled {
+			let notify = match settled {
+				Settled::Removed => !restoring,
+				Settled::Added(_) | Settled::Changed(_) => restoring,
+				Settled::Unchanged => false,
+			};
+			if notify && let Some(cosmetic) = cosmetics.get(cosmetic_id) {
 				grant.push(cosmetic);
 			}
 		}
 	}
-
-	PlayerOwnedCosmetic::delete_many()
-		.filter(player_owned_cosmetic::Column::TransactionLineId.is_in(line_ids.to_vec()))
-		.exec(txn)
-		.await?;
-
-	mark_lines(txn, line_ids, returned_at, status).await?;
 
 	grants.retain(|_, grant| !grant.is_empty());
 	Ok(grants)
@@ -301,7 +318,8 @@ async fn mark_lines(
 	Ok(())
 }
 
-/// Reads the ownership event trail, since the owned rows were deleted.
+/// Turns the disputed lines' grants back on. A rental whose time ran out
+/// during the dispute stays gone.
 pub(super) async fn restore_transaction(
 	txn: &impl ConnectionTrait,
 	transaction: &transaction::Model,
@@ -319,105 +337,8 @@ pub(super) async fn restore_transaction(
 		return Ok(Grants::new());
 	}
 
-	let events = CosmeticOwnershipEvent::find()
-		.filter(
-			cosmetic_ownership_event::Column::TransactionLineId.is_in(disputed.clone()),
-		)
-		.all(txn)
-		.await?;
-
-	// Restorable when the disputed lines granted it and then revoked it.
-	let mut balance: HashMap<(i32, i32), i32> = HashMap::new();
-	let mut line_for: HashMap<(i32, i32), Option<i64>> = HashMap::new();
-	for event in &events {
-		let key = (event.player_id, event.cosmetic_id);
-		match event.kind {
-			OwnershipEventKind::Granted => {
-				*balance.entry(key).or_default() += 1;
-				line_for.insert(key, event.transaction_line_id);
-			}
-			OwnershipEventKind::Revoked => *balance.entry(key).or_default() -= 1,
-		}
-	}
-
-	let candidates: Vec<(i32, i32)> = balance
-		.into_iter()
-		.filter(|(_, count)| *count <= 0)
-		.map(|(key, _)| key)
-		.collect();
-
-	let held = already_owned(txn, &candidates).await?;
-	let restorable: Vec<(i32, i32)> = candidates
-		.into_iter()
-		.filter(|key| !held.contains(key))
-		.collect();
-	if restorable.is_empty() {
-		return Ok(Grants::new());
-	}
-
-	PlayerOwnedCosmetic::insert_many(restorable.iter().map(
-		|(player_id, cosmetic_id)| player_owned_cosmetic::ActiveModel {
-			player_id: Set(*player_id),
-			cosmetic_id: Set(*cosmetic_id),
-			acquired_via: Set(TransactionProvider::Paynow),
-			transaction_id: Set(Some(transaction.id)),
-			transaction_line_id: Set(
-				line_for.get(&(*player_id, *cosmetic_id)).copied().flatten(),
-			),
-			acquired_at: ActiveValue::NotSet,
-		},
-	))
-	.on_conflict(
-		OnConflict::columns([
-			player_owned_cosmetic::Column::PlayerId,
-			player_owned_cosmetic::Column::CosmeticId,
-		])
-		.do_nothing()
-		.to_owned(),
-	)
-	.exec_without_returning(txn)
-	.await?;
-
-	let cosmetics = cosmetics_by_id(
-		txn,
-		restorable.iter().map(|(_, cosmetic)| *cosmetic).collect(),
-	)
-	.await?;
-	let uuids =
-		uuids_by_id(txn, restorable.iter().map(|(player, _)| *player).collect()).await?;
-
-	let mut by_line: HashMap<(i32, Option<i64>), Vec<i32>> = HashMap::new();
-	for key @ (player_id, cosmetic_id) in &restorable {
-		by_line
-			.entry((*player_id, line_for.get(key).copied().flatten()))
-			.or_default()
-			.push(*cosmetic_id);
-	}
-
-	let mut grants = Grants::new();
-	for ((player_id, line_id), cosmetic_ids) in &by_line {
-		bump_purchase_count(txn, cosmetic_ids, 1).await?;
-		crate::database::record_ownership_events(
-			txn,
-			*player_id,
-			cosmetic_ids,
-			OwnershipEventKind::Granted,
-			TransactionProvider::Paynow,
-			Some(transaction.id),
-			*line_id,
-		)
-		.await?;
-
-		let Some(uuid) = uuids.get(player_id) else {
-			continue;
-		};
-		let grant = grants.entry(*uuid).or_default();
-		for cosmetic_id in cosmetic_ids {
-			if let Some(cosmetic) = cosmetics.get(cosmetic_id) {
-				grant.push(cosmetic);
-			}
-		}
-	}
+	let restored = ownership::set_lines_active(txn, &disputed, true).await?;
+	let grants = settle_moved(txn, &restored, OwnershipEventKind::Granted).await?;
 
 	TransactionLine::update_many()
 		.col_expr(
@@ -433,7 +354,6 @@ pub(super) async fn restore_transaction(
 		.exec(txn)
 		.await?;
 
-	grants.retain(|_, grant| !grant.is_empty());
 	Ok(grants)
 }
 
@@ -449,19 +369,6 @@ pub(super) async fn outstanding_line_ids(
 		.await?
 		.into_iter()
 		.map(|line| line.id)
-		.collect())
-}
-
-async fn owned_from_line(
-	txn: &impl ConnectionTrait,
-	line_id: i64,
-) -> Result<Vec<i32>, DbErr> {
-	Ok(PlayerOwnedCosmetic::find()
-		.filter(player_owned_cosmetic::Column::TransactionLineId.eq(line_id))
-		.all(txn)
-		.await?
-		.into_iter()
-		.map(|row| row.cosmetic_id)
 		.collect())
 }
 
@@ -495,31 +402,7 @@ async fn bump_purchase_count(
 	Ok(())
 }
 
-/// Which of these `(player, cosmetic)` pairs the player already holds.
-async fn already_owned(
-	txn: &impl ConnectionTrait,
-	pairs: &[(i32, i32)],
-) -> Result<HashSet<(i32, i32)>, DbErr> {
-	if pairs.is_empty() {
-		return Ok(HashSet::new());
-	}
-
-	let players: HashSet<i32> = pairs.iter().map(|(player, _)| *player).collect();
-	let cosmetics: HashSet<i32> = pairs.iter().map(|(_, cosmetic)| *cosmetic).collect();
-	let wanted: HashSet<(i32, i32)> = pairs.iter().copied().collect();
-
-	Ok(PlayerOwnedCosmetic::find()
-		.filter(player_owned_cosmetic::Column::PlayerId.is_in(players))
-		.filter(player_owned_cosmetic::Column::CosmeticId.is_in(cosmetics))
-		.all(txn)
-		.await?
-		.into_iter()
-		.map(|row| (row.player_id, row.cosmetic_id))
-		.filter(|key| wanted.contains(key))
-		.collect())
-}
-
-async fn cosmetics_by_id(
+pub(super) async fn cosmetics_by_id(
 	txn: &impl ConnectionTrait,
 	ids: Vec<i32>,
 ) -> Result<HashMap<i32, cosmetic::Model>, DbErr> {
@@ -533,7 +416,7 @@ async fn cosmetics_by_id(
 		.collect())
 }
 
-async fn uuids_by_id(
+pub(super) async fn uuids_by_id(
 	txn: &impl ConnectionTrait,
 	ids: Vec<i32>,
 ) -> Result<HashMap<i32, Uuid>, DbErr> {

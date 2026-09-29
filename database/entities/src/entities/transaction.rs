@@ -17,7 +17,6 @@ pub struct Model {
 	pub created_at: DateTimeWithTimeZone,
 	#[sea_orm(column_type = "JsonBinary")]
 	pub raw_metadata: Json,
-	pub discount_rate: Option<i32>,
 	pub buyer: Option<i32>,
 	pub amount_minor: Option<i64>,
 	#[sea_orm(column_type = "Text", nullable)]

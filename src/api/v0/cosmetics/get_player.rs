@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::get_with},
@@ -9,6 +11,7 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
+use chrono::{DateTime, FixedOffset};
 use schemars::JsonSchema;
 use sea_orm::{ColumnTrait as _, EntityTrait, ModelTrait as _, QueryFilter};
 use serde::{Deserialize, Serialize};
@@ -85,6 +88,9 @@ pub struct Response {
 	emotes: Vec<EmoteInfo>,
 	equipped: EquippedCosmetics,
 	particle_color: Option<i32>,
+	/// Rentals, by cosmetic or emote id, with when each runs out. Anything
+	/// owned and not listed is owned for good.
+	expiring: HashMap<i32, DateTime<FixedOffset>>,
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -123,6 +129,11 @@ async fn endpoint(
 			.find_also_related(Cosmetic)
 			.all(&state.database)
 			.await?;
+
+		response.expiring = owned
+			.iter()
+			.filter_map(|(row, _)| Some((row.cosmetic_id, row.expires_at?)))
+			.collect();
 
 		// No enabled check here: a cosmetic the player owns is theirs for good,
 		let mut rows = Vec::new();

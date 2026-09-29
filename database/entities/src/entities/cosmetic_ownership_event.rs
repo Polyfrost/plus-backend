@@ -15,6 +15,7 @@ pub struct Model {
 	pub transaction_id: Option<i32>,
 	pub occurred_at: DateTimeWithTimeZone,
 	pub transaction_line_id: Option<i64>,
+	pub expires_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

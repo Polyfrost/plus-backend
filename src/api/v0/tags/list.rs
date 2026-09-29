@@ -37,6 +37,9 @@ struct TagInfo {
 	display_name: Option<String>,
 	description: Option<String>,
 	tag_type: TagType,
+	/// The storefront tag mirroring this one, once provisioned. Scope a PayNow
+	/// sale with this instead of listing every product it covers.
+	paynow_tag_id: Option<String>,
 	created_at: DateTime<FixedOffset>,
 }
 
@@ -48,6 +51,7 @@ impl TagInfo {
 			display_name: tag.display_name,
 			description: tag.description,
 			tag_type: tag.tag_type,
+			paynow_tag_id: tag.paynow_tag_id,
 			created_at: tag.created_at,
 		}
 	}

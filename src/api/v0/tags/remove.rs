@@ -8,7 +8,10 @@ use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use serde::Deserialize;
 
-use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
+use crate::{
+	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	storefront::sync_cosmetic_tags_or_warn,
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum RemoveError {
@@ -77,10 +80,13 @@ async fn endpoint(
 
 	TagsCosmetic::delete_many()
 		.filter(tags_cosmetic::Column::TagId.eq(body.tag_id))
-		.filter(tags_cosmetic::Column::CosmeticId.is_in(cosmetic_ids))
+		.filter(tags_cosmetic::Column::CosmeticId.is_in(cosmetic_ids.clone()))
 		.exec(&txn)
 		.await?;
 	txn.commit().await?;
+
+	sync_cosmetic_tags_or_warn(&state.database, &state.paynow.client, &cosmetic_ids)
+		.await;
 
 	Ok(StatusCode::NO_CONTENT)
 }

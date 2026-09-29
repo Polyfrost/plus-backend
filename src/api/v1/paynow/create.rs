@@ -1,4 +1,7 @@
-use std::{collections::HashMap, net::IpAddr};
+use std::{
+	collections::{HashMap, HashSet},
+	net::IpAddr,
+};
 
 use aide::{OperationIo, operation::OperationInput, transform::TransformOperation};
 use axum::{
@@ -8,7 +11,8 @@ use axum::{
 	response::{IntoResponse, Response},
 };
 use axum_client_ip::ClientIp;
-use entities::{player_owned_cosmetic, prelude::*, user};
+use chrono::Utc;
+use entities::{player_owned_cosmetic, prelude::*, tags_cosmetic, user};
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, DbErr, Set, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -19,6 +23,8 @@ use super::resolve::{Product, dedupe};
 use crate::{
 	api::{ApiState, state::CHECKOUTS_PER_COOLDOWN},
 	paynow::{PayNowError, checkouts::NewCheckout, models::CreateCheckoutLine},
+	pricing::{Rule, Sellable, live_rules, normalise_code, quote},
+	product_settings::{self, Key, Settings},
 };
 
 /// Wrapped so aide leaves it out of the OpenAPI document. `None` when the
@@ -75,6 +81,18 @@ pub(super) enum CreateError {
 	UnknownProduct(String),
 	#[error("At most {MAX_PROMO_CODES} promo codes may be applied")]
 	TooManyPromoCodes,
+	#[error("Unknown or expired promo code {0}")]
+	UnknownPromoCode(String),
+	#[error("{0} is not on sale right now")]
+	NotAvailable(String),
+	#[error("{0} cannot be gifted")]
+	GiftingDisabled(String),
+	#[error("The player does not own what {0} requires")]
+	MissingRequirement(String),
+	#[error("{0} is sold out")]
+	SoldOut(String),
+	#[error("The buyer has already bought {0} as many times as allowed")]
+	LimitReached(String),
 	#[error("{0}")]
 	RejectedByProvider(String),
 	#[error("Too many checkout attempts, try again in a minute")]
@@ -91,12 +109,18 @@ impl IntoResponse for CreateError {
 				CreateError::MissingUrl | CreateError::Database(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
-				CreateError::AlreadyOwned(_) => StatusCode::CONFLICT,
+				CreateError::AlreadyOwned(_)
+				| CreateError::SoldOut(_)
+				| CreateError::LimitReached(_) => StatusCode::CONFLICT,
 				CreateError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
 				CreateError::NoProducts
 				| CreateError::TooManyProducts
 				| CreateError::UnknownProduct(_)
 				| CreateError::TooManyPromoCodes
+				| CreateError::UnknownPromoCode(_)
+				| CreateError::NotAvailable(_)
+				| CreateError::GiftingDisabled(_)
+				| CreateError::MissingRequirement(_)
 				| CreateError::RejectedByProvider(_) => StatusCode::BAD_REQUEST,
 			},
 			self,
@@ -131,8 +155,10 @@ pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"Creates a hosted checkout for one or more cosmetics/emotes using ",
 			"the store product ids returned from the cosmetic and bundle view ",
 			"endpoints. Responds 409 naming the cosmetics if the receiving ",
-			"player already owns any of them, and 400 if a product id does not ",
-			"resolve to an enabled cosmetic or bundle or a promo code is rejected."
+			"player already owns any of them or a product is sold out or at the ",
+			"buyer's limit, and 400 if a product id does not resolve to an ",
+			"enabled cosmetic or bundle, is outside its sale window, cannot be ",
+			"gifted, needs a cosmetic the player lacks, or a promo code is rejected."
 		))
 		.tag("checkout")
 }
@@ -189,6 +215,22 @@ pub(super) async fn endpoint(
 		.collect();
 	reject_already_owned(&state, player, &cosmetics).await?;
 
+	let keys: Vec<Key> = resolved.values().map(Product::key).collect();
+	let settings = product_settings::load(&state.database, &keys).await?;
+	enforce_settings(&state, &products, &resolved, &settings, player, buyer).await?;
+
+	// Priced here, not at PayNow: the sales and coupons are ours, and the
+	// buyer has to be charged the number the store showed them.
+	let applied = apply_discounts(
+		&state,
+		&products,
+		&resolved,
+		&settings,
+		&promo_codes,
+		buyer,
+	)
+	.await?;
+
 	let buyer_customer = customer_id(&state, buyer).await?;
 	let player_customer = if buyer == player {
 		buyer_customer.clone()
@@ -210,6 +252,10 @@ pub(super) async fn endpoint(
 		("player".to_string(), player.to_string()),
 		("buyer".to_string(), buyer.to_string()),
 		("products".to_string(), products.join(",")),
+		(
+			"quoted_discount".to_string(),
+			applied.quoted_discount_minor.to_string(),
+		),
 	]);
 
 	let session = state
@@ -218,7 +264,8 @@ pub(super) async fn endpoint(
 		.create_checkout(NewCheckout {
 			customer_id: &buyer_customer,
 			lines,
-			promo_codes,
+			// Sales apply on their own; codes have to be passed.
+			promo_codes: applied.codes,
 			return_url: &state.paynow.return_url,
 			cancel_url: &state.paynow.cancel_url,
 			metadata,
@@ -226,7 +273,7 @@ pub(super) async fn endpoint(
 		})
 		.await
 		// Everything else was validated first, so PayNow blaming the request
-		// means a promo code the buyer can correct.
+		// means a code the buyer can correct.
 		.map_err(|error| match error.message() {
 			Some(message) if error.is_client_error() => {
 				CreateError::RejectedByProvider(message.to_owned())
@@ -284,6 +331,8 @@ async fn reject_already_owned(
 
 	let owned: Vec<i32> = PlayerOwnedCosmetic::find()
 		.filter(player_owned_cosmetic::Column::PlayerId.eq(user.id))
+		// A rental can be extended or bought outright.
+		.filter(player_owned_cosmetic::Column::ExpiresAt.is_null())
 		.filter(
 			player_owned_cosmetic::Column::CosmeticId
 				.is_in(cosmetics.iter().map(|cosmetic| cosmetic.id)),
@@ -306,6 +355,83 @@ async fn reject_already_owned(
 			.collect::<Vec<_>>()
 			.join(", "),
 	))
+}
+
+/// Stock is checked, not reserved: it is virtual, so a rare oversell by a
+/// racing checkout costs nothing.
+async fn enforce_settings(
+	state: &ApiState,
+	product_ids: &[String],
+	resolved: &HashMap<String, Product>,
+	settings: &HashMap<Key, Settings>,
+	player: Uuid,
+	buyer: Uuid,
+) -> Result<(), CreateError> {
+	if settings.is_empty() {
+		return Ok(());
+	}
+
+	let now = Utc::now().fixed_offset();
+	let sold = product_settings::sold(&state.database, settings).await?;
+	let player_id = user_id(state, player).await?;
+	let buyer_id = if buyer == player {
+		player_id
+	} else {
+		user_id(state, buyer).await?
+	};
+
+	let owned: HashSet<i32> = match player_id {
+		Some(id) if settings.values().any(|s| !s.requirements.is_empty()) => {
+			PlayerOwnedCosmetic::find()
+				.filter(player_owned_cosmetic::Column::PlayerId.eq(id))
+				.all(&state.database)
+				.await?
+				.into_iter()
+				.map(|row| row.cosmetic_id)
+				.collect()
+		}
+		_ => HashSet::new(),
+	};
+
+	for product in product_ids.iter().filter_map(|id| resolved.get(id)) {
+		let key = product.key();
+		let Some(settings) = settings.get(&key) else {
+			continue;
+		};
+		let model = &settings.model;
+
+		if !settings.is_available(now) {
+			return Err(CreateError::NotAvailable(product.name()));
+		}
+		if model.gifting_disabled && buyer != player {
+			return Err(CreateError::GiftingDisabled(product.name()));
+		}
+		if !settings.requirements_met(&owned) {
+			return Err(CreateError::MissingRequirement(product.name()));
+		}
+		if model
+			.stock_limit
+			.is_some_and(|limit| sold.get(&key).copied().unwrap_or(0) >= i64::from(limit))
+		{
+			return Err(CreateError::SoldOut(product.name()));
+		}
+		if let (Some(limit), Some(buyer_id)) = (model.customer_limit, buyer_id)
+			&& product_settings::bought_by(&state.database, key, model, buyer_id).await?
+				>= u64::try_from(limit).unwrap_or(0)
+		{
+			return Err(CreateError::LimitReached(product.name()));
+		}
+	}
+
+	Ok(())
+}
+
+async fn user_id(state: &ApiState, player: Uuid) -> Result<Option<i32>, CreateError> {
+	Ok(User::find()
+		.filter(user::Column::MinecraftUuid.eq(player))
+		.one(&state.database)
+		.await?
+		.map(|user| user.id))
 }
 
 /// Cached on the user row so a repeat checkout skips the lookup.
@@ -338,3 +464,107 @@ async fn customer_id(state: &ApiState, player: Uuid) -> Result<String, CreateErr
 
 	Ok(customer.id)
 }
+
+/// What a basket's discounts resolved to: the ids to record once the order
+/// completes, and the codes PayNow needs to charge the same total.
+struct AppliedDiscounts {
+	/// As PayNow knows them.
+	codes: Vec<String>,
+	/// What PayNow should take off, checked against the order it reports.
+	quoted_discount_minor: i64,
+}
+
+/// Quotes the basket against our own sales and coupons.
+async fn apply_discounts(
+	state: &ApiState,
+	product_ids: &[String],
+	resolved: &HashMap<String, Product>,
+	settings: &HashMap<Key, Settings>,
+	codes: &[String],
+	buyer: Uuid,
+) -> Result<AppliedDiscounts, CreateError> {
+	let buyer_id = user_id(state, buyer).await?;
+
+	let live =
+		live_rules(&state.database, codes, buyer_id, Utc::now().into()).await?;
+
+	// A code that matched nothing is the buyer's typo, or a campaign that has
+	// ended. Either way they should be told, not silently charged full price.
+	// One PayNow does not carry cannot be charged there either.
+	let honoured: HashSet<String> = live
+		.iter()
+		.filter(|discount| discount.model.paynow_id.is_some())
+		.filter_map(|discount| discount.model.code.clone())
+		.collect();
+	let mut paynow_codes = Vec::with_capacity(codes.len());
+	for code in codes {
+		let code = normalise_code(code);
+		if !honoured.contains(&code) {
+			return Err(CreateError::UnknownPromoCode(code));
+		}
+		paynow_codes.push(code);
+	}
+
+	let tags = tags_by_cosmetic(state, resolved).await?;
+	let lines: Vec<Sellable> = product_ids
+		.iter()
+		.filter_map(|product_id| {
+			let product = resolved.get(product_id)?;
+			// A bundle carries no tags of its own on PayNow, so none here.
+			let tags: Vec<i32> = match product {
+				Product::Bundle { .. } => Vec::new(),
+				_ => product
+					.cosmetics()
+					.iter()
+					.filter_map(|cosmetic| tags.get(&cosmetic.id))
+					.flatten()
+					.copied()
+					.collect(),
+			};
+
+			let coupons_disabled = settings
+				.get(&product.key())
+				.is_some_and(|settings| settings.model.coupons_disabled);
+
+			Some(product.sellable(product_id, &tags, coupons_disabled))
+		})
+		.collect();
+
+	let rules: Vec<Rule> = live.iter().map(|discount| discount.rule.clone()).collect();
+	let quoted = quote(&lines, &rules, CHECKOUT_CURRENCY);
+
+	Ok(AppliedDiscounts {
+		codes: paynow_codes,
+		quoted_discount_minor: quoted.discount_minor,
+	})
+}
+
+/// Tag ids per cosmetic, for the rules that target a tag.
+async fn tags_by_cosmetic(
+	state: &ApiState,
+	resolved: &HashMap<String, Product>,
+) -> Result<HashMap<i32, Vec<i32>>, CreateError> {
+	let ids: Vec<i32> = resolved
+		.values()
+		.flat_map(Product::cosmetics)
+		.map(|cosmetic| cosmetic.id)
+		.collect();
+	if ids.is_empty() {
+		return Ok(HashMap::new());
+	}
+
+	let mut tags: HashMap<i32, Vec<i32>> = HashMap::new();
+	for row in TagsCosmetic::find()
+		.filter(tags_cosmetic::Column::CosmeticId.is_in(ids))
+		.all(&state.database)
+		.await?
+	{
+		tags.entry(row.cosmetic_id).or_default().push(row.tag_id);
+	}
+
+	Ok(tags)
+}
+
+/// The store sells in one currency; `provision-paynow` refuses to run against
+/// a store that does not.
+const CHECKOUT_CURRENCY: &str = "usd";

@@ -59,9 +59,11 @@ struct TransactionInfo {
 	provider_transaction_id: Option<String>,
 	status: TransactionStatus,
 	raw_metadata: serde_json::Value,
+	/// What PayNow charged, after any sale or coupon it applied.
 	amount_minor: Option<i64>,
 	currency: Option<String>,
-	discount_rate: Option<i32>,
+	/// What PayNow took off that charge, in the same minor units.
+	discount_minor: Option<i64>,
 	buyer: Option<Uuid>,
 }
 
@@ -130,8 +132,8 @@ pub(super) async fn endpoint(
 				currency: transaction
 					.currency
 					.filter(|_| transaction.buyer.is_none_or(|id| id == player.id)),
-				discount_rate: transaction
-					.discount_rate
+				discount_minor: transaction
+					.discount_minor
 					.filter(|_| transaction.buyer.is_none_or(|id| id == player.id)),
 			})
 		}

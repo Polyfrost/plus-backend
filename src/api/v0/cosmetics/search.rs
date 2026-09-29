@@ -27,6 +27,8 @@ use crate::{
 			tags::{CosmeticTags, tags_for_cosmetics},
 		},
 	},
+	pricing::display::{SaleInfo, cosmetic_sales},
+	product_settings::{self, Key, SettingsInfo},
 	utils::{pagination::MAX_PAGE_SIZE, serde::deserialize_comma_list},
 };
 
@@ -113,7 +115,13 @@ struct CosmeticSearchInfo {
 	collection: Option<i32>,
 	r#type: CosmeticType,
 	base_price: Option<f32>,
-	discount_rate: Option<i32>,
+	/// The sale this cosmetic is currently in, if any. `base_price` stays the
+	/// list price so the client can strike it through.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	sale: Option<SaleInfo>,
+	/// When and to whom this can be sold. Absent when nothing restricts it.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	settings: Option<SettingsInfo>,
 	asset_id: Option<i32>,
 	cover_asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
@@ -136,6 +144,8 @@ impl CosmeticSearchInfo {
 		name: String,
 		tags: CosmeticTags,
 		variants: Option<Vec<VariantView>>,
+		sale: Option<SaleInfo>,
+		settings: Option<SettingsInfo>,
 	) -> Self {
 		CosmeticSearchInfo {
 			id: cosmetic.id,
@@ -144,7 +154,8 @@ impl CosmeticSearchInfo {
 			collection: cosmetic.collection,
 			r#type: cosmetic.r#type,
 			base_price: cosmetic.base_price,
-			discount_rate: cosmetic.discount_rate,
+			sale,
+			settings,
 			asset_id: cosmetic.asset_id,
 			cover_asset_id: cosmetic.cover_asset_id,
 			created_at: cosmetic.created_at,
@@ -428,6 +439,16 @@ async fn endpoint(
 		.collect();
 	let mut tags = tags_for_cosmetics(&state.database, &representative_ids).await?;
 
+	// Priced from the representative variant, which is the one carrying the
+	// storefront product the whole group is sold under.
+	let representatives: Vec<entities::cosmetic::Model> = page
+		.iter()
+		.filter_map(|row| members.get(&row.key())?.first().cloned())
+		.collect();
+	let keys: Vec<Key> = representatives.iter().map(Key::of_cosmetic).collect();
+	let mut settings = product_settings::infos(&state.database, &keys).await?;
+	let mut sales = cosmetic_sales(&state.database, &representatives, &settings).await?;
+
 	let mut results: Vec<CosmeticSearchInfo> = Vec::with_capacity(page.len());
 	for row in &page {
 		let Some(members) = members.remove(&row.key()) else {
@@ -456,11 +477,16 @@ async fn endpoint(
 		};
 		let tags = tags.remove(&representative.id).unwrap_or_default();
 
+		let sale = sales.remove(&representative.id);
+		let settings = settings.remove(&Key::of_cosmetic(&representative));
+
 		results.push(CosmeticSearchInfo::from_cosmetic(
 			representative,
 			name,
 			tags,
 			variants,
+			sale,
+			settings,
 		));
 	}
 

@@ -695,6 +695,77 @@ pub(crate) async fn send_to_owner(
 	}
 }
 
+/// Takes revoked cosmetics off whoever has them equipped, both in the live
+/// state watchers see and in the database.
+pub(crate) async fn unequip_revoked(state: &ApiState, revoked: &HashMap<Uuid, Vec<i32>>) {
+	use entities::{player_equipped_cosmetic, prelude::*, user};
+	use sea_orm::Condition;
+
+	let mut cleared: HashSet<(Uuid, BodySlot)> = HashSet::new();
+	{
+		let mut runtime = state.realtime.player_runtime.write().await;
+		for (player, ids) in revoked {
+			let Some(player_state) = runtime.get_mut(player) else {
+				continue;
+			};
+			player_state.equipped.retain(|slot, id| {
+				let keep = !ids.contains(id);
+				if !keep {
+					cleared.insert((*player, slot.clone()));
+				}
+				keep
+			});
+		}
+	}
+
+	let persisted = async {
+		let users = User::find()
+			.filter(user::Column::MinecraftUuid.is_in(revoked.keys().copied()))
+			.all(&state.database)
+			.await?;
+		if users.is_empty() {
+			return Ok(Vec::new());
+		}
+
+		let owned_by = |user: &user::Model| revoked[&user.minecraft_uuid].iter().copied();
+		let removed = PlayerEquippedCosmetic::delete_many()
+			.filter(users.iter().fold(Condition::any(), |any, user| {
+				any.add(
+					Condition::all()
+						.add(player_equipped_cosmetic::Column::PlayerId.eq(user.id))
+						.add(player_equipped_cosmetic::Column::CosmeticId.is_in(owned_by(user))),
+				)
+			}))
+			.exec_with_returning(&state.database)
+			.await?;
+
+		Ok::<_, sea_orm::DbErr>(
+			removed
+				.into_iter()
+				.filter_map(|row| {
+					let user = users.iter().find(|user| user.id == row.player_id)?;
+					Some((user.minecraft_uuid, row.slot))
+				})
+				.collect(),
+		)
+	}
+	.await;
+	match persisted {
+		Ok(rows) => cleared.extend(rows),
+		Err(error) => warn!("Unable to unequip revoked cosmetics: {error}"),
+	}
+
+	for (player, slot) in cleared {
+		let packet = || ClientBoundPacket::PlayerCosmeticEquipped {
+			player,
+			slot: slot.clone(),
+			cosmetic_id: None,
+		};
+		broadcast_to_watchers(state, player, packet).await;
+		send_to_owner(state, player, packet).await;
+	}
+}
+
 pub(crate) async fn broadcast_all(
 	state: &ApiState,
 	mut make_packet: impl FnMut() -> ClientBoundPacket,

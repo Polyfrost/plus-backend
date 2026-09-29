@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
 	api::{ApiState, v0::bundles::BundleInfo},
+	pricing::display::bundle_sales,
+	product_settings::{self, Key},
 	utils::pagination::MAX_PAGE_SIZE,
 };
 
@@ -135,7 +137,17 @@ async fn endpoint(
 		.all(&state.database)
 		.await?;
 
-	let bundles: Vec<BundleInfo> = bundles.into_iter().map(BundleInfo::from).collect();
+	let keys: Vec<Key> = bundles.iter().map(Key::from).collect();
+	let mut settings = product_settings::infos(&state.database, &keys).await?;
+	let mut sales = bundle_sales(&state.database, &bundles, &settings).await?;
+	let bundles: Vec<BundleInfo> = bundles
+		.into_iter()
+		.map(|bundle| BundleInfo {
+			sale: sales.remove(&bundle.id),
+			settings: settings.remove(&Key::from(&bundle)),
+			..bundle.into()
+		})
+		.collect();
 
 	let pagination = Pagination {
 		page: query.page,

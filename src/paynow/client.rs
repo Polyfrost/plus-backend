@@ -162,9 +162,8 @@ impl PayNowClient {
 			.await
 	}
 
-	/// Forwards a request to a store-scoped path and hands back the raw body,
-	/// empty for a 204. Used by the admin proxy, which has no opinion about
-	/// the shapes PayNow accepts.
+	/// Sends a request to a store-scoped path and hands back the raw body,
+	/// empty for a 204.
 	pub(crate) async fn forward(
 		&self,
 		method: Method,
