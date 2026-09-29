@@ -113,7 +113,7 @@ impl VariantInfo {
 	#[tracing::instrument(
 		name = "convert_db_variant_info",
 		level = "debug",
-		skip(cache, s3_bucket)
+		skip(cache, s3_bucket, public_url)
 	)]
 	async fn from_db_model(
 		value: &cosmetic::Model,
@@ -122,9 +122,10 @@ impl VariantInfo {
 		allowed_slots: Vec<BodySlot>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
+		public_url: &str,
 	) -> Result<Self, S3Error> {
 		let cached_info =
-			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
+			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket).await?;
 		Ok(Self {
 			id: value.id,
 			allowed_slots,
@@ -134,8 +135,8 @@ impl VariantInfo {
 				.or_else(|| value.name.clone())
 				.unwrap_or_else(|| format!("Cosmetic {}", value.id)),
 			model: value.model_variant.clone(),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket.clone()).await?,
-			cover_url: CachedAssetInfo::asset_url(cover_asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, public_url),
+			cover_url: CachedAssetInfo::asset_url(cover_asset, public_url),
 			cached_info,
 		})
 	}
@@ -180,6 +181,32 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 		.collect())
 }
 
+/// Fetches every asset in one query, keyed by id.
+pub(super) async fn load_assets<C: sea_orm::ConnectionTrait>(
+	db: &C,
+	cosmetics: impl IntoIterator<Item = &cosmetic::Model>,
+) -> Result<HashMap<i32, asset::Model>, sea_orm::DbErr> {
+	use entities::prelude::Asset;
+	use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+	let ids: Vec<_> = cosmetics
+		.into_iter()
+		.flat_map(|c| [c.asset_id, c.cover_asset_id])
+		.flatten()
+		.collect();
+	if ids.is_empty() {
+		return Ok(HashMap::new());
+	}
+
+	Ok(Asset::find()
+		.filter(asset::Column::Id.is_in(ids))
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|asset| (asset.id, asset))
+		.collect())
+}
+
 pub(super) type CosmeticRow = (
 	cosmetic::Model,
 	Option<asset::Model>,
@@ -201,6 +228,7 @@ pub(super) async fn group_cosmetics(
 	groups: HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>,
 	cache: Cache<i32, CachedAssetInfo>,
 	s3_bucket: Arc<Bucket>,
+	public_url: &str,
 	hide_redundant_variants: bool,
 ) -> Result<Vec<CosmeticInfo>, S3Error> {
 	let mut buckets: BTreeMap<i32, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
@@ -220,6 +248,7 @@ pub(super) async fn group_cosmetics(
 			allowed_slots.clone(),
 			cache.clone(),
 			s3_bucket.clone(),
+			public_url,
 		)
 		.await?;
 
@@ -273,23 +302,24 @@ impl EmoteInfo {
 	#[tracing::instrument(
 		name = "convert_db_emote_info",
 		level = "debug",
-		skip(cache, s3_bucket)
+		skip(cache, s3_bucket, public_url)
 	)]
 	pub async fn from_db_model(
 		value: &cosmetic::Model,
 		asset: Option<&asset::Model>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
+		public_url: &str,
 	) -> Result<Self, S3Error> {
 		let cached_info =
-			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket.clone()).await?;
+			CachedAssetInfo::from_optional_asset(asset, cache, s3_bucket).await?;
 		Ok(Self {
 			id: value.id,
 			name: value
 				.name
 				.clone()
 				.unwrap_or_else(|| format!("Emote {}", value.id)),
-			url: CachedAssetInfo::asset_url(asset, s3_bucket).await?,
+			url: CachedAssetInfo::asset_url(asset, public_url),
 			cached_info,
 		})
 	}
@@ -350,24 +380,22 @@ impl CachedAssetInfo {
 		Ok(info)
 	}
 
-	async fn asset_url(
+	/// The url an asset is served from: its own url when it has one, otherwise
+	/// its object served straight off the public bucket.
+	pub(in crate::api) fn asset_url(
 		asset: Option<&asset::Model>,
-		s3_bucket: Arc<Bucket>,
-	) -> Result<Option<String>, S3Error> {
-		let Some(asset) = asset else {
-			return Ok(None);
-		};
+		public_url: &str,
+	) -> Option<String> {
+		let asset = asset?;
 
 		if let Some(url) = &asset.url {
-			return Ok(Some(url.clone()));
+			return Some(url.clone());
 		}
 
-		match &asset.storage_path {
-			Some(path) => Ok(Some(
-				s3_bucket.as_ref().presign_get(path, 604800, None).await?,
-			)),
-			None => Ok(None),
-		}
+		asset
+			.storage_path
+			.as_ref()
+			.map(|path| format!("{public_url}/{path}"))
 	}
 }
 
@@ -383,11 +411,57 @@ pub(super) struct PartialEquippedCosmetics {
 
 #[cfg(test)]
 mod tests {
+	use entities::{asset, sea_orm_active_enums::AssetKind};
+
 	use super::CachedAssetInfo;
 	use crate::utils::hash::sha256_hex;
 
 	#[test]
 	fn default_hash_is_sha256_of_null() {
 		assert_eq!(CachedAssetInfo::DEFAULT_HASH, sha256_hex(b"null"));
+	}
+
+	fn test_asset(storage_path: Option<&str>, url: Option<&str>) -> asset::Model {
+		asset::Model {
+			id: 1,
+			storage_path: storage_path.map(str::to_owned),
+			url: url.map(str::to_owned),
+			asset_kind: AssetKind::Image,
+			content_type: None,
+			hash: None,
+			created_at: Default::default(),
+			updated_at: Default::default(),
+		}
+	}
+
+	#[test]
+	fn asset_urls_are_plain_public_object_urls() {
+		let public_url = "https://objects.example/local";
+
+		assert_eq!(
+			CachedAssetInfo::asset_url(
+				Some(&test_asset(Some("capes/abc.png"), None)),
+				public_url
+			),
+			Some("https://objects.example/local/capes/abc.png".to_owned())
+		);
+
+		// An explicitly stored url wins over object storage.
+		assert_eq!(
+			CachedAssetInfo::asset_url(
+				Some(&test_asset(
+					Some("capes/abc.png"),
+					Some("https://cdn/x.png")
+				)),
+				public_url
+			),
+			Some("https://cdn/x.png".to_owned())
+		);
+
+		assert_eq!(
+			CachedAssetInfo::asset_url(Some(&test_asset(None, None)), public_url),
+			None
+		);
+		assert_eq!(CachedAssetInfo::asset_url(None, public_url), None);
 	}
 }

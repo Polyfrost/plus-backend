@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use super::resolve::{Product, dedupe};
 use crate::{
-	api::{ApiState, state::CHECKOUTS_PER_COOLDOWN},
+	api::{ApiState, rate_limit::address_key},
 	paynow::{PayNowError, checkouts::NewCheckout, models::CreateCheckoutLine},
 	pricing::{Rule, Sellable, live_rules, normalise_code, quote},
 	product_settings::{self, Key, Settings},
@@ -297,19 +297,10 @@ async fn enforce_rate_limit(
 		return Ok(());
 	};
 
-	let attempts = state
-		.checkout_cooldown
-		.get(&ip)
-		.await
-		.unwrap_or(0)
-		.saturating_add(1);
-	state.checkout_cooldown.insert(ip, attempts).await;
-
-	if attempts > CHECKOUTS_PER_COOLDOWN {
-		return Err(CreateError::RateLimited);
+	match state.checkout_limit.check(address_key(ip)).await {
+		Some(_) => Err(CreateError::RateLimited),
+		None => Ok(()),
 	}
-
-	Ok(())
 }
 
 async fn reject_already_owned(

@@ -5,10 +5,12 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use entities::sea_orm_active_enums::BodySlot;
+use schemars::JsonSchema;
+use serde::Serialize;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
-use crate::api::v0::websocket::structs::ClientBoundPacket;
+use crate::api::v0::{account::ClientKind, websocket::structs::ClientBoundPacket};
 
 pub type ConnectionId = Uuid;
 
@@ -22,12 +24,38 @@ pub struct RealtimeState {
 	pub playtime: PlaytimeSessions,
 }
 
+impl RealtimeState {
+	pub async fn connection_counts(&self) -> ConnectionCounts {
+		let connections = self.connections.read().await;
+		let total = connections.len();
+		let game = connections
+			.values()
+			.filter(|connection| connection.kind == ClientKind::Game)
+			.count();
+
+		ConnectionCounts {
+			total,
+			game,
+			other: total - game,
+		}
+	}
+}
+
+/// Live websocket connections, split by what kind of client holds them.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ConnectionCounts {
+	pub total: usize,
+	pub game: usize,
+	pub other: usize,
+}
+
 /// A single live websocket connection.
 #[derive(Debug, Clone)]
 pub struct RealtimeConnection {
 	pub owner: Uuid,
 	pub tx: mpsc::UnboundedSender<ClientBoundPacket>,
 	pub subscriptions: HashSet<Uuid>,
+	pub kind: ClientKind,
 }
 
 /// Cosmetic state a player is currently broadcasting to watchers.

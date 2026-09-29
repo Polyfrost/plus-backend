@@ -6,6 +6,7 @@ mod remove;
 use std::collections::HashMap;
 
 use aide::axum::ApiRouter;
+use chrono::{DateTime, FixedOffset};
 use entities::sea_orm_active_enums::TagType;
 use schemars::JsonSchema;
 use sea_orm::{
@@ -24,6 +25,34 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			.merge(apply::router())
 			.merge(remove::router()),
 	)
+}
+
+/// A single tag that may be applied to cosmetics.
+#[derive(Debug, Serialize, JsonSchema)]
+pub(crate) struct TagInfo {
+	id: i32,
+	name: String,
+	display_name: Option<String>,
+	description: Option<String>,
+	tag_type: TagType,
+	/// The storefront tag mirroring this one, once provisioned. Scope a PayNow
+	/// sale with this instead of listing every product it covers.
+	paynow_tag_id: Option<String>,
+	created_at: DateTime<FixedOffset>,
+}
+
+impl TagInfo {
+	pub(crate) fn from_tag(tag: entities::tags::Model) -> Self {
+		TagInfo {
+			id: tag.id,
+			name: tag.name,
+			display_name: tag.display_name,
+			description: tag.description,
+			tag_type: tag.tag_type,
+			paynow_tag_id: tag.paynow_tag_id,
+			created_at: tag.created_at,
+		}
+	}
 }
 
 /// The tags applied to a cosmetic, grouped by their type.

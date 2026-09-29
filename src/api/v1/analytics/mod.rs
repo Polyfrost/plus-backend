@@ -4,7 +4,9 @@ mod clients;
 mod daily;
 mod health;
 mod monetization;
+mod mods;
 mod overview;
+mod realtime;
 mod retention;
 mod sessions;
 
@@ -257,6 +259,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 				monetization::monetization_doc,
 			),
 		)
+		.api_route("/analytics/mods", get_with(mods::mods_endpoint, mods::mods_doc))
 		.api_route(
 			"/analytics/clients",
 			get_with(clients::clients_endpoint, clients::clients_doc),
@@ -264,6 +267,10 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.api_route(
 			"/analytics/health",
 			get_with(health::health_endpoint, health::health_doc),
+		)
+		.api_route(
+			"/analytics/realtime",
+			get_with(realtime::realtime_endpoint, realtime::realtime_doc),
 		)
 }
 

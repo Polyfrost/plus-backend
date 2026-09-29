@@ -142,6 +142,7 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 					analytics_client_daily::Column::MinecraftVersion,
 					analytics_client_daily::Column::Loader,
 					analytics_client_daily::Column::Os,
+					analytics_client_daily::Column::Country,
 				])
 				.update_columns([
 					analytics_client_daily::Column::ActivePlayers,

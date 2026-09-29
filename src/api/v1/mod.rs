@@ -4,6 +4,7 @@ mod grants;
 mod hello;
 mod listings;
 mod paynow;
+mod tokens;
 
 pub(super) use paynow::spawn_expiry_sweeper;
 
@@ -19,5 +20,6 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(grants::router())
 		.merge(listings::router())
 		.merge(hello::router())
+		.merge(tokens::router())
 		.merge(analytics::setup_router().await)
 }

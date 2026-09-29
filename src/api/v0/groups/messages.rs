@@ -294,6 +294,10 @@ async fn send(
 		));
 	}
 
+	if state.chat_limit.check(player.id).await.is_some() {
+		return Err(GroupError::TooManyMessages);
+	}
+
 	enforce_special_chat_cooldown(&state, &group, player.id).await?;
 
 	let message = GroupMessages::insert(group_messages::ActiveModel {

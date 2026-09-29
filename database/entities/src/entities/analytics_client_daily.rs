@@ -15,6 +15,8 @@ pub struct Model {
 	pub loader: String,
 	#[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
 	pub os: String,
+	#[sea_orm(primary_key, auto_increment = false, column_type = "Char(Some(2))")]
+	pub country: String,
 	pub active_players: i32,
 	pub computed_at: DateTimeWithTimeZone,
 }
