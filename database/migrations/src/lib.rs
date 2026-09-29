@@ -60,9 +60,14 @@ mod m20260826_000001_provider_neutral_columns;
 mod m20260826_000002_transaction_lines;
 mod m20260826_000003_analytics_chargebacks;
 mod m20260826_000004_clear_stripe_product_ids;
+mod m20260913_000000_drop_catalogue_discounts;
+mod m20260913_000001_create_discounts;
+mod m20260913_000002_tag_storefront_ids;
 mod m20260921_000000_create_player_geo;
 mod m20260921_000001_add_geo_to_client_daily;
 mod m20260922_000000_create_api_tokens;
+mod m20260924_000000_product_settings;
+mod m20260924_000001_ownership_expiry;
 mod m20260928_000000_create_player_mods;
 
 pub struct Migrator;
@@ -131,9 +136,14 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260826_000002_transaction_lines::Migration),
 			Box::new(m20260826_000003_analytics_chargebacks::Migration),
 			Box::new(m20260826_000004_clear_stripe_product_ids::Migration),
+			Box::new(m20260913_000000_drop_catalogue_discounts::Migration),
+			Box::new(m20260913_000001_create_discounts::Migration),
+			Box::new(m20260913_000002_tag_storefront_ids::Migration),
 			Box::new(m20260921_000000_create_player_geo::Migration),
 			Box::new(m20260921_000001_add_geo_to_client_daily::Migration),
-      Box::new(m20260922_000000_create_api_tokens::Migration),
+			Box::new(m20260922_000000_create_api_tokens::Migration),
+			Box::new(m20260924_000000_product_settings::Migration),
+			Box::new(m20260924_000001_ownership_expiry::Migration),
 			Box::new(m20260928_000000_create_player_mods::Migration),
 		]
 	}

@@ -265,6 +265,7 @@ pub(crate) async fn record_player_geo(
 	Ok(())
 }
 
+#[expect(clippy::too_many_arguments, reason = "one column each")]
 pub(crate) async fn record_ownership_events(
 	db: &impl ConnectionTrait,
 	player_id: i32,
@@ -273,6 +274,7 @@ pub(crate) async fn record_ownership_events(
 	provider: TransactionProvider,
 	transaction_id: Option<i32>,
 	transaction_line_id: Option<i64>,
+	expires_at: Option<DateTimeWithTimeZone>,
 ) -> Result<(), DbErr> {
 	if cosmetic_ids.is_empty() {
 		return Ok(());
@@ -286,6 +288,7 @@ pub(crate) async fn record_ownership_events(
 			provider: Set(provider.clone()),
 			transaction_id: Set(transaction_id),
 			transaction_line_id: Set(transaction_line_id),
+			expires_at: Set(expires_at),
 			..Default::default()
 		}
 	}))

@@ -359,4 +359,6 @@ pub enum OwnershipEventKind {
 	Granted,
 	#[sea_orm(string_value = "revoked")]
 	Revoked,
+	#[sea_orm(string_value = "expired")]
+	Expired,
 }

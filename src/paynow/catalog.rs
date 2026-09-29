@@ -12,6 +12,14 @@ pub(crate) fn bundle_slug(bundle_id: i32) -> String {
 	format!("bundle-{bundle_id}")
 }
 
+pub(crate) fn tag_slug(tag_id: i32) -> String {
+	format!("tag-{tag_id}")
+}
+
+pub(crate) fn collection_slug(collection_id: i32) -> String {
+	format!("collection-{collection_id}")
+}
+
 /// PayNow rejects a product whose description is outside this range, and an
 /// absent one counts as zero.
 const MIN_DESCRIPTION: usize = 25;

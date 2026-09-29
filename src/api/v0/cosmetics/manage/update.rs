@@ -12,8 +12,9 @@ use serde::Deserialize;
 
 use crate::{
 	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	storefront,
 	paynow::{PayNowError, catalog, models::UpsertProduct},
-	utils::money::{discounted, to_cents},
+	utils::money::to_cents,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -22,10 +23,6 @@ pub enum UpdateError {
 	MissingCosmetic,
 	#[error("The cosmetic has no storefront product to price")]
 	MissingProduct,
-	#[error("The cosmetic has no base price to discount from")]
-	MissingBasePrice,
-	#[error("A discount requires either a discount rate or a new price")]
-	InvalidDiscount,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("PayNow error: {0}")]
@@ -37,9 +34,7 @@ impl IntoResponse for UpdateError {
 		crate::api::error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
-				Self::MissingProduct | Self::MissingBasePrice | Self::InvalidDiscount => {
-					StatusCode::BAD_REQUEST
-				}
+				Self::MissingProduct => StatusCode::BAD_REQUEST,
 				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
@@ -51,13 +46,7 @@ impl IntoResponse for UpdateError {
 /// The pricing columns a request resolves to, applied to every affected row.
 struct PriceUpdate {
 	store_product_id: String,
-	/// What PayNow should charge once the change lands, in minor units.
-	effective_minor: i64,
-	/// Set only on a silent increase; left untouched for a discount.
-	base_price: Option<f32>,
-	/// Always written: the rate for a discount, `None` to clear the discount on
-	/// a silent increase (which restores the full default price).
-	discount_rate: Option<i32>,
+	base_price: f32,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -74,15 +63,9 @@ struct UpdateRequest {
 	/// When present, sets (or clears with null) the description on every variant.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	description: Option<Option<String>>,
-	/// A new price in USD major units. Without `discount` this is a silent
-	/// increase; with `discount` it is the discounted price.
+	/// The cosmetic's list price in USD major units. Sales and coupons are run
+	/// from `/v1/admin/discounts`, not from here.
 	new_price: Option<f32>,
-	/// Whether this update creates a discount rather than a silent price change.
-	#[serde(default)]
-	discount: bool,
-	/// The discount percentage. Optional when `new_price` is given (then it is
-	/// computed); required otherwise.
-	discount_rate: Option<i32>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -90,13 +73,12 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Update a cosmetic")
 		.description(
 			"Updates a cosmetic's metadata (enabled, name, collection, \
-			 description) and drives its Stripe pricing. A silent price increase \
-			 creates a new default price, provisioning the Stripe product first \
-			 when the cosmetic was uploaded without a price; a discount creates a \
-			 non-default price and records the rate, and requires an already \
-			 priced cosmetic. For a grouped cosmetic, name/enabled apply to the \
-			 group and price changes propagate to every variant. Admin password \
-			 required.",
+			 description) and its list price on PayNow, provisioning the product \
+			 first when the cosmetic was uploaded without a price. Discounts are \
+			 not set here: run a sale or a coupon from `/v1/admin/discounts`. \
+			 For a grouped cosmetic, name/enabled apply to \
+			 the group and price changes propagate to every variant. Admin \
+			 password required.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::NO_CONTENT.as_u16() }, (), _>(|res| {
@@ -145,29 +127,8 @@ async fn endpoint(
 
 	// Resolved without calling PayNow yet: its price is a destructive patch,
 	// so the database has to commit first.
-	let price_update = if body.new_price.is_some() || body.discount {
-		if body.discount {
-			let product_id = existing_product.ok_or(UpdateError::MissingProduct)?;
-			let base = cosmetic.base_price.ok_or(UpdateError::MissingBasePrice)?;
-			let (price, rate) = match (body.discount_rate, body.new_price) {
-				(Some(rate), _) => (discounted(base, rate), rate),
-				(None, Some(new_price)) => {
-					let rate = (((base - new_price) / base) * 100.0).round() as i32;
-					(new_price, rate)
-				}
-				(None, None) => return Err(UpdateError::InvalidDiscount),
-			};
-
-			Some(PriceUpdate {
-				store_product_id: product_id,
-				effective_minor: to_cents(price),
-				base_price: None,
-				discount_rate: Some(rate),
-			})
-		} else {
-			// Silent increase: new_price is guaranteed present by the guard above.
-			let new_price = body.new_price.ok_or(UpdateError::InvalidDiscount)?;
-
+	let price_update = match body.new_price {
+		Some(new_price) => {
 			let product_id = match existing_product {
 				Some(product_id) => product_id,
 				None => {
@@ -210,13 +171,10 @@ async fn endpoint(
 
 			Some(PriceUpdate {
 				store_product_id: product_id,
-				effective_minor: to_cents(new_price),
-				base_price: Some(new_price),
-				discount_rate: None,
+				base_price: new_price,
 			})
 		}
-	} else {
-		None
+		None => None,
 	};
 
 	let txn = state.database.begin().await?;
@@ -264,10 +222,7 @@ async fn endpoint(
 		}
 		if let Some(price) = &price_update {
 			active.store_product_id = Set(Some(price.store_product_id.clone()));
-			if let Some(base) = price.base_price {
-				active.base_price = Set(Some(base));
-			}
-			active.discount_rate = Set(price.discount_rate);
+			active.base_price = Set(Some(price.base_price));
 			changed = true;
 		}
 		if !is_grouped {
@@ -292,7 +247,7 @@ async fn endpoint(
 		state
 			.paynow
 			.client
-			.set_product_price(&price.store_product_id, price.effective_minor)
+			.set_product_price(&price.store_product_id, to_cents(price.base_price))
 			.await?;
 	}
 
@@ -313,6 +268,17 @@ async fn endpoint(
 				},
 			)
 			.await?;
+	}
+
+	// A new collection, or a product that did not exist until now, changes
+	// which PayNow sales and coupons reach it.
+	if body.collection.is_some() || price_update.is_some() {
+		storefront::sync_cosmetic_tags_or_warn(
+			&state.database,
+			&state.paynow.client,
+			&[body.cosmetic_id],
+		)
+		.await;
 	}
 
 	Ok(StatusCode::NO_CONTENT)

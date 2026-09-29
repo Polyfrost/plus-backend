@@ -8,7 +8,10 @@ use schemars::JsonSchema;
 use sea_orm::{EntityTrait, Set, TransactionTrait};
 use serde::Deserialize;
 
-use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
+use crate::{
+	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	storefront::sync_cosmetic_tags_or_warn,
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ApplyError {
@@ -75,16 +78,21 @@ async fn endpoint(
 		return Err(ApplyError::MissingCosmetic);
 	};
 
-	TagsCosmetic::insert_many(cosmetic_ids.into_iter().map(|cosmetic_id| {
+	TagsCosmetic::insert_many(cosmetic_ids.iter().map(|cosmetic_id| {
 		tags_cosmetic::ActiveModel {
 			tag_id: Set(body.tag_id),
-			cosmetic_id: Set(cosmetic_id),
+			cosmetic_id: Set(*cosmetic_id),
 		}
 	}))
 	.on_conflict_do_nothing()
 	.exec(&txn)
 	.await?;
 	txn.commit().await?;
+
+	// After the commit, and not worth failing the request over: the tag is
+	// applied either way, and provisioning repairs the storefront.
+	sync_cosmetic_tags_or_warn(&state.database, &state.paynow.client, &cosmetic_ids)
+		.await;
 
 	Ok(StatusCode::NO_CONTENT)
 }

@@ -492,16 +492,12 @@ async fn endpoint(
 		None => None,
 	};
 
-	let (store_product_id, price_value, discount_rate) = match sibling {
-		Some(sibling) => (
-			sibling.store_product_id,
-			sibling.base_price,
-			sibling.discount_rate,
-		),
+	let (store_product_id, price_value) = match sibling {
+		Some(sibling) => (sibling.store_product_id, sibling.base_price),
 		// Provisioned after the insert: an ungrouped slug needs the row id.
 		None => {
 			base_price.ok_or(UploadError::MissingPrice)?;
-			(None, base_price, None)
+			(None, base_price)
 		}
 	};
 
@@ -517,7 +513,6 @@ async fn endpoint(
 		variant_order: Set(variant_order),
 		store_product_id: Set(store_product_id),
 		base_price: Set(price_value),
-		discount_rate: Set(discount_rate),
 		collection: Set(collection),
 		description: Set(description),
 		..Default::default()

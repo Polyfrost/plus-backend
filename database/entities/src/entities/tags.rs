@@ -16,6 +16,8 @@ pub struct Model {
 	pub created_at: DateTimeWithTimeZone,
 	#[sea_orm(column_type = "Text", nullable)]
 	pub display_name: Option<String>,
+	#[sea_orm(column_type = "Text", nullable, unique)]
+	pub paynow_tag_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

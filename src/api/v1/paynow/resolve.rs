@@ -4,7 +4,10 @@ use entities::{bundles, bundles_cosmetics, cosmetic, prelude::*};
 use sea_orm::{DbErr, prelude::*, sea_query::Query};
 use tracing::error;
 
-use crate::api::v0::cosmetics::in_enabled_group;
+use crate::{
+	api::v0::cosmetics::in_enabled_group, pricing::Sellable, product_settings::Key,
+	utils::money::to_cents,
+};
 
 /// What a single storefront product id sells.
 #[derive(Debug)]
@@ -17,7 +20,7 @@ pub(super) enum Product {
 	},
 	Cosmetic(cosmetic::Model),
 	Bundle {
-		bundle_id: i32,
+		bundle: bundles::Model,
 		cosmetics: Vec<cosmetic::Model>,
 	},
 }
@@ -28,6 +31,71 @@ impl Product {
 			Product::CosmeticGroup { cosmetics, .. }
 			| Product::Bundle { cosmetics, .. } => cosmetics,
 			Product::Cosmetic(cosmetic) => std::slice::from_ref(cosmetic),
+		}
+	}
+
+	pub(super) fn key(&self) -> Key {
+		match self {
+			Product::CosmeticGroup { group_id, .. } => Key::Group(*group_id),
+			Product::Cosmetic(cosmetic) => Key::Cosmetic(cosmetic.id),
+			Product::Bundle { bundle, .. } => Key::from(bundle),
+		}
+	}
+
+	pub(super) fn name(&self) -> String {
+		match self {
+			Product::Bundle { bundle, .. } => bundle.name.clone(),
+			_ => self
+				.cosmetics()
+				.first()
+				.and_then(|cosmetic| cosmetic.name.clone())
+				.unwrap_or_else(|| format!("{:?}", self.key())),
+		}
+	}
+
+	/// The list price, in USD minor units, or `None` for a product nothing
+	/// priced — which cannot be sold and is rejected before checkout.
+	pub(super) fn list_minor(&self) -> Option<i64> {
+		let major = match self {
+			Product::Bundle { bundle, .. } => bundle.base_price,
+			// Variants share one product, so the price is the group's.
+			Product::CosmeticGroup { cosmetics, .. } => {
+				cosmetics.first().and_then(|cosmetic| cosmetic.base_price)
+			}
+			Product::Cosmetic(cosmetic) => cosmetic.base_price,
+		};
+
+		major.map(to_cents)
+	}
+
+	/// How this product looks to the pricing rules.
+	pub(super) fn sellable(
+		&self,
+		product_id: &str,
+		tags: &[i32],
+		coupons_disabled: bool,
+	) -> Sellable {
+		let cosmetic_ids = self.cosmetics().iter().map(|c| c.id).collect();
+
+		let (collection, cosmetic_group_id, bundle_id) = match self {
+			Product::Bundle { bundle, .. } => (bundle.collection, None, Some(bundle.id)),
+			Product::CosmeticGroup { group_id, cosmetics } => (
+				cosmetics.first().and_then(|cosmetic| cosmetic.collection),
+				Some(*group_id),
+				None,
+			),
+			Product::Cosmetic(cosmetic) => (cosmetic.collection, None, None),
+		};
+
+		Sellable {
+			product_id: product_id.to_owned(),
+			list_minor: self.list_minor().unwrap_or_default(),
+			collection,
+			tags: tags.to_vec(),
+			cosmetic_ids,
+			cosmetic_group_id,
+			bundle_id,
+			coupons_disabled,
 		}
 	}
 }
@@ -115,10 +183,7 @@ pub(super) async fn resolve_products(
 
 		resolved.insert(
 			product_id,
-			Product::Bundle {
-				bundle_id: bundle.id,
-				cosmetics,
-			},
+			Product::Bundle { bundle, cosmetics },
 		);
 	}
 

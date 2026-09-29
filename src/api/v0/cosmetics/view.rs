@@ -19,6 +19,10 @@ use crate::api::{
 	ApiState,
 	v0::tags::{CosmeticTags, tags_for_cosmetics},
 };
+use crate::{
+	pricing::display::{SaleInfo, cosmetic_sales},
+	product_settings::{self, Key, SettingsInfo},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ViewError {
@@ -50,7 +54,13 @@ pub struct ViewResponse {
 	collection: Option<i32>,
 	r#type: CosmeticType,
 	base_price: Option<f32>,
-	discount_rate: Option<i32>,
+	/// The sale this cosmetic is currently in, if any. `base_price` stays the
+	/// list price so the client can strike it through.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	sale: Option<SaleInfo>,
+	/// When and to whom this can be sold. Absent when nothing restricts it.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	settings: Option<SettingsInfo>,
 	asset_id: Option<i32>,
 	cover_asset_id: Option<i32>,
 	created_at: DateTime<FixedOffset>,
@@ -120,6 +130,17 @@ async fn endpoint(
 			.remove(&cosmetic.id)
 			.unwrap_or_default();
 
+		let key = Key::of_cosmetic(&cosmetic);
+		let mut settings = product_settings::infos(&state.database, &[key]).await?;
+		let sale = cosmetic_sales(
+			&state.database,
+			std::slice::from_ref(&cosmetic),
+			&settings,
+		)
+		.await?
+		.remove(&cosmetic.id);
+		let settings = settings.remove(&key);
+
 		// Grouped cosmetics carry variants; load the whole group, this one
 		// included, so the list is the same whichever variant was asked for.
 		let (variants, group_name) = if let Some(group_id) = cosmetic.group_id {
@@ -162,7 +183,8 @@ async fn endpoint(
 			collection: cosmetic.collection,
 			r#type: cosmetic.r#type,
 			base_price: cosmetic.base_price,
-			discount_rate: cosmetic.discount_rate,
+			sale,
+			settings,
 			asset_id: cosmetic.asset_id,
 			cover_asset_id: cosmetic.cover_asset_id,
 			created_at: cosmetic.created_at,

@@ -47,6 +47,16 @@ pub(crate) struct ProvisionPaynowArgs {
 	/// repairing drift left behind by a failed price update.
 	#[bpaf(long("sync-prices"), switch)]
 	pub(crate) sync_prices: bool,
+	/// Mirror every tag onto the storefront and push each product's tag set,
+	/// so a sale there can be scoped to a tag instead of to every product.
+	#[bpaf(long("sync-tags"), switch)]
+	pub(crate) sync_tags: bool,
+	/// Push every product's sale window, gifting and coupon settings.
+	#[bpaf(long("sync-settings"), switch)]
+	pub(crate) sync_settings: bool,
+	/// Push every sale and coupon, creating any PayNow has not seen.
+	#[bpaf(long("sync-discounts"), switch)]
+	pub(crate) sync_discounts: bool,
 }
 
 #[derive(Clone, Debug, Bpaf)]

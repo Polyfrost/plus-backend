@@ -13,7 +13,11 @@ use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Serialize;
 
-use crate::api::{ApiState, v0::bundles::BundleInfo};
+use crate::{
+	api::{ApiState, v0::bundles::BundleInfo},
+	pricing::display::bundle_sales,
+	product_settings::{self, Key},
+};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ViewError {
@@ -96,8 +100,18 @@ async fn endpoint(
 		}
 	}
 
+	let key = Key::from(&bundle);
+	let mut settings = product_settings::infos(&state.database, &[key]).await?;
+	let sale = bundle_sales(&state.database, std::slice::from_ref(&bundle), &settings)
+		.await?
+		.remove(&bundle.id);
+
 	Ok(Json(ViewResponse {
-		bundle: bundle.into(),
+		bundle: BundleInfo {
+			sale,
+			settings: settings.remove(&key),
+			..bundle.into()
+		},
 		cosmetics,
 		emotes,
 	}))

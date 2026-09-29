@@ -33,6 +33,9 @@ impl PayNowClient {
 					allow_one_time_purchase: Some(true),
 					allow_subscription: Some(false),
 					is_hidden: Some(hidden),
+					// Tags and settings are pushed separately: an adopted
+					// product needs the same calls.
+					..Default::default()
 				},
 				Retry::ConnectOnly,
 			)

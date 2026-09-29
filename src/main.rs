@@ -8,7 +8,11 @@ use crate::commands::backend_args;
 mod api;
 mod commands;
 mod database;
+mod ownership;
 mod paynow;
+mod pricing;
+mod product_settings;
+mod storefront;
 mod utils;
 
 #[tokio::main]

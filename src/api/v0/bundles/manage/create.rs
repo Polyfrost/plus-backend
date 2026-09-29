@@ -250,7 +250,6 @@ async fn endpoint(
 		collection: Set(collection),
 		store_product_id: Set(None),
 		base_price: Set(Some(base_price)),
-		discount_rate: Set(None),
 		..Default::default()
 	}
 	.insert(&state.database)

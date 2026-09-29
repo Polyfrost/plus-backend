@@ -1,4 +1,5 @@
 mod create;
+mod expiry;
 mod grant;
 mod refund;
 mod resolve;
@@ -7,6 +8,8 @@ mod webhook;
 use aide::axum::{ApiRouter, routing::post_with};
 
 use crate::api::ApiState;
+
+pub(in crate::api) use expiry::spawn_expiry_sweeper;
 
 pub(super) async fn checkout_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()

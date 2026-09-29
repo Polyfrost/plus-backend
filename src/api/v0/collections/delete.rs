@@ -8,7 +8,7 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait as _, EntityTrait, QueryFilter as _};
 
 use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
 
@@ -56,12 +56,38 @@ async fn endpoint(
 	_auth: AdminAuthenticationExtractor,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, DeleteError> {
-	use entities::prelude::*;
+	use entities::{discount_target, prelude::*};
+
+	// Read first: the targets go with the collection.
+	let discount_ids: Vec<i32> = DiscountTarget::find()
+		.filter(discount_target::Column::CollectionId.eq(id))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|target| target.discount_id)
+		.collect();
 
 	let result = Collections::delete_by_id(id).exec(&state.database).await?;
 
 	if result.rows_affected == 0 {
 		return Err(DeleteError::NotFound);
+	}
+
+	// After the commit, and not worth failing the request over: the collection
+	// is gone either way, and provisioning repairs PayNow.
+	if let Err(error) = crate::storefront::collection_deleted(
+		&state.database,
+		&state.paynow.client,
+		id,
+		&discount_ids,
+	)
+	.await
+	{
+		tracing::warn!(
+			collection = id,
+			"Unable to update PayNow after deleting a collection; \
+			 provision-paynow --sync-discounts will repair it: {error}"
+		);
 	}
 
 	Ok(StatusCode::NO_CONTENT)

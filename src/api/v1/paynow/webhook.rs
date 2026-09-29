@@ -22,9 +22,10 @@ use super::{
 use crate::{
 	api::{
 		ApiState,
-		v0::websocket::{send_to_owner, structs::ClientBoundPacket},
+		v0::websocket::{send_to_owner, structs::ClientBoundPacket, unequip_revoked},
 	},
 	database::{DatabaseTransactionExt, DatabaseUserExt, OrderCharge},
+	pricing,
 	paynow::{
 		models::{Order, Payment, WebhookEnvelope},
 		webhook::verify,
@@ -135,6 +136,21 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 		.or(order_customer)
 		.unwrap_or(player);
 
+	// The backend's pricing and PayNow's disagreeing, or a sale or coupon
+	// that drifted between the two.
+	if let Some(quoted) = metadata
+		.get("quoted_discount")
+		.and_then(|value| value.parse::<i64>().ok())
+		&& quoted != order.discount_amount
+	{
+		warn!(
+			order = %order.id,
+			quoted,
+			charged = order.discount_amount,
+			"PayNow took off a different discount than the backend quoted"
+		);
+	}
+
 	let charge = OrderCharge {
 		amount_minor: Some(order.total_amount),
 		currency: order.currency.clone(),
@@ -143,6 +159,16 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 	let currency = order.currency.clone().unwrap_or_else(|| "usd".to_string());
 	let order_id = order.id.clone();
 	let event_id = event_id.to_string();
+	// Every sale and coupon PayNow applied, including on orders placed on its
+	// own store rather than through the backend.
+	let promotions: Vec<String> = order
+		.applied_coupons
+		.iter()
+		.map(|coupon| coupon.coupon_id.clone())
+		.chain(order.lines.iter().filter_map(|line| line.sale_id.clone()))
+		.collect::<std::collections::HashSet<_>>()
+		.into_iter()
+		.collect();
 
 	let grants = run(state, move |txn| {
 		Box::pin(async move {
@@ -162,7 +188,10 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 				user.id,
 				buyer_id,
 				&order_id,
-				serde_json::json!({ "order_id": order_id, "checkout_metadata": metadata }),
+				serde_json::json!({
+					"order_id": order_id,
+					"checkout_metadata": metadata.clone()
+				}),
 				charge,
 			)
 			.await?;
@@ -177,6 +206,18 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 				&order.lines,
 			)
 			.await?;
+
+			// Counted here rather than at checkout: an abandoned basket must
+			// not burn a single-use code.
+			for discount_id in pricing::by_paynow_ids(txn, &promotions).await? {
+				pricing::redeem(
+					txn,
+					discount_id,
+					buyer_id.unwrap_or(user.id),
+					Some(transaction.id),
+				)
+				.await?;
+			}
 
 			Ok(Some(grants))
 		})
@@ -273,7 +314,6 @@ async fn handle_refund(state: &ApiState, event_id: &str, payment: Payment) -> Ha
 
 			let grants = grant::revoke_lines(
 				txn,
-				transaction_id,
 				&line_ids,
 				refunded_at,
 				status.clone(),
@@ -335,7 +375,6 @@ async fn handle_chargeback(
 			let line_ids = grant::outstanding_line_ids(txn, transaction_id).await?;
 			let grants = grant::revoke_lines(
 				txn,
-				transaction_id,
 				&line_ids,
 				charged_back_at,
 				TransactionStatus::Chargeback,
@@ -532,7 +571,15 @@ where
 		})
 }
 
-async fn broadcast(state: &ApiState, grants: Grants, revoked: bool) {
+pub(super) async fn broadcast(state: &ApiState, grants: Grants, revoked: bool) {
+	if revoked {
+		let cosmetics = grants
+			.iter()
+			.map(|(player, grant)| (*player, grant.cosmetic_ids.clone()))
+			.collect();
+		unequip_revoked(state, &cosmetics).await;
+	}
+
 	for (player, grant) in grants {
 		send_to_owner(state, player, || ClientBoundPacket::OwnershipUpdated {
 			player,

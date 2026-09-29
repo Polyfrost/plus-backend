@@ -26,9 +26,9 @@ use crate::api::{
 
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.api_route("/grants", post_with(self::create, self::create_doc))
+		.api_route("/admin/grants", post_with(self::create, self::create_doc))
 		.api_route(
-			"/grants/player/{query}",
+			"/admin/grants/player/{query}",
 			get_with(self::player, self::player_doc),
 		)
 }

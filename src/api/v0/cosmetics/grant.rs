@@ -9,8 +9,7 @@ use entities::sea_orm_active_enums::{
 };
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
-	TransactionTrait,
+	ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -77,7 +76,7 @@ pub(in crate::api) async fn grant_cosmetic(
 	player_uuid: Uuid,
 	cosmetic_id: i32,
 ) -> Result<Vec<i32>, GrantError> {
-	use entities::{cosmetic, player_owned_cosmetic, prelude::*, transaction};
+	use entities::{cosmetic, prelude::*, transaction};
 
 	let txn = state.database.begin().await?;
 	let Some(cosmetic) = Cosmetic::find_by_id(cosmetic_id).one(&txn).await? else {
@@ -110,19 +109,18 @@ pub(in crate::api) async fn grant_cosmetic(
 	.insert(&txn)
 	.await?;
 
-	PlayerOwnedCosmetic::insert_many(cosmetic_ids.iter().map(|&cosmetic_id| {
-		player_owned_cosmetic::ActiveModel {
-			player_id: Set(player.id),
-			cosmetic_id: Set(cosmetic_id),
-			acquired_via: Set(TransactionProvider::AdminGrant),
-			transaction_id: Set(Some(transaction.id)),
-			transaction_line_id: Set(None),
-			acquired_at: ActiveValue::NotSet,
-		}
-	}))
-	.on_conflict_do_nothing()
-	.exec(&txn)
+	// Owned for good, including over a rental the player already holds.
+	crate::ownership::record(
+		&txn,
+		player.id,
+		&cosmetic_ids,
+		TransactionProvider::AdminGrant,
+		Some(transaction.id),
+		None,
+		None,
+	)
 	.await?;
+	crate::ownership::settle(&txn, player.id, &cosmetic_ids).await?;
 
 	crate::database::record_ownership_events(
 		&txn,
@@ -131,6 +129,7 @@ pub(in crate::api) async fn grant_cosmetic(
 		OwnershipEventKind::Granted,
 		TransactionProvider::AdminGrant,
 		Some(transaction.id),
+		None,
 		None,
 	)
 	.await?;
