@@ -40,8 +40,6 @@ pub enum UploadError {
 	MissingSlots,
 	#[error("Invalid body slot")]
 	InvalidSlot,
-	#[error("A base price is required to create a new storefront product")]
-	MissingPrice,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("S3 error: {0}")]
@@ -64,7 +62,6 @@ impl IntoResponse for UploadError {
 				| Self::InvalidType
 				| Self::MissingSlots
 				| Self::InvalidSlot
-				| Self::MissingPrice
 				| Self::Zip(_)
 				| Self::Rejection(_) => StatusCode::BAD_REQUEST,
 				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
@@ -148,9 +145,11 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Create a new cosmetic")
 		.description(
 			"Uploads a new cosmetic to S3 and registers it in the database with its \
-			 allowed body slots, then provisions a Stripe product and price for it. \
-			 A cosmetic joining an existing group reuses that group's Stripe ids. \
-			 Emotes (type `emote`) are stored as bundles and take no body slots.",
+			 allowed body slots. It is only sold once it has a product: pass \
+			 `base_price` to provision one now, or leave it out and price it later \
+			 (or sell it in a bundle). A cosmetic joining a group that already has a \
+			 product joins that product. Emotes (type `emote`) are stored as bundles \
+			 and take no body slots.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<CosmeticInfo>, _>(|res| {
@@ -192,12 +191,12 @@ struct CosmeticUploadRequest {
 	r#type: String,
 	/// Optional display name; defaults to the type name.
 	name: Option<String>,
-	/// Optional long-form description for the catalog and Stripe product.
+	/// Optional long-form description for the catalog and storefront product.
 	description: Option<String>,
 	/// Optional id of the collection this cosmetic belongs to.
 	collection: Option<i32>,
-	/// The price in USD major units (e.g. `4.99`). Required when a new Stripe
-	/// product must be created; ignored when reusing an existing group's price.
+	/// The price in USD major units (e.g. `4.99`). Leave out to upload without
+	/// making it a product; ignored when joining a group that has one.
 	base_price: Option<f32>,
 	/// One or more allowed body slots (repeat the field for multiple).
 	/// not required for emotes
@@ -494,11 +493,8 @@ async fn endpoint(
 
 	let (store_product_id, price_value) = match sibling {
 		Some(sibling) => (sibling.store_product_id, sibling.base_price),
-		// Provisioned after the insert: an ungrouped slug needs the row id.
-		None => {
-			base_price.ok_or(UploadError::MissingPrice)?;
-			(None, base_price)
-		}
+		// No price: upload only, priced later or bundled.
+		None => (None, base_price),
 	};
 
 	let model = cosmetic::ActiveModel {

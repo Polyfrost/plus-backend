@@ -240,6 +240,8 @@ pub(crate) async fn bought_by(
 pub struct SettingsInfo {
 	pub available_from: Option<DateTime<FixedOffset>>,
 	pub available_until: Option<DateTime<FixedOffset>>,
+	/// Units that can ever be sold, refunds excluded.
+	pub stock_limit: Option<i32>,
 	/// Units left, when stock is limited. Zero is sold out.
 	pub stock_remaining: Option<i64>,
 	/// How many one player may buy, gifts included.
@@ -271,6 +273,7 @@ pub(crate) async fn infos(
 			let info = SettingsInfo {
 				available_from: model.available_from,
 				available_until: model.available_until,
+				stock_limit: model.stock_limit,
 				stock_remaining: model.stock_limit.map(|limit| {
 					(i64::from(limit) - sold.get(&key).copied().unwrap_or(0)).max(0)
 				}),
