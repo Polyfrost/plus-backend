@@ -58,10 +58,10 @@ struct UpdateRequest {
 	/// When set, renames the cosmetic (the group when grouped).
 	name: Option<String>,
 	/// When present, sets (or clears with null) the collection on every variant.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[serde(default, deserialize_with = "serde_with::rust::double_option::deserialize")]
 	collection: Option<Option<i32>>,
 	/// When present, sets (or clears with null) the description on every variant.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[serde(default, deserialize_with = "serde_with::rust::double_option::deserialize")]
 	description: Option<Option<String>>,
 	/// The cosmetic's list price in USD major units. Sales and coupons are run
 	/// from `/v1/admin/discounts`, not from here.

@@ -58,10 +58,10 @@ struct UpdateRequest {
 	/// When set, renames the bundle.
 	name: Option<String>,
 	/// When present, sets (or clears with null) the collection.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[serde(default, deserialize_with = "serde_with::rust::double_option::deserialize")]
 	collection: Option<Option<i32>>,
 	/// When present, sets (or clears with null) the description.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[serde(default, deserialize_with = "serde_with::rust::double_option::deserialize")]
 	description: Option<Option<String>>,
 	/// When present, replaces the bundle's contained cosmetics with this set.
 	cosmetic_ids: Option<Vec<i32>>,

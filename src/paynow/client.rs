@@ -5,7 +5,7 @@ use http::{HeaderMap, StatusCode, header};
 use rand::Rng as _;
 use reqwest::{Client, ClientBuilder, Method, RequestBuilder, Response};
 use serde::{Serialize, de::DeserializeOwned};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::models::ApiErrorBody;
 
@@ -202,6 +202,16 @@ impl PayNowClient {
 		retry: Retry,
 		customer_ip: Option<IpAddr>,
 	) -> Result<Vec<u8>, PayNowError> {
+		// Headers are left out: they carry the API key.
+		debug!(
+			%method,
+			%url,
+			body = %body
+				.and_then(|body| serde_json::to_string(body).ok())
+				.unwrap_or_default(),
+			"PayNow request"
+		);
+
 		let mut attempt = 0;
 		loop {
 			attempt += 1;
@@ -244,6 +254,11 @@ impl PayNowClient {
 	async fn decode(response: Response) -> Result<Vec<u8>, PayNowError> {
 		let status = response.status();
 		let bytes = response.bytes().await?.to_vec();
+		debug!(
+			%status,
+			body = %String::from_utf8_lossy(&bytes[..bytes.len().min(BODY_LOG_LIMIT)]),
+			"PayNow response"
+		);
 		if status.is_success() {
 			return Ok(bytes);
 		}
