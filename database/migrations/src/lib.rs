@@ -69,6 +69,7 @@ mod m20260922_000000_create_api_tokens;
 mod m20260924_000000_product_settings;
 mod m20260924_000001_ownership_expiry;
 mod m20260928_000000_create_player_mods;
+mod m20260929_000000_product_for_sale;
 
 pub struct Migrator;
 
@@ -145,6 +146,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260924_000000_product_settings::Migration),
 			Box::new(m20260924_000001_ownership_expiry::Migration),
 			Box::new(m20260928_000000_create_player_mods::Migration),
+			Box::new(m20260929_000000_product_for_sale::Migration),
 		]
 	}
 }

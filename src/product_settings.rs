@@ -103,7 +103,8 @@ pub(crate) struct Settings {
 
 impl Settings {
 	pub(crate) fn is_available(&self, now: DateTime<FixedOffset>) -> bool {
-		self.model.available_from.is_none_or(|from| now >= from)
+		self.model.for_sale
+			&& self.model.available_from.is_none_or(|from| now >= from)
 			&& self.model.available_until.is_none_or(|until| now < until)
 	}
 
@@ -238,6 +239,8 @@ pub(crate) async fn bought_by(
 /// What the client needs to show a product as buyable or not.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SettingsInfo {
+	/// False when taken off sale by hand, whatever the window says.
+	pub for_sale: bool,
 	pub available_from: Option<DateTime<FixedOffset>>,
 	pub available_until: Option<DateTime<FixedOffset>>,
 	/// Units that can ever be sold, refunds excluded.
@@ -271,6 +274,7 @@ pub(crate) async fn infos(
 		.map(|(key, settings)| {
 			let model = settings.model;
 			let info = SettingsInfo {
+				for_sale: model.for_sale,
 				available_from: model.available_from,
 				available_until: model.available_until,
 				stock_limit: model.stock_limit,
@@ -298,12 +302,18 @@ pub(crate) async fn push(
 	product_id: &str,
 	settings: &product_settings::Model,
 ) -> Result<(), PayNowError> {
+	// PayNow disables a product by ending its window now.
+	let (enabled_at, enabled_until) = if settings.for_sale {
+		(settings.available_from, settings.available_until)
+	} else {
+		(None, Some(Utc::now().fixed_offset()))
+	};
 	client
 		.update_product(
 			product_id,
 			&UpsertProduct {
-				enabled_at: Some(settings.available_from.map(|at| at.to_rfc3339())),
-				enabled_until: Some(settings.available_until.map(|at| at.to_rfc3339())),
+				enabled_at: Some(enabled_at.map(|at| at.to_rfc3339())),
+				enabled_until: Some(enabled_until.map(|at| at.to_rfc3339())),
 				is_gifting_disabled: Some(settings.gifting_disabled),
 				is_coupons_disabled: Some(settings.coupons_disabled),
 				..Default::default()
@@ -330,6 +340,7 @@ mod tests {
 				customer_limit_days: None,
 				gifting_disabled: false,
 				coupons_disabled: false,
+				for_sale: true,
 				requires_all,
 				expires_after_days: None,
 			},
@@ -356,5 +367,8 @@ mod tests {
 		assert!(timed.is_available(start));
 		assert!(!timed.is_available(end));
 		assert!(!timed.is_available(start - Duration::seconds(1)));
+
+		timed.model.for_sale = false;
+		assert!(!timed.is_available(start));
 	}
 }

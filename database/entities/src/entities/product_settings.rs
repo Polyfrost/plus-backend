@@ -20,6 +20,7 @@ pub struct Model {
 	pub customer_limit_days: Option<i32>,
 	pub gifting_disabled: bool,
 	pub coupons_disabled: bool,
+	pub for_sale: bool,
 	pub requires_all: bool,
 	pub expires_after_days: Option<i32>,
 }

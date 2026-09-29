@@ -77,6 +77,7 @@ async fn endpoint(
 
 	let bundle = Bundles::find_by_id(id)
 		.filter(bundles::Column::Enabled.eq(true))
+		.filter(super::is_sold())
 		.one(&state.database)
 		.await?
 		.ok_or(ViewError::NotFound)?;

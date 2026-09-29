@@ -61,6 +61,10 @@ enum Kind {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SettingsBody {
+	/// False takes it off sale and out of the store, without losing the
+	/// other settings.
+	#[serde(default = "enabled")]
+	for_sale: bool,
 	#[serde(default)]
 	available_from: Option<DateTime<FixedOffset>>,
 	#[serde(default)]
@@ -88,6 +92,10 @@ struct SettingsBody {
 	/// it again extends it; a permanent copy is never affected.
 	#[serde(default)]
 	expires_after_days: Option<i32>,
+}
+
+fn enabled() -> bool {
+	true
 }
 
 fn every_requirement() -> bool {
@@ -118,7 +126,8 @@ fn replace_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Replace a product's listing")
 		.description(
 			"Replaces every setting of a cosmetic or bundle, enforced at checkout. \
-			 A variant id sets its group's. The sale window, gifting and \
+			 A variant id sets its group's. `for_sale: false` hides it from the \
+			 store and disables it on PayNow. The sale window, gifting and \
 			 coupon settings are also pushed to PayNow; a 502 means they were saved here \
 			 but not there, and `provision-paynow --sync-settings` repairs it. \
 			 Admin password required.",
@@ -173,6 +182,7 @@ async fn replace(
 		customer_limit_days: Set(body.customer_limit_days),
 		gifting_disabled: Set(body.gifting_disabled),
 		coupons_disabled: Set(body.coupons_disabled),
+		for_sale: Set(body.for_sale),
 		requires_all: Set(body.requires_all),
 		expires_after_days: Set(body.expires_after_days),
 	};

@@ -136,10 +136,6 @@ struct CosmeticSearchInfo {
 	/// this is the whole swatch list rather than something to append to `id`.
 	/// The entry at `id` is the first element. Null, not empty, for an ungrouped
 	/// cosmetic, which has no variants to pick between.
-	///
-	/// `/cosmetics/view/{id}` returns the same list, except that it filters on
-	/// `enabled` alone where this also omits unpriced variants, which have
-	/// nothing to show in the store.
 	variants: Option<Vec<VariantView>>,
 }
 
@@ -240,7 +236,7 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 	let mut find = Cosmetic::find()
 		.filter(cosmetic::Column::Enabled.eq(true))
 		.filter(super::in_enabled_group())
-		.filter(cosmetic::Column::BasePrice.is_not_null());
+		.filter(super::is_sold());
 
 	if let Some(text) = &query.text {
 		// Match against both the variant's own name and its group's name. The
@@ -345,7 +341,7 @@ async fn load_members(
 		let cosmetics = Cosmetic::find()
 			.filter(cosmetic::Column::Enabled.eq(true))
 			.filter(super::in_enabled_group())
-			.filter(cosmetic::Column::BasePrice.is_not_null())
+			.filter(super::is_sold())
 			.filter(belongs)
 			.order_by_asc(cosmetic::Column::VariantOrder)
 			.order_by_asc(cosmetic::Column::Id)

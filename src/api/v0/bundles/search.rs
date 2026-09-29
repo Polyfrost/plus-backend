@@ -122,7 +122,7 @@ async fn endpoint(
 
 	let mut find = Bundles::find()
 		.filter(bundles::Column::Enabled.eq(true))
-		.filter(bundles::Column::BasePrice.is_not_null());
+		.filter(super::is_sold());
 	if let Some(text) = query.text {
 		find = find.filter(bundles::Column::Name.contains(text));
 	}

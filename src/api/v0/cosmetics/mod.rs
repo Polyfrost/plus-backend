@@ -159,6 +159,53 @@ pub(in crate::api) fn in_enabled_group() -> sea_orm::Condition {
 		)
 }
 
+/// Matches cosmetics sold under a storefront product and not taken off sale.
+/// Variants share their group's product, which an interrupted provision may
+/// leave on only some of them, and their group's settings.
+pub(super) fn is_sold() -> sea_orm::Condition {
+	use entities::product_settings;
+	use sea_orm::{ColumnTrait, Condition, sea_query::Query};
+
+	let off_sale = |column: product_settings::Column| {
+		Query::select()
+			.column(column)
+			.from(product_settings::Entity)
+			.and_where(product_settings::Column::ForSale.eq(false))
+			.and_where(column.is_not_null())
+			.to_owned()
+	};
+
+	Condition::all()
+		.add(
+			Condition::any()
+				.add(cosmetic::Column::StoreProductId.is_not_null())
+				.add(
+					cosmetic::Column::GroupId.in_subquery(
+						Query::select()
+							.column(cosmetic::Column::GroupId)
+							.from(cosmetic::Entity)
+							.and_where(cosmetic::Column::StoreProductId.is_not_null())
+							.and_where(cosmetic::Column::GroupId.is_not_null())
+							.to_owned(),
+					),
+				),
+		)
+		.add(
+			Condition::any()
+				.add(
+					Condition::all()
+						.add(cosmetic::Column::GroupId.is_null())
+						.add(
+							cosmetic::Column::Id
+								.not_in_subquery(off_sale(product_settings::Column::CosmeticId)),
+						),
+				)
+				.add(cosmetic::Column::GroupId.not_in_subquery(off_sale(
+					product_settings::Column::CosmeticGroupId,
+				))),
+		)
+}
+
 pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 	db: &C,
 ) -> Result<HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>, sea_orm::DbErr> {

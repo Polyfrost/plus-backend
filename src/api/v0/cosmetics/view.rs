@@ -46,7 +46,8 @@ impl IntoResponse for ViewError {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ViewResponse {
-	/// The storefront product id for this cosmetic, if one is set.
+	/// The storefront product id for this cosmetic. Null, along with
+	/// `base_price` and `sale`, when it is not for sale.
 	store_product_id: Option<String>,
 	id: i32,
 	name: String,
@@ -141,6 +142,15 @@ async fn endpoint(
 		.remove(&cosmetic.id);
 		let settings = settings.remove(&key);
 
+		// Still viewable by owners and old links, just not buyable.
+		let for_sale = cosmetic.store_product_id.is_some()
+			&& settings.as_ref().is_none_or(|settings| settings.for_sale);
+		let (store_product_id, base_price, sale) = if for_sale {
+			(cosmetic.store_product_id, cosmetic.base_price, sale)
+		} else {
+			(None, None, None)
+		};
+
 		// Grouped cosmetics carry variants; load the whole group, this one
 		// included, so the list is the same whichever variant was asked for.
 		let (variants, group_name) = if let Some(group_id) = cosmetic.group_id {
@@ -174,7 +184,7 @@ async fn endpoint(
 		};
 
 		Ok(Json(ViewResponse {
-			store_product_id: cosmetic.store_product_id,
+			store_product_id,
 			id: cosmetic.id,
 			name: group_name
 				.or(cosmetic.name)
@@ -182,7 +192,7 @@ async fn endpoint(
 			description: cosmetic.description,
 			collection: cosmetic.collection,
 			r#type: cosmetic.r#type,
-			base_price: cosmetic.base_price,
+			base_price,
 			sale,
 			settings,
 			asset_id: cosmetic.asset_id,

@@ -18,6 +18,25 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	)
 }
 
+/// Matches bundles sold under a storefront product and not taken off sale.
+fn is_sold() -> sea_orm::Condition {
+	use entities::product_settings;
+	use sea_orm::{ColumnTrait, Condition, sea_query::Query};
+
+	Condition::all()
+		.add(bundles::Column::StoreProductId.is_not_null())
+		.add(
+			bundles::Column::Id.not_in_subquery(
+				Query::select()
+					.column(product_settings::Column::BundleId)
+					.from(product_settings::Entity)
+					.and_where(product_settings::Column::ForSale.eq(false))
+					.and_where(product_settings::Column::BundleId.is_not_null())
+					.to_owned(),
+			),
+		)
+}
+
 /// A single enabled bundle's public information.
 #[derive(Debug, Serialize, JsonSchema)]
 struct BundleInfo {
