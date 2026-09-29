@@ -23,6 +23,8 @@ pub enum UpdateError {
 	MissingBundle,
 	#[error("The bundle has no storefront product to price")]
 	MissingProduct,
+	#[error(transparent)]
+	Description(#[from] crate::paynow::catalog::DescriptionLength),
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("PayNow error: {0}")]
@@ -31,8 +33,9 @@ pub enum UpdateError {
 
 impl IntoResponse for UpdateError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
+				Self::Description(_) => StatusCode::BAD_REQUEST,
 				Self::MissingBundle => StatusCode::NOT_FOUND,
 				Self::MissingProduct => StatusCode::BAD_REQUEST,
 				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
@@ -102,6 +105,10 @@ async fn endpoint(
 	Json(body): Json<UpdateRequest>,
 ) -> Result<StatusCode, UpdateError> {
 	use entities::{bundles, bundles_cosmetics, prelude::*};
+
+	crate::paynow::catalog::check_description(
+		body.description.as_ref().and_then(Option::as_deref),
+	)?;
 
 	let Some(bundle) = Bundles::find_by_id(body.bundle_id)
 		.one(&state.database)

@@ -56,7 +56,7 @@ pub enum DiscountError {
 
 impl IntoResponse for DiscountError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
 				Self::NotFound => StatusCode::NOT_FOUND,
 				Self::DuplicateCode(_) => StatusCode::CONFLICT,

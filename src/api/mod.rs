@@ -50,6 +50,17 @@ pub(crate) fn error_response<E: std::error::Error>(
 	}
 }
 
+/// For admin-only endpoints, which are trusted with the real message.
+pub(crate) fn admin_error_response<E: std::error::Error>(
+	status: StatusCode,
+	error: E,
+) -> Response {
+	if status.is_server_error() {
+		tracing::error!(%status, error = %error, "request failed");
+	}
+	(status, error.to_string()).into_response()
+}
+
 fn init_openapi_spec<'a>(
 	spec: TransformOpenApi<'a>,
 	version: DocVersion,

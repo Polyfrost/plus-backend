@@ -14,9 +14,9 @@ use axum_client_ip::ClientIp;
 use chrono::Utc;
 use entities::{player_owned_cosmetic, prelude::*, tags_cosmetic, user};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, DbErr, Set, prelude::*};
+use sea_orm::{DbErr, prelude::*};
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::warn;
 use uuid::Uuid;
 
 use super::resolve::{Product, dedupe};
@@ -427,31 +427,19 @@ async fn user_id(state: &ApiState, player: Uuid) -> Result<Option<i32>, CreateEr
 
 /// Cached on the user row so a repeat checkout skips the lookup.
 async fn customer_id(state: &ApiState, player: Uuid) -> Result<String, CreateError> {
-	let user = User::find()
+	let username = User::find()
 		.filter(user::Column::MinecraftUuid.eq(player))
 		.one(&state.database)
-		.await?;
+		.await?
+		.and_then(|user| user.username);
 
-	if let Some(user) = &user
-		&& let Some(customer_id) = &user.paynow_customer_id
-	{
-		return Ok(customer_id.clone());
-	}
-
+	// Not cached: a stored id outlives its customer or a store switch, and
+	// PayNow then rejects the checkout with "customer not found".
 	let customer = state
 		.paynow
 		.client
-		.get_or_create_customer(player, user.as_ref().and_then(|u| u.username.as_deref()))
+		.get_or_create_customer(player, username.as_deref())
 		.await?;
-
-	if let Some(user) = user {
-		let mut update: user::ActiveModel = user.into();
-		update.paynow_customer_id = Set(Some(customer.id.clone()));
-		if let Err(error) = update.update(&state.database).await {
-			// Only a cache, so a failed write costs a lookup rather than a sale.
-			error!("Unable to store PayNow customer id: {error}");
-		}
-	}
 
 	Ok(customer.id)
 }

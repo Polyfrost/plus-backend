@@ -33,7 +33,7 @@ pub enum RenderCoverError {
 
 impl IntoResponse for RenderCoverError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
 				Self::MissingAsset | Self::CoverExists => StatusCode::BAD_REQUEST,

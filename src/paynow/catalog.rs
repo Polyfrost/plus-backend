@@ -25,6 +25,20 @@ pub(crate) fn collection_slug(collection_id: i32) -> String {
 const MIN_DESCRIPTION: usize = 25;
 const MAX_DESCRIPTION: usize = 50_000;
 
+#[derive(Debug, thiserror::Error)]
+#[error("Description must be {MIN_DESCRIPTION} to {MAX_DESCRIPTION} characters long")]
+pub(crate) struct DescriptionLength;
+
+/// Absent is allowed: products fill one in, see [`storefront_description`].
+pub(crate) fn check_description(description: Option<&str>) -> Result<(), DescriptionLength> {
+	match description.map(|description| description.trim().chars().count()) {
+		Some(len) if !(MIN_DESCRIPTION..=MAX_DESCRIPTION).contains(&len) => {
+			Err(DescriptionLength)
+		}
+		_ => Ok(()),
+	}
+}
+
 pub(crate) fn storefront_description(name: &str, description: Option<&str>) -> String {
 	let own = description
 		.map(str::trim)
@@ -42,6 +56,14 @@ pub(crate) fn storefront_description(name: &str, description: Option<&str>) -> S
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn checks_description_length() {
+		assert!(check_description(None).is_ok());
+		assert!(check_description(Some("A flowing cape stitched from starlight.")).is_ok());
+		assert!(check_description(Some("A friendly wave.")).is_err());
+		assert!(check_description(Some(&"a".repeat(MAX_DESCRIPTION + 1))).is_err());
+	}
 
 	#[test]
 	fn keeps_a_description_that_is_already_long_enough() {

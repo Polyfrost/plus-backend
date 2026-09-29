@@ -40,6 +40,8 @@ pub enum UploadError {
 	MissingSlots,
 	#[error("Invalid body slot")]
 	InvalidSlot,
+	#[error(transparent)]
+	Description(#[from] crate::paynow::catalog::DescriptionLength),
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("S3 error: {0}")]
@@ -56,8 +58,9 @@ pub enum UploadError {
 
 impl IntoResponse for UploadError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
+				Self::Description(_) => StatusCode::BAD_REQUEST,
 				Self::MissingFile
 				| Self::InvalidType
 				| Self::MissingSlots
@@ -291,6 +294,7 @@ async fn endpoint(
 				let value = field.text().await?;
 				let trimmed = value.trim();
 				if !trimmed.is_empty() {
+					crate::paynow::catalog::check_description(Some(trimmed))?;
 					description = Some(trimmed.to_string());
 				}
 			}

@@ -20,7 +20,7 @@ pub enum DeleteError {
 
 impl IntoResponse for DeleteError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,

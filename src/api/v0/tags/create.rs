@@ -14,14 +14,17 @@ use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum CreateError {
+	#[error(transparent)]
+	Description(#[from] crate::paynow::catalog::DescriptionLength),
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
 
 impl IntoResponse for CreateError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
+				Self::Description(_) => StatusCode::BAD_REQUEST,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
@@ -66,6 +69,8 @@ async fn endpoint(
 	Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<CreateResponse>), CreateError> {
 	use entities::tags;
+
+	crate::paynow::catalog::check_description(body.description.as_deref())?;
 
 	let tag = tags::ActiveModel {
 		name: Set(body.name),

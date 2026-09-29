@@ -35,7 +35,7 @@ pub enum TokenError {
 
 impl IntoResponse for TokenError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		crate::api::admin_error_response(
 			match self {
 				Self::InvalidLabel | Self::InvalidPrefixes => StatusCode::BAD_REQUEST,
 				Self::NotFound => StatusCode::NOT_FOUND,
