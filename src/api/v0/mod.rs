@@ -8,6 +8,7 @@ pub(super) mod cosmetics;
 mod groups;
 mod links;
 pub(super) mod oidc;
+pub(super) mod outfits;
 pub(super) mod players;
 pub(super) mod sessions;
 mod social;
@@ -29,6 +30,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(collections::setup_router().await)
 		.merge(links::setup_router().await)
 		.merge(oidc::setup_router().await)
+		.merge(outfits::setup_router().await)
 		.merge(players::setup_router().await)
 		.merge(cosmetics::setup_router().await)
 		// .merge(global_chat::setup_router().await)

@@ -791,6 +791,22 @@ pub(crate) async fn publish_equipment_change(
 	send_to_owner(state, player, packet).await;
 }
 
+pub(crate) async fn publish_particle_color_change(
+	state: &ApiState,
+	player: Uuid,
+	color: Option<i32>,
+) {
+	if let Some(player_state) =
+		state.realtime.player_runtime.write().await.get_mut(&player)
+	{
+		player_state.particle_color = color;
+	}
+
+	let packet = || ClientBoundPacket::PlayerParticleColorChanged { player, color };
+	broadcast_to_watchers(state, player, packet).await;
+	send_to_owner(state, player, packet).await;
+}
+
 pub(crate) async fn broadcast_all(
 	state: &ApiState,
 	mut make_packet: impl FnMut() -> ClientBoundPacket,
