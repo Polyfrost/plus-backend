@@ -19,7 +19,7 @@ use crate::api::{
 	ApiState,
 	v0::{
 		account::AuthenticatedPlayer, cosmetics::PartialEquippedCosmetics,
-		websocket::publish_equipment_change,
+		outfits::mirror_active_outfit_slot, websocket::publish_equipment_change,
 	},
 };
 
@@ -145,6 +145,10 @@ async fn endpoint(
 					.exec(&txn)
 					.await?;
 			}
+		}
+
+		for (slot, value) in body.equipment.equipped.clone() {
+			mirror_active_outfit_slot(&txn, &player, slot, value).await?;
 		}
 
 		txn.commit().await?;

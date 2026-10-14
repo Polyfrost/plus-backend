@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::api::state::realtime::PlaytimeSessions;
+use crate::api::{
+	state::realtime::PlaytimeSessions, v0::outfits::mirror_active_outfit_slot,
+};
 
 /// Capacity of the persistence channels before senders start to wait.
 const PERSIST_QUEUE_SIZE: usize = 256;
@@ -72,13 +74,13 @@ async fn persist_equipment_queue(
 				.one(&database)
 				.await?
 			else {
-				return Ok::<(), sea_orm::DbErr>(());
+				return Ok::<_, sea_orm::DbErr>(None);
 			};
 
 			if let Some(cosmetic_id) = update.cosmetic_id {
 				PlayerEquippedCosmetic::insert(player_equipped_cosmetic::ActiveModel {
 					player_id: Set(player.id),
-					slot: Set(update.slot),
+					slot: Set(update.slot.clone()),
 					cosmetic_id: Set(cosmetic_id),
 					updated_at: ActiveValue::NotSet,
 				})
@@ -99,17 +101,35 @@ async fn persist_equipment_queue(
 			} else {
 				PlayerEquippedCosmetic::delete_many()
 					.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
-					.filter(player_equipped_cosmetic::Column::Slot.eq(update.slot))
+					.filter(
+						player_equipped_cosmetic::Column::Slot.eq(update.slot.clone()),
+					)
 					.exec(&database)
 					.await?;
 			}
 
-			Ok(())
+			Ok(Some(player))
 		}
 		.await;
 
-		if let Err(error) = result {
-			warn!("Unable to persist websocket equipment update: {error}");
+		match result {
+			Ok(Some(player)) => {
+				if let Err(error) = mirror_active_outfit_slot(
+					&database,
+					&player,
+					update.slot,
+					update.cosmetic_id,
+				)
+				.await
+				{
+					warn!(
+						"Unable to mirror websocket equipment update into active \
+						 outfit: {error}"
+					);
+				}
+			}
+			Ok(None) => {}
+			Err(error) => warn!("Unable to persist websocket equipment update: {error}"),
 		}
 	}
 }
