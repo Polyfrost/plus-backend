@@ -768,6 +768,29 @@ pub(crate) async fn unequip_revoked(state: &ApiState, revoked: &HashMap<Uuid, Ve
 	}
 }
 
+pub(crate) async fn publish_equipment_change(
+	state: &ApiState,
+	player: Uuid,
+	slot: BodySlot,
+	cosmetic_id: Option<i32>,
+) {
+	if let Some(player_state) = state.realtime.player_runtime.write().await.get_mut(&player) {
+		if let Some(cosmetic_id) = cosmetic_id {
+			player_state.equipped.insert(slot.clone(), cosmetic_id);
+		} else {
+			player_state.equipped.remove(&slot);
+		}
+	}
+
+	let packet = || ClientBoundPacket::PlayerCosmeticEquipped {
+		player,
+		slot: slot.clone(),
+		cosmetic_id,
+	};
+	broadcast_to_watchers(state, player, packet).await;
+	send_to_owner(state, player, packet).await;
+}
+
 pub(crate) async fn broadcast_all(
 	state: &ApiState,
 	mut make_packet: impl FnMut() -> ClientBoundPacket,

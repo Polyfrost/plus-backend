@@ -17,7 +17,10 @@ use serde::Deserialize;
 
 use crate::api::{
 	ApiState,
-	v0::{account::AuthenticatedPlayer, cosmetics::PartialEquippedCosmetics},
+	v0::{
+		account::AuthenticatedPlayer, cosmetics::PartialEquippedCosmetics,
+		websocket::publish_equipment_change,
+	},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -90,7 +93,7 @@ async fn endpoint(
 
 		let txn = state.database.begin().await?;
 
-		for (slot, value) in body.equipment.equipped {
+		for (slot, value) in body.equipment.equipped.clone() {
 			if let Some(id) = value {
 				let owned = PlayerOwnedCosmetic::find()
 					.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
@@ -145,6 +148,10 @@ async fn endpoint(
 		}
 
 		txn.commit().await?;
+	}
+
+	for (slot, cosmetic_id) in body.equipment.equipped {
+		publish_equipment_change(&state, player.minecraft_uuid, slot, cosmetic_id).await;
 	}
 
 	Ok(NoContent)
