@@ -22,8 +22,10 @@ use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::account::AuthenticatedPlayer,
-	v0::groups::{GroupError, enforce_special_chat_cooldown, load_group, member_ids, require_membership},
+	v0::groups::{
+		ChatPlayer, GroupError, enforce_special_chat_cooldown, load_group, member_and_delegate_ids,
+		member_ids, require_membership,
+	},
 	v0::social::is_blocked_either_way,
 	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
 };
@@ -160,7 +162,7 @@ async fn notify_other_members(
 ) -> Result<(), sea_orm::DbErr> {
 	use entities::{prelude::*, user};
 
-	let ids = member_ids(state, group_id)
+	let ids = member_and_delegate_ids(state, group_id)
 		.await?
 		.into_iter()
 		.filter(|id| *id != exclude)
@@ -181,7 +183,7 @@ async fn notify_other_members(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ChatPlayer { player, .. }: ChatPlayer,
 	Path(id): Path<i32>,
 	Query(query): Query<HistoryQuery>,
 ) -> Result<Json<Vec<GroupMessage>>, GroupError> {
@@ -259,7 +261,7 @@ async fn list(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn send(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ChatPlayer { player, actual_id }: ChatPlayer,
 	Path(id): Path<i32>,
 	Json(body): Json<SendMessageRequest>,
 ) -> Result<(StatusCode, Json<GroupMessage>), GroupError> {
@@ -303,6 +305,7 @@ async fn send(
 	let message = GroupMessages::insert(group_messages::ActiveModel {
 		group_id: Set(id),
 		sender_id: Set(player.id),
+		sent_by_id: Set((actual_id != player.id).then_some(actual_id)),
 		content: Set(content.to_string()),
 		sent_at: ActiveValue::NotSet,
 		edited_at: Set(None),
@@ -313,7 +316,7 @@ async fn send(
 	.exec_with_returning(&state.database)
 	.await?;
 
-	notify_other_members(&state, id, player.id, || ClientBoundPacket::GroupMessageReceived {
+	notify_other_members(&state, id, actual_id, || ClientBoundPacket::GroupMessageReceived {
 		group_id: id,
 		message_id: message.id,
 		sender: player.minecraft_uuid,
@@ -360,7 +363,7 @@ async fn load_own_message(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn edit(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ChatPlayer { player, actual_id }: ChatPlayer,
 	Path((id, message_id)): Path<(i32, i64)>,
 	Json(body): Json<EditMessageRequest>,
 ) -> Result<Json<GroupMessage>, GroupError> {
@@ -379,7 +382,7 @@ async fn edit(
 	active.edited_at = Set(Some(Utc::now().into()));
 	let message = active.update(&state.database).await?;
 
-	notify_other_members(&state, id, player.id, || ClientBoundPacket::GroupMessageEdited {
+	notify_other_members(&state, id, actual_id, || ClientBoundPacket::GroupMessageEdited {
 		group_id: id,
 		message_id: message.id,
 		content: message.content.clone(),
@@ -400,7 +403,7 @@ async fn edit(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn delete(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ChatPlayer { player, actual_id }: ChatPlayer,
 	Path((id, message_id)): Path<(i32, i64)>,
 ) -> Result<StatusCode, GroupError> {
 	let message = load_own_message(&state, id, message_id, player.id).await?;
@@ -410,7 +413,7 @@ async fn delete(
 	active.content = Set(String::new());
 	active.update(&state.database).await?;
 
-	notify_other_members(&state, id, player.id, || ClientBoundPacket::GroupMessageDeleted {
+	notify_other_members(&state, id, actual_id, || ClientBoundPacket::GroupMessageDeleted {
 		group_id: id,
 		message_id,
 	})
@@ -422,7 +425,7 @@ async fn delete(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn mark_read(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ChatPlayer { player, .. }: ChatPlayer,
 	Path((id, message_id)): Path<(i32, i64)>,
 ) -> Result<StatusCode, GroupError> {
 	use entities::{group_message_reads, prelude::*};

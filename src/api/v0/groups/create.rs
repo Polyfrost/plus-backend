@@ -19,8 +19,7 @@ use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::account::AuthenticatedPlayer,
-	v0::groups::{GroupError, find_user_by_uuid, load_group, member_ids, require_membership},
+	v0::groups::{GroupError, OwnPlayer, find_user_by_uuid, load_group, member_ids, require_membership},
 	v0::social::{are_friends, is_blocked_either_way},
 };
 
@@ -91,6 +90,39 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		.api_route("/", post_with(self::create_group, self::create_doc))
 		.api_route("/", get_with(self::list, self::list_doc))
 		.api_route("/{id}/claim", post_with(self::claim, self::claim_doc))
+		.api_route("/delegations", get_with(self::delegations, self::delegations_doc))
+}
+
+fn delegations_doc(op: TransformOperation) -> TransformOperation {
+	op.summary("List players whose chats you can act as")
+		.description("Pass one of these as the `x-polyplus-act-as` header on chat routes.")
+		.tag("groups")
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn delegations(
+	State(state): State<ApiState>,
+	OwnPlayer(player): OwnPlayer,
+) -> Result<Json<Vec<Uuid>>, GroupError> {
+	use entities::{dm_delegates, prelude::*, user};
+
+	let owner_ids = DmDelegates::find()
+		.filter(dm_delegates::Column::DelegateId.eq(player.id))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|row| row.owner_id)
+		.collect::<Vec<_>>();
+
+	Ok(Json(
+		User::find()
+			.filter(user::Column::Id.is_in(owner_ids))
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|owner| owner.minecraft_uuid)
+			.collect(),
+	))
 }
 
 async fn summarize(
@@ -210,7 +242,7 @@ pub(crate) async fn get_or_create_dm_group(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn open_dm(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	OwnPlayer(player): OwnPlayer,
 	Path(target): Path<Uuid>,
 ) -> Result<(StatusCode, Json<GroupSummary>), GroupError> {
 	let target = find_user_by_uuid(&state, target).await?;
@@ -235,7 +267,7 @@ async fn open_dm(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn claim(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	OwnPlayer(player): OwnPlayer,
 	Path(id): Path<i32>,
 ) -> Result<Json<GroupSummary>, GroupError> {
 	if !state.special_chat_targets.contains(&player.minecraft_uuid) {
@@ -258,7 +290,7 @@ async fn claim(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn create_group(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	OwnPlayer(player): OwnPlayer,
 	Json(body): Json<CreateGroupRequest>,
 ) -> Result<(StatusCode, Json<GroupSummary>), GroupError> {
 	use entities::{group_members, groups, prelude::*};
@@ -315,7 +347,7 @@ async fn create_group(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	super::ChatPlayer { player, .. }: super::ChatPlayer,
 ) -> Result<Json<Vec<GroupSummary>>, GroupError> {
 	use entities::{group_members, prelude::*};
 

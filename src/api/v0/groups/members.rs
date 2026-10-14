@@ -15,8 +15,7 @@ use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::account::AuthenticatedPlayer,
-	v0::groups::{GroupError, find_user_by_uuid, load_group, member_cap, member_ids, require_membership},
+	v0::groups::{GroupError, OwnPlayer, find_user_by_uuid, load_group, member_cap, member_ids, require_membership},
 	v0::social::is_blocked_either_way,
 };
 
@@ -49,7 +48,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn add(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	OwnPlayer(player): OwnPlayer,
 	Path((id, target)): Path<(i32, Uuid)>,
 ) -> Result<StatusCode, GroupError> {
 	use entities::{group_members, prelude::*};
@@ -90,7 +89,7 @@ async fn add(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn remove(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	OwnPlayer(player): OwnPlayer,
 	Path((id, target)): Path<(i32, Uuid)>,
 ) -> Result<StatusCode, GroupError> {
 	use entities::{group_members, prelude::*};

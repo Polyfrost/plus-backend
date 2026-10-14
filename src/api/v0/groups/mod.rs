@@ -4,12 +4,104 @@ mod messages;
 
 pub(crate) use create::get_or_create_dm_group;
 
-use aide::{OperationIo, axum::ApiRouter};
-use axum::{http::StatusCode, response::IntoResponse};
-use entities::sea_orm_active_enums::GroupKind;
+use aide::{OperationInput, OperationIo, axum::ApiRouter};
+use axum::{
+	extract::FromRequestParts,
+	http::{StatusCode, request::Parts},
+	response::{IntoResponse, Response},
+};
+use entities::{sea_orm_active_enums::GroupKind, user};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use uuid::Uuid;
 
-use crate::api::ApiState;
+use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
+
+pub(super) const ACT_AS_HEADER: &str = "x-polyplus-act-as";
+
+#[derive(Debug)]
+pub(super) struct ChatPlayer {
+	pub player: user::Model,
+	pub actual_id: i32,
+}
+
+impl OperationInput for ChatPlayer {
+	fn operation_input(
+		ctx: &mut aide::generate::GenContext,
+		operation: &mut aide::openapi::Operation,
+	) {
+		AuthenticatedPlayer::operation_input(ctx, operation);
+	}
+}
+
+impl FromRequestParts<ApiState> for ChatPlayer {
+	type Rejection = Response;
+
+	async fn from_request_parts(
+		parts: &mut Parts,
+		state: &ApiState,
+	) -> Result<Self, Self::Rejection> {
+		use entities::prelude::*;
+
+		let caller = AuthenticatedPlayer::from_request_parts(parts, state).await?.0;
+		let actual_id = caller.id;
+		let Some(header) = parts.headers.get(ACT_AS_HEADER) else {
+			return Ok(Self { player: caller, actual_id });
+		};
+
+		let forbidden = || (StatusCode::FORBIDDEN, "Not a delegate of that player").into_response();
+		let uuid = header
+			.to_str()
+			.ok()
+			.and_then(|value| Uuid::parse_str(value).ok())
+			.ok_or_else(forbidden)?;
+		let internal = |e: sea_orm::DbErr| GroupError::Database(e).into_response();
+
+		let owner = User::find()
+			.filter(user::Column::MinecraftUuid.eq(uuid))
+			.one(&state.database)
+			.await
+			.map_err(internal)?
+			.ok_or_else(forbidden)?;
+		if owner.blacklisted {
+			return Err(forbidden());
+		}
+		DmDelegates::find_by_id((owner.id, actual_id))
+			.one(&state.database)
+			.await
+			.map_err(internal)?
+			.ok_or_else(forbidden)?;
+
+		Ok(Self { player: owner, actual_id })
+	}
+}
+
+#[derive(Debug)]
+pub(super) struct OwnPlayer(pub user::Model);
+
+impl OperationInput for OwnPlayer {
+	fn operation_input(
+		ctx: &mut aide::generate::GenContext,
+		operation: &mut aide::openapi::Operation,
+	) {
+		AuthenticatedPlayer::operation_input(ctx, operation);
+	}
+}
+
+impl FromRequestParts<ApiState> for OwnPlayer {
+	type Rejection = Response;
+
+	async fn from_request_parts(
+		parts: &mut Parts,
+		state: &ApiState,
+	) -> Result<Self, Self::Rejection> {
+		let player = AuthenticatedPlayer::from_request_parts(parts, state).await?.0;
+		if parts.headers.contains_key(ACT_AS_HEADER) {
+			return Err((StatusCode::BAD_REQUEST, "This route doesn't support x-polyplus-act-as")
+				.into_response());
+		}
+		Ok(Self(player))
+	}
+}
 
 pub(super) const MAX_DM_MEMBERS: usize = 2;
 pub(super) const MAX_GROUP_MEMBERS: usize = 50;
@@ -127,6 +219,23 @@ pub(super) async fn require_membership(
 		.one(&state.database)
 		.await?
 		.ok_or(GroupError::NotAMember)
+}
+
+pub(super) async fn member_and_delegate_ids(
+	state: &ApiState,
+	group_id: i32,
+) -> Result<Vec<i32>, sea_orm::DbErr> {
+	use entities::{dm_delegates, prelude::*};
+
+	let mut ids = member_ids(state, group_id).await?;
+	let delegates = DmDelegates::find()
+		.filter(dm_delegates::Column::OwnerId.is_in(ids.clone()))
+		.all(&state.database)
+		.await?;
+	ids.extend(delegates.into_iter().map(|row| row.delegate_id));
+	ids.sort_unstable();
+	ids.dedup();
+	Ok(ids)
 }
 
 pub(super) async fn member_ids(

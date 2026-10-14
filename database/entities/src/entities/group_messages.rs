@@ -15,6 +15,7 @@ pub struct Model {
 	pub deleted_at: Option<DateTimeWithTimeZone>,
 	pub idempotency_key: Option<Uuid>,
 	pub session_invite_id: Option<i32>,
+	pub sent_by_id: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

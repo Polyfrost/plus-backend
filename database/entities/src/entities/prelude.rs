@@ -23,6 +23,7 @@ pub use super::cosmetic_ownership_event::Entity as CosmeticOwnershipEvent;
 pub use super::cosmetic_package::Entity as CosmeticPackage;
 pub use super::daily_playtime::Entity as DailyPlaytime;
 pub use super::discount::Entity as Discount;
+pub use super::dm_delegates::Entity as DmDelegates;
 pub use super::discount_redemption::Entity as DiscountRedemption;
 pub use super::discount_target::Entity as DiscountTarget;
 pub use super::game_sessions::Entity as GameSessions;

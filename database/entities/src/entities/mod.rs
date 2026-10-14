@@ -25,6 +25,7 @@ pub mod cosmetic_ownership_event;
 pub mod cosmetic_package;
 pub mod daily_playtime;
 pub mod discount;
+pub mod dm_delegates;
 pub mod discount_redemption;
 pub mod discount_target;
 pub mod game_sessions;
