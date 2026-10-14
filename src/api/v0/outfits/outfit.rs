@@ -35,6 +35,8 @@ use crate::api::{
 	},
 };
 
+const STARTER_OUTFITS: u32 = 8;
+
 #[derive(Debug, Serialize, JsonSchema)]
 struct OutfitListResponse {
 	outfits: Vec<OutfitInfo>,
@@ -72,8 +74,10 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listOutfits")
 		.summary("List the player's outfits")
 		.description(
-			"Lists the authenticated player's outfits, newest first, along with the \
-			 id of the active outfit and the library limit.",
+			"Lists the authenticated player's outfits, oldest first, along with the \
+			 id of the active outfit and the library limit. The first list creates \
+			 eight blank outfits, `Outfit #1` to `Outfit #8`; `Outfit #1` holds the \
+			 player's current cosmetics and becomes the active outfit.",
 		)
 		.tag("outfits")
 }
@@ -84,7 +88,7 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Creates an outfit holding the player's currently equipped cosmetics plus \
 			 the given skin, Mojang cape and particle color, and makes it the active \
-			 outfit. Names default to `Outfit #N`.",
+			 outfit. Names default to the lowest unused `Outfit #N`.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::CREATED.as_u16() }, Json<OutfitInfo>, _>(|res| {
@@ -105,7 +109,8 @@ fn update_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Update an outfit")
 		.description(
 			"Updates an outfit's fields. Absent fields are left unchanged; an explicit \
-			 `null` clears `skin_id`, `mojang_cape_id` or `particle_color`.",
+			 `null` clears `skin_id`, `mojang_cape_id` or `particle_color`. Setting \
+			 `skin_id` or `mojang_cape_id` marks the outfit as no longer blank.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
@@ -161,6 +166,86 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 				.delete_with(self::delete, self::delete_doc),
 		)
 		.api_route("/outfits/{id}/apply", post_with(self::apply, self::apply_doc))
+}
+
+fn next_outfit_name<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+	let taken: HashSet<u64> = names
+		.into_iter()
+		.filter_map(|name| name.strip_prefix("Outfit #")?.parse().ok())
+		.collect();
+	let number = (1..).find(|number| !taken.contains(number)).unwrap_or(1);
+	format!("Outfit #{number}")
+}
+
+async fn seed_starter_outfits(
+	state: &ApiState,
+	player: &user::Model,
+) -> Result<Option<i32>, OutfitError> {
+	let equipped = current_equipment(state, player).await?;
+
+	let txn = state.database.begin().await?;
+
+	let claimed = User::update_many()
+		.col_expr(user::Column::OutfitsSeeded, Expr::value(true))
+		.filter(user::Column::Id.eq(player.id))
+		.filter(user::Column::OutfitsSeeded.eq(false))
+		.exec(&txn)
+		.await?
+		.rows_affected
+		== 1;
+	if !claimed {
+		return Ok(None);
+	}
+
+	let existing = PlayerOutfit::find()
+		.filter(player_outfit::Column::PlayerId.eq(player.id))
+		.count(&txn)
+		.await?;
+	if existing > 0 {
+		txn.commit().await?;
+		return Ok(None);
+	}
+
+	let mut first = None;
+	for number in 1..=STARTER_OUTFITS {
+		let outfit = player_outfit::ActiveModel {
+			player_id: Set(player.id),
+			name: Set(format!("Outfit #{number}")),
+			favorite: Set(false),
+			particle_color: Set(if number == 1 { player.particle_color } else { None }),
+			blank: Set(true),
+			..Default::default()
+		}
+		.insert(&txn)
+		.await?;
+		first.get_or_insert(outfit.id);
+	}
+	let Some(first) = first else {
+		txn.commit().await?;
+		return Ok(None);
+	};
+
+	if !equipped.is_empty() {
+		PlayerOutfitCosmetic::insert_many(equipped.iter().map(|(slot, cosmetic_id)| {
+			player_outfit_cosmetic::ActiveModel {
+				outfit_id: Set(first),
+				slot: Set(slot.clone()),
+				cosmetic_id: Set(*cosmetic_id),
+			}
+		}))
+		.exec(&txn)
+		.await?;
+	}
+
+	User::update_many()
+		.col_expr(user::Column::ActiveOutfitId, Expr::value(Some(first)))
+		.filter(user::Column::Id.eq(player.id))
+		.exec(&txn)
+		.await?;
+
+	txn.commit().await?;
+
+	Ok(Some(first))
 }
 
 async fn find_outfit<C: ConnectionTrait>(
@@ -246,10 +331,17 @@ async fn list(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<OutfitListResponse>, OutfitError> {
+	let mut active_outfit_id = player.active_outfit_id;
+	if !player.outfits_seeded
+		&& let Some(seeded) = seed_starter_outfits(&state, &player).await?
+	{
+		active_outfit_id = Some(seeded);
+	}
+
 	let outfits = PlayerOutfit::find()
 		.filter(player_outfit::Column::PlayerId.eq(player.id))
-		.order_by_desc(player_outfit::Column::CreatedAt)
-		.order_by_desc(player_outfit::Column::Id)
+		.order_by_asc(player_outfit::Column::CreatedAt)
+		.order_by_asc(player_outfit::Column::Id)
 		.all(&state.database)
 		.await?;
 	let mut cosmetics = load_outfit_cosmetics(
@@ -266,7 +358,7 @@ async fn list(
 				OutfitInfo::from_model(outfit, equipped)
 			})
 			.collect(),
-		active_outfit_id: player.active_outfit_id,
+		active_outfit_id,
 		limit: OUTFIT_LIMIT,
 	}))
 }
@@ -283,11 +375,11 @@ async fn create(
 
 	let txn = state.database.begin().await?;
 
-	let count = PlayerOutfit::find()
+	let existing = PlayerOutfit::find()
 		.filter(player_outfit::Column::PlayerId.eq(player.id))
-		.count(&txn)
+		.all(&txn)
 		.await?;
-	if count >= OUTFIT_LIMIT {
+	if existing.len() as u64 >= OUTFIT_LIMIT {
 		return Err(OutfitError::OutfitLimit);
 	}
 
@@ -297,7 +389,9 @@ async fn create(
 
 	let outfit = player_outfit::ActiveModel {
 		player_id: Set(player.id),
-		name: Set(name.unwrap_or_else(|| format!("Outfit #{}", count + 1))),
+		name: Set(name.unwrap_or_else(|| {
+			next_outfit_name(existing.iter().map(|outfit| outfit.name.as_str()))
+		})),
 		favorite: Set(false),
 		skin_id: Set(body.skin_id),
 		mojang_cape_id: Set(mojang_cape_id),
@@ -351,6 +445,9 @@ async fn update(
 	}
 	if let Some(favorite) = body.favorite {
 		active.favorite = Set(favorite);
+	}
+	if body.skin_id.is_some() || mojang_cape_id.is_some() {
+		active.blank = Set(false);
 	}
 	if let Some(skin_id) = body.skin_id {
 		active.skin_id = Set(skin_id);
@@ -479,4 +576,30 @@ async fn apply(
 		outfit: OutfitInfo::from_model(outfit, outfit_cosmetics),
 		skin: skin.map(SkinInfo::from_model),
 	}))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::next_outfit_name;
+
+	#[test]
+	fn names_the_first_outfit() {
+		assert_eq!(next_outfit_name([]), "Outfit #1");
+	}
+
+	#[test]
+	fn fills_the_lowest_gap() {
+		assert_eq!(
+			next_outfit_name(["Outfit #1", "Outfit #2", "Outfit #4"]),
+			"Outfit #3"
+		);
+	}
+
+	#[test]
+	fn ignores_custom_names() {
+		assert_eq!(
+			next_outfit_name(["Summer", "Outfit #1", "Outfit #x", "Outfit #2"]),
+			"Outfit #3"
+		);
+	}
 }

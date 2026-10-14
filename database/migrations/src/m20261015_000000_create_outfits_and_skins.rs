@@ -8,6 +8,7 @@ enum User {
 	Table,
 	Id,
 	ActiveOutfitId,
+	OutfitsSeeded,
 }
 
 #[derive(DeriveIden)]
@@ -45,6 +46,7 @@ enum PlayerOutfit {
 	SkinId,
 	MojangCapeId,
 	ParticleColor,
+	Blank,
 	CreatedAt,
 	UpdatedAt,
 }
@@ -142,6 +144,12 @@ impl MigrationTrait for Migration {
 					.col(ColumnDef::new(PlayerOutfit::SkinId).integer().null())
 					.col(ColumnDef::new(PlayerOutfit::MojangCapeId).text().null())
 					.col(ColumnDef::new(PlayerOutfit::ParticleColor).integer().null())
+					.col(
+						ColumnDef::new(PlayerOutfit::Blank)
+							.boolean()
+							.not_null()
+							.default(false),
+					)
 					.col(
 						ColumnDef::new(PlayerOutfit::CreatedAt)
 							.timestamp_with_time_zone()
@@ -242,6 +250,12 @@ impl MigrationTrait for Migration {
 							.to_col(PlayerOutfit::Id)
 							.on_delete(ForeignKeyAction::SetNull),
 					)
+					.add_column(
+						ColumnDef::new(User::OutfitsSeeded)
+							.boolean()
+							.not_null()
+							.default(false),
+					)
 					.to_owned(),
 			)
 			.await
@@ -253,6 +267,7 @@ impl MigrationTrait for Migration {
 				Table::alter()
 					.table(User::Table)
 					.drop_column(User::ActiveOutfitId)
+					.drop_column(User::OutfitsSeeded)
 					.to_owned(),
 			)
 			.await?;

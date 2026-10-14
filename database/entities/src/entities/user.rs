@@ -21,6 +21,7 @@ pub struct Model {
 	#[sea_orm(column_type = "Text", nullable, unique)]
 	pub paynow_customer_id: Option<String>,
 	pub active_outfit_id: Option<i32>,
+	pub outfits_seeded: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

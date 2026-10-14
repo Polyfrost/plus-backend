@@ -13,6 +13,7 @@ pub struct Model {
 	#[sea_orm(column_type = "Text", nullable)]
 	pub mojang_cape_id: Option<String>,
 	pub particle_color: Option<i32>,
+	pub blank: bool,
 	pub created_at: DateTimeWithTimeZone,
 	pub updated_at: DateTimeWithTimeZone,
 }
