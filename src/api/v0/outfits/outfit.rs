@@ -19,23 +19,27 @@ use entities::{
 };
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait,
-	PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait, sea_query::Expr,
+	ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, DatabaseTransaction,
+	EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+	sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{
-	OUTFIT_LIMIT, OutfitError, OutfitInfo, SkinInfo, normalize_cape_id, validate_name,
+	OUTFIT_LIMIT, OutfitError, OutfitInfo, SkinInfo, lock_player, next_numbered_name,
+	normalize_cape_id, validate_name,
 };
 use crate::api::{
 	ApiState,
 	v0::{
 		account::AuthenticatedPlayer,
-		websocket::{publish_equipment_change, publish_particle_color_change},
+		websocket::{announce_equipment_change, announce_particle_color_change},
 	},
 };
 
 const STARTER_OUTFITS: u32 = 8;
+const OUTFIT_NAME_PREFIX: &str = "Outfit #";
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct OutfitListResponse {
@@ -76,8 +80,9 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Lists the authenticated player's outfits, oldest first, along with the \
 			 id of the active outfit and the library limit. The first list creates \
-			 eight blank outfits, `Outfit #1` to `Outfit #8`; `Outfit #1` holds the \
-			 player's current cosmetics and becomes the active outfit.",
+			 eight outfits, `Outfit #1` to `Outfit #8`; `Outfit #1` holds the \
+			 player's current look and becomes the active outfit, the rest are \
+			 blank.",
 		)
 		.tag("outfits")
 }
@@ -88,7 +93,9 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Creates an outfit holding the player's currently equipped cosmetics plus \
 			 the given skin, Mojang cape and particle color, and makes it the active \
-			 outfit. Names default to the lowest unused `Outfit #N`.",
+			 outfit. The particle color defaults to the player's current one; a \
+			 different color is applied to the player and broadcast. Names default \
+			 to the lowest unused `Outfit #N`.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::CREATED.as_u16() }, Json<OutfitInfo>, _>(|res| {
@@ -110,7 +117,9 @@ fn update_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Updates an outfit's fields. Absent fields are left unchanged; an explicit \
 			 `null` clears `skin_id`, `mojang_cape_id` or `particle_color`. Setting \
-			 `skin_id` or `mojang_cape_id` marks the outfit as no longer blank.",
+			 `skin_id` or `mojang_cape_id` to a value marks the outfit as no longer \
+			 blank. Changing the active outfit's `particle_color` also applies it to \
+			 the player and broadcasts it.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
@@ -145,7 +154,10 @@ fn apply_doc(op: TransformOperation) -> TransformOperation {
 			"Replaces the player's equipped cosmetics with the outfit's, skipping any \
 			 that are no longer owned, sets the particle color and makes the outfit \
 			 active. Changes are broadcast to websocket watchers and the player's own \
-			 connections. The client applies the outfit's skin and Mojang cape itself.",
+			 connections. The client applies the outfit's skin and Mojang cape itself. \
+			 A blank outfit instead takes on the player's current cosmetics, and its \
+			 own particle color or else the current one, stops being blank and \
+			 becomes active without changing what is equipped.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::NOT_FOUND.as_u16() }, String, _>(|res| {
@@ -168,21 +180,10 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		.api_route("/outfits/{id}/apply", post_with(self::apply, self::apply_doc))
 }
 
-fn next_outfit_name<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
-	let taken: HashSet<u64> = names
-		.into_iter()
-		.filter_map(|name| name.strip_prefix("Outfit #")?.parse().ok())
-		.collect();
-	let number = (1..).find(|number| !taken.contains(number)).unwrap_or(1);
-	format!("Outfit #{number}")
-}
-
 async fn seed_starter_outfits(
 	state: &ApiState,
 	player: &user::Model,
 ) -> Result<Option<i32>, OutfitError> {
-	let equipped = current_equipment(state, player).await?;
-
 	let txn = state.database.begin().await?;
 
 	let claimed = User::update_many()
@@ -206,14 +207,17 @@ async fn seed_starter_outfits(
 		return Ok(None);
 	}
 
+	let player = lock_player(&txn, player).await?;
+	let (equipped, particle_color) = current_look(state, &txn, &player).await?;
+
 	let mut first = None;
 	for number in 1..=STARTER_OUTFITS {
 		let outfit = player_outfit::ActiveModel {
 			player_id: Set(player.id),
-			name: Set(format!("Outfit #{number}")),
+			name: Set(format!("{OUTFIT_NAME_PREFIX}{number}")),
 			favorite: Set(false),
-			particle_color: Set(if number == 1 { player.particle_color } else { None }),
-			blank: Set(true),
+			particle_color: Set(if number == 1 { particle_color } else { None }),
+			blank: Set(number != 1),
 			..Default::default()
 		}
 		.insert(&txn)
@@ -225,23 +229,8 @@ async fn seed_starter_outfits(
 		return Ok(None);
 	};
 
-	if !equipped.is_empty() {
-		PlayerOutfitCosmetic::insert_many(equipped.iter().map(|(slot, cosmetic_id)| {
-			player_outfit_cosmetic::ActiveModel {
-				outfit_id: Set(first),
-				slot: Set(slot.clone()),
-				cosmetic_id: Set(*cosmetic_id),
-			}
-		}))
-		.exec(&txn)
-		.await?;
-	}
-
-	User::update_many()
-		.col_expr(user::Column::ActiveOutfitId, Expr::value(Some(first)))
-		.filter(user::Column::Id.eq(player.id))
-		.exec(&txn)
-		.await?;
+	insert_outfit_cosmetics(&txn, first, &equipped).await?;
+	activate_outfit(&txn, &player, first, None).await?;
 
 	txn.commit().await?;
 
@@ -303,10 +292,24 @@ async fn outfit_info<C: ConnectionTrait>(
 	Ok(OutfitInfo::from_model(outfit, equipped))
 }
 
-async fn current_equipment(
+async fn stored_equipment<C: ConnectionTrait>(
+	db: &C,
+	player_id: i32,
+) -> Result<HashMap<BodySlot, i32>, sea_orm::DbErr> {
+	Ok(PlayerEquippedCosmetic::find()
+		.filter(player_equipped_cosmetic::Column::PlayerId.eq(player_id))
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|row| (row.slot, row.cosmetic_id))
+		.collect())
+}
+
+async fn current_look<C: ConnectionTrait>(
 	state: &ApiState,
+	db: &C,
 	player: &user::Model,
-) -> Result<HashMap<BodySlot, i32>, OutfitError> {
+) -> Result<(HashMap<BodySlot, i32>, Option<i32>), OutfitError> {
 	if let Some(runtime) = state
 		.realtime
 		.player_runtime
@@ -314,16 +317,71 @@ async fn current_equipment(
 		.await
 		.get(&player.minecraft_uuid)
 	{
-		return Ok(runtime.equipped.clone());
+		return Ok((runtime.equipped.clone(), runtime.particle_color));
 	}
 
-	Ok(PlayerEquippedCosmetic::find()
-		.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
-		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(|row| (row.slot, row.cosmetic_id))
-		.collect())
+	Ok((stored_equipment(db, player.id).await?, player.particle_color))
+}
+
+async fn insert_outfit_cosmetics<C: ConnectionTrait>(
+	db: &C,
+	outfit_id: i32,
+	equipped: &HashMap<BodySlot, i32>,
+) -> Result<(), sea_orm::DbErr> {
+	if equipped.is_empty() {
+		return Ok(());
+	}
+
+	PlayerOutfitCosmetic::insert_many(equipped.iter().map(|(slot, cosmetic_id)| {
+		player_outfit_cosmetic::ActiveModel {
+			outfit_id: Set(outfit_id),
+			slot: Set(slot.clone()),
+			cosmetic_id: Set(*cosmetic_id),
+		}
+	}))
+	.exec(db)
+	.await?;
+
+	Ok(())
+}
+
+async fn find_outfit_skin<C: ConnectionTrait>(
+	db: &C,
+	player_id: i32,
+	outfit: &player_outfit::Model,
+) -> Result<Option<player_skin::Model>, sea_orm::DbErr> {
+	let Some(skin_id) = outfit.skin_id else {
+		return Ok(None);
+	};
+
+	PlayerSkin::find_by_id(skin_id)
+		.filter(player_skin::Column::PlayerId.eq(player_id))
+		.one(db)
+		.await
+}
+
+async fn override_particle_color(state: &ApiState, player: Uuid, color: Option<i32>) {
+	let mut player_runtime = state.realtime.player_runtime.write().await;
+	state.particle_color_persist.supersede(player);
+	if let Some(runtime) = player_runtime.get_mut(&player) {
+		runtime.particle_color = color;
+	}
+}
+
+async fn activate_outfit<C: ConnectionTrait>(
+	db: &C,
+	player: &user::Model,
+	outfit_id: i32,
+	particle_color: Option<Option<i32>>,
+) -> Result<(), sea_orm::DbErr> {
+	let mut update = User::update_many()
+		.col_expr(user::Column::ActiveOutfitId, Expr::value(Some(outfit_id)));
+	if let Some(particle_color) = particle_color {
+		update = update.col_expr(user::Column::ParticleColor, Expr::value(particle_color));
+	}
+	update.filter(user::Column::Id.eq(player.id)).exec(db).await?;
+
+	Ok(())
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -371,9 +429,9 @@ async fn create(
 ) -> Result<(StatusCode, Json<OutfitInfo>), OutfitError> {
 	let name = body.name.as_deref().map(validate_name).transpose()?;
 	let mojang_cape_id = normalize_cape_id(body.mojang_cape_id)?;
-	let equipped = current_equipment(&state, &player).await?;
 
 	let txn = state.database.begin().await?;
+	let player = lock_player(&txn, &player).await?;
 
 	let existing = PlayerOutfit::find()
 		.filter(player_outfit::Column::PlayerId.eq(player.id))
@@ -387,39 +445,41 @@ async fn create(
 		require_skin(&txn, player.id, skin_id).await?;
 	}
 
+	let (equipped, current_color) = current_look(&state, &txn, &player).await?;
+	let particle_color = body.particle_color.or(current_color);
+
 	let outfit = player_outfit::ActiveModel {
 		player_id: Set(player.id),
 		name: Set(name.unwrap_or_else(|| {
-			next_outfit_name(existing.iter().map(|outfit| outfit.name.as_str()))
+			next_numbered_name(
+				OUTFIT_NAME_PREFIX,
+				existing.iter().map(|outfit| outfit.name.as_str()),
+			)
 		})),
 		favorite: Set(false),
 		skin_id: Set(body.skin_id),
 		mojang_cape_id: Set(mojang_cape_id),
-		particle_color: Set(body.particle_color),
+		particle_color: Set(particle_color),
 		..Default::default()
 	}
 	.insert(&txn)
 	.await?;
 
-	if !equipped.is_empty() {
-		PlayerOutfitCosmetic::insert_many(equipped.iter().map(|(slot, cosmetic_id)| {
-			player_outfit_cosmetic::ActiveModel {
-				outfit_id: Set(outfit.id),
-				slot: Set(slot.clone()),
-				cosmetic_id: Set(*cosmetic_id),
-			}
-		}))
-		.exec(&txn)
+	insert_outfit_cosmetics(&txn, outfit.id, &equipped).await?;
+
+	let color_changed = particle_color != current_color;
+	activate_outfit(&txn, &player, outfit.id, color_changed.then_some(particle_color))
 		.await?;
+	if color_changed {
+		override_particle_color(&state, player.minecraft_uuid, particle_color).await;
 	}
 
-	User::update_many()
-		.col_expr(user::Column::ActiveOutfitId, Expr::value(Some(outfit.id)))
-		.filter(user::Column::Id.eq(player.id))
-		.exec(&txn)
-		.await?;
-
 	txn.commit().await?;
+
+	if color_changed {
+		announce_particle_color_change(&state, player.minecraft_uuid, particle_color, true)
+			.await;
+	}
 
 	Ok((StatusCode::CREATED, Json(OutfitInfo::from_model(outfit, equipped))))
 }
@@ -434,10 +494,14 @@ async fn update(
 	let name = body.name.as_deref().map(validate_name).transpose()?;
 	let mojang_cape_id = body.mojang_cape_id.map(normalize_cape_id).transpose()?;
 
-	let outfit = find_outfit(&state.database, player.id, id).await?;
+	let txn = state.database.begin().await?;
+	let player = lock_player(&txn, &player).await?;
+
+	let outfit = find_outfit(&txn, player.id, id).await?;
 	if let Some(Some(skin_id)) = body.skin_id {
-		require_skin(&state.database, player.id, skin_id).await?;
+		require_skin(&txn, player.id, skin_id).await?;
 	}
+	let is_active = player.active_outfit_id == Some(outfit.id);
 
 	let mut active: player_outfit::ActiveModel = outfit.into();
 	if let Some(name) = name {
@@ -446,7 +510,7 @@ async fn update(
 	if let Some(favorite) = body.favorite {
 		active.favorite = Set(favorite);
 	}
-	if body.skin_id.is_some() || mojang_cape_id.is_some() {
+	if matches!(body.skin_id, Some(Some(_))) || matches!(mojang_cape_id, Some(Some(_))) {
 		active.blank = Set(false);
 	}
 	if let Some(skin_id) = body.skin_id {
@@ -459,9 +523,27 @@ async fn update(
 		active.particle_color = Set(particle_color);
 	}
 	active.updated_at = Set(chrono::Utc::now().fixed_offset());
-	let outfit = active.update(&state.database).await?;
+	let outfit = active.update(&txn).await?;
 
-	Ok(Json(outfit_info(&state.database, outfit).await?))
+	let applied_color = body.particle_color.filter(|_| is_active);
+	if let Some(particle_color) = applied_color {
+		User::update_many()
+			.col_expr(user::Column::ParticleColor, Expr::value(particle_color))
+			.filter(user::Column::Id.eq(player.id))
+			.exec(&txn)
+			.await?;
+		override_particle_color(&state, player.minecraft_uuid, particle_color).await;
+	}
+
+	let info = outfit_info(&txn, outfit).await?;
+	txn.commit().await?;
+
+	if let Some(particle_color) = applied_color {
+		announce_particle_color_change(&state, player.minecraft_uuid, particle_color, true)
+			.await;
+	}
+
+	Ok(Json(info))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -470,14 +552,19 @@ async fn delete(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, OutfitError> {
+	let txn = state.database.begin().await?;
+	lock_player(&txn, &player).await?;
+
 	let result = PlayerOutfit::delete_many()
 		.filter(player_outfit::Column::Id.eq(id))
 		.filter(player_outfit::Column::PlayerId.eq(player.id))
-		.exec(&state.database)
+		.exec(&txn)
 		.await?;
 	if result.rows_affected == 0 {
 		return Err(OutfitError::OutfitMissing);
 	}
+
+	txn.commit().await?;
 
 	Ok(StatusCode::NO_CONTENT)
 }
@@ -488,11 +575,14 @@ async fn apply(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<Json<ApplyOutfitResponse>, OutfitError> {
-	let previous = current_equipment(&state, &player).await?;
-
 	let txn = state.database.begin().await?;
+	let player = lock_player(&txn, &player).await?;
 
 	let outfit = find_outfit(&txn, player.id, id).await?;
+	if outfit.blank {
+		return adopt_current_look(&state, txn, &player, outfit).await.map(Json);
+	}
+
 	let outfit_cosmetics = load_outfit_cosmetics(&txn, [outfit.id])
 		.await?
 		.remove(&outfit.id)
@@ -524,6 +614,7 @@ async fn apply(
 		.map(|(slot, cosmetic_id)| (slot.clone(), *cosmetic_id))
 		.collect();
 
+	let stored = stored_equipment(&txn, player.id).await?;
 	PlayerEquippedCosmetic::delete_many()
 		.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
 		.exec(&txn)
@@ -541,22 +632,19 @@ async fn apply(
 		.await?;
 	}
 
-	User::update_many()
-		.col_expr(user::Column::ParticleColor, Expr::value(outfit.particle_color))
-		.col_expr(user::Column::ActiveOutfitId, Expr::value(Some(outfit.id)))
-		.filter(user::Column::Id.eq(player.id))
-		.exec(&txn)
-		.await?;
+	activate_outfit(&txn, &player, outfit.id, Some(outfit.particle_color)).await?;
+	let skin = find_outfit_skin(&txn, player.id, &outfit).await?;
 
-	let skin = match outfit.skin_id {
-		Some(skin_id) => {
-			PlayerSkin::find_by_id(skin_id)
-				.filter(player_skin::Column::PlayerId.eq(player.id))
-				.one(&txn)
-				.await?
-		}
-		None => None,
-	};
+	let previous = {
+		let mut player_runtime = state.realtime.player_runtime.write().await;
+		state.equipment_persist.supersede(player.minecraft_uuid);
+		state.particle_color_persist.supersede(player.minecraft_uuid);
+		player_runtime.get_mut(&player.minecraft_uuid).map(|runtime| {
+			runtime.particle_color = outfit.particle_color;
+			std::mem::replace(&mut runtime.equipped, equipped.clone())
+		})
+	}
+	.unwrap_or(stored);
 
 	txn.commit().await?;
 
@@ -565,12 +653,23 @@ async fn apply(
 	for slot in slots {
 		let cosmetic_id = equipped.get(&slot).copied();
 		if previous.get(&slot).copied() != cosmetic_id {
-			publish_equipment_change(&state, player.minecraft_uuid, slot, cosmetic_id)
-				.await;
+			announce_equipment_change(
+				&state,
+				player.minecraft_uuid,
+				slot,
+				cosmetic_id,
+				true,
+			)
+			.await;
 		}
 	}
-	publish_particle_color_change(&state, player.minecraft_uuid, outfit.particle_color)
-		.await;
+	announce_particle_color_change(
+		&state,
+		player.minecraft_uuid,
+		outfit.particle_color,
+		true,
+	)
+	.await;
 
 	Ok(Json(ApplyOutfitResponse {
 		outfit: OutfitInfo::from_model(outfit, outfit_cosmetics),
@@ -578,9 +677,55 @@ async fn apply(
 	}))
 }
 
+async fn adopt_current_look(
+	state: &ApiState,
+	txn: DatabaseTransaction,
+	player: &user::Model,
+	outfit: player_outfit::Model,
+) -> Result<ApplyOutfitResponse, OutfitError> {
+	let (equipped, current_color) = current_look(state, &txn, player).await?;
+	let particle_color = outfit.particle_color.or(current_color);
+
+	PlayerOutfitCosmetic::delete_many()
+		.filter(player_outfit_cosmetic::Column::OutfitId.eq(outfit.id))
+		.exec(&txn)
+		.await?;
+	insert_outfit_cosmetics(&txn, outfit.id, &equipped).await?;
+
+	let mut active: player_outfit::ActiveModel = outfit.into();
+	active.blank = Set(false);
+	active.particle_color = Set(particle_color);
+	active.updated_at = Set(chrono::Utc::now().fixed_offset());
+	let outfit = active.update(&txn).await?;
+
+	let color_changed = particle_color != current_color;
+	activate_outfit(&txn, player, outfit.id, color_changed.then_some(particle_color))
+		.await?;
+	let skin = find_outfit_skin(&txn, player.id, &outfit).await?;
+	if color_changed {
+		override_particle_color(state, player.minecraft_uuid, particle_color).await;
+	}
+
+	txn.commit().await?;
+
+	if color_changed {
+		announce_particle_color_change(state, player.minecraft_uuid, particle_color, true)
+			.await;
+	}
+
+	Ok(ApplyOutfitResponse {
+		outfit: OutfitInfo::from_model(outfit, equipped),
+		skin: skin.map(SkinInfo::from_model),
+	})
+}
+
 #[cfg(test)]
 mod tests {
-	use super::next_outfit_name;
+	use super::super::next_numbered_name;
+
+	fn next_outfit_name<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+		next_numbered_name(super::OUTFIT_NAME_PREFIX, names)
+	}
 
 	#[test]
 	fn names_the_first_outfit() {

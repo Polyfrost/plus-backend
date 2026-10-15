@@ -1,7 +1,7 @@
 mod outfit;
 mod skin;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aide::{OperationIo, axum::ApiRouter};
 use axum::{http::StatusCode, response::IntoResponse};
@@ -196,11 +196,37 @@ fn normalize_cape_id(cape_id: Option<String>) -> Result<Option<String>, OutfitEr
 	Ok(Some(trimmed.to_string()))
 }
 
-pub(crate) async fn mirror_active_outfit_slot<C: ConnectionTrait>(
+fn next_numbered_name<'a>(
+	prefix: &str,
+	names: impl IntoIterator<Item = &'a str>,
+) -> String {
+	let taken: HashSet<u64> = names
+		.into_iter()
+		.filter_map(|name| name.strip_prefix(prefix)?.parse().ok())
+		.collect();
+	let number = (1..).find(|number| !taken.contains(number)).unwrap_or(1);
+	format!("{prefix}{number}")
+}
+
+async fn lock_player<C: ConnectionTrait>(
 	db: &C,
 	player: &user::Model,
-	slot: BodySlot,
-	cosmetic_id: Option<i32>,
+) -> Result<user::Model, DbErr> {
+	use entities::prelude::*;
+	use sea_orm::{EntityTrait, QuerySelect};
+
+	Ok(User::find_by_id(player.id)
+		.lock_exclusive()
+		.one(db)
+		.await?
+		.unwrap_or_else(|| player.clone()))
+}
+
+pub(crate) async fn mirror_active_outfit_slots<C: ConnectionTrait>(
+	db: &C,
+	player_id: i32,
+	active_outfit_id: Option<i32>,
+	changes: impl IntoIterator<Item = (BodySlot, Option<i32>)>,
 ) -> Result<(), DbErr> {
 	use entities::prelude::*;
 	use sea_orm::{
@@ -208,17 +234,28 @@ pub(crate) async fn mirror_active_outfit_slot<C: ConnectionTrait>(
 		sea_query::{Expr, OnConflict},
 	};
 
-	let Some(outfit_id) = player.active_outfit_id else {
+	let Some(outfit_id) = active_outfit_id else {
 		return Ok(());
 	};
 
-	match cosmetic_id {
-		Some(cosmetic_id) => {
-			PlayerOutfitCosmetic::insert(player_outfit_cosmetic::ActiveModel {
+	let mut equipped = Vec::new();
+	let mut cleared = Vec::new();
+	for (slot, cosmetic_id) in changes {
+		match cosmetic_id {
+			Some(cosmetic_id) => equipped.push(player_outfit_cosmetic::ActiveModel {
 				outfit_id: Set(outfit_id),
 				slot: Set(slot),
 				cosmetic_id: Set(cosmetic_id),
-			})
+			}),
+			None => cleared.push(slot),
+		}
+	}
+	if equipped.is_empty() && cleared.is_empty() {
+		return Ok(());
+	}
+
+	if !equipped.is_empty() {
+		PlayerOutfitCosmetic::insert_many(equipped)
 			.on_conflict(
 				OnConflict::columns([
 					player_outfit_cosmetic::Column::OutfitId,
@@ -229,20 +266,43 @@ pub(crate) async fn mirror_active_outfit_slot<C: ConnectionTrait>(
 			)
 			.exec(db)
 			.await?;
-		}
-		None => {
-			PlayerOutfitCosmetic::delete_many()
-				.filter(player_outfit_cosmetic::Column::OutfitId.eq(outfit_id))
-				.filter(player_outfit_cosmetic::Column::Slot.eq(slot))
-				.exec(db)
-				.await?;
-		}
+	}
+	if !cleared.is_empty() {
+		PlayerOutfitCosmetic::delete_many()
+			.filter(player_outfit_cosmetic::Column::OutfitId.eq(outfit_id))
+			.filter(player_outfit_cosmetic::Column::Slot.is_in(cleared))
+			.exec(db)
+			.await?;
 	}
 
 	PlayerOutfit::update_many()
 		.col_expr(player_outfit::Column::UpdatedAt, Expr::current_timestamp().into())
 		.filter(player_outfit::Column::Id.eq(outfit_id))
-		.filter(player_outfit::Column::PlayerId.eq(player.id))
+		.filter(player_outfit::Column::PlayerId.eq(player_id))
+		.exec(db)
+		.await?;
+
+	Ok(())
+}
+
+pub(crate) async fn mirror_active_outfit_particle_color<C: ConnectionTrait>(
+	db: &C,
+	player_id: i32,
+	active_outfit_id: Option<i32>,
+	color: Option<i32>,
+) -> Result<(), DbErr> {
+	use entities::prelude::*;
+	use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr};
+
+	let Some(outfit_id) = active_outfit_id else {
+		return Ok(());
+	};
+
+	PlayerOutfit::update_many()
+		.col_expr(player_outfit::Column::ParticleColor, Expr::value(color))
+		.col_expr(player_outfit::Column::UpdatedAt, Expr::current_timestamp().into())
+		.filter(player_outfit::Column::Id.eq(outfit_id))
+		.filter(player_outfit::Column::PlayerId.eq(player_id))
 		.exec(db)
 		.await?;
 

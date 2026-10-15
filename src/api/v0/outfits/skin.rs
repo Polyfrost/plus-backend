@@ -13,15 +13,18 @@ use axum::{
 use entities::{player_skin, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-	Set,
+	ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
+	TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
 use super::{
-	OutfitError, SKIN_LIMIT, SkinInfo, SkinModel, normalize_texture_hash, validate_name,
+	OutfitError, SKIN_LIMIT, SkinInfo, SkinModel, lock_player, next_numbered_name,
+	normalize_texture_hash, validate_name,
 };
 use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
+
+const SKIN_NAME_PREFIX: &str = "Skin #";
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct SkinListResponse {
@@ -126,18 +129,6 @@ async fn find_skin(
 		.ok_or(OutfitError::SkinMissing)
 }
 
-async fn find_skin_by_hash(
-	state: &ApiState,
-	player_id: i32,
-	hash: &str,
-) -> Result<Option<player_skin::Model>, OutfitError> {
-	Ok(PlayerSkin::find()
-		.filter(player_skin::Column::PlayerId.eq(player_id))
-		.filter(player_skin::Column::Hash.eq(hash))
-		.one(&state.database)
-		.await?)
-}
-
 #[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
@@ -171,36 +162,39 @@ async fn add(
 		.transpose()?;
 	let model = body.model.unwrap_or(SkinModel::Classic);
 
-	if let Some(skin) = find_skin_by_hash(&state, player.id, &hash).await? {
-		return Ok((StatusCode::OK, Json(SkinInfo::from_model(skin))));
-	}
+	let txn = state.database.begin().await?;
+	lock_player(&txn, &player).await?;
 
-	let count = PlayerSkin::find()
+	let existing = PlayerSkin::find()
 		.filter(player_skin::Column::PlayerId.eq(player.id))
-		.count(&state.database)
+		.all(&txn)
 		.await?;
-	if count >= SKIN_LIMIT {
+	if let Some(skin) = existing.iter().find(|skin| skin.hash == hash) {
+		return Ok((StatusCode::OK, Json(SkinInfo::from_model(skin.clone()))));
+	}
+	if existing.len() as u64 >= SKIN_LIMIT {
 		return Err(OutfitError::SkinLimit);
 	}
 
-	let inserted = player_skin::ActiveModel {
+	let skin = player_skin::ActiveModel {
 		player_id: Set(player.id),
-		name: Set(name.unwrap_or_else(|| format!("Skin #{}", count + 1))),
+		name: Set(name.unwrap_or_else(|| {
+			next_numbered_name(
+				SKIN_NAME_PREFIX,
+				existing.iter().map(|skin| skin.name.as_str()),
+			)
+		})),
 		model: Set(model.as_str().to_string()),
-		hash: Set(hash.clone()),
+		hash: Set(hash),
 		favorite: Set(false),
 		..Default::default()
 	}
-	.insert(&state.database)
-	.await;
+	.insert(&txn)
+	.await?;
 
-	match inserted {
-		Ok(skin) => Ok((StatusCode::CREATED, Json(SkinInfo::from_model(skin)))),
-		Err(error) => match find_skin_by_hash(&state, player.id, &hash).await? {
-			Some(skin) => Ok((StatusCode::OK, Json(SkinInfo::from_model(skin)))),
-			None => Err(error.into()),
-		},
-	}
+	txn.commit().await?;
+
+	Ok((StatusCode::CREATED, Json(SkinInfo::from_model(skin))))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -243,7 +237,18 @@ async fn delete(
 
 #[cfg(test)]
 mod tests {
-	use super::super::{normalize_texture_hash, texture_url};
+	use super::{
+		SKIN_NAME_PREFIX,
+		super::{next_numbered_name, normalize_texture_hash, texture_url},
+	};
+
+	#[test]
+	fn names_skins_after_the_lowest_gap() {
+		assert_eq!(
+			next_numbered_name(SKIN_NAME_PREFIX, ["Skin #1", "Skin #3", "Outfit #2"]),
+			"Skin #2"
+		);
+	}
 
 	#[test]
 	fn accepts_mojang_texture_hashes() {

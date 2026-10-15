@@ -11,15 +11,18 @@ use axum::{
 };
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set,
+	TransactionTrait,
 };
 use serde::Deserialize;
 
 use crate::api::{
 	ApiState,
 	v0::{
-		account::AuthenticatedPlayer, cosmetics::PartialEquippedCosmetics,
-		outfits::mirror_active_outfit_slot, websocket::publish_equipment_change,
+		account::AuthenticatedPlayer,
+		cosmetics::PartialEquippedCosmetics,
+		outfits::mirror_active_outfit_slots,
+		websocket::{ChangeSource, publish_equipment_change},
 	},
 };
 
@@ -92,6 +95,11 @@ async fn endpoint(
 		use sea_orm::sea_query::{Expr, OnConflict};
 
 		let txn = state.database.begin().await?;
+		let active_outfit_id = User::find_by_id(player.id)
+			.lock_exclusive()
+			.one(&txn)
+			.await?
+			.and_then(|player| player.active_outfit_id);
 
 		for (slot, value) in body.equipment.equipped.clone() {
 			if let Some(id) = value {
@@ -147,15 +155,26 @@ async fn endpoint(
 			}
 		}
 
-		for (slot, value) in body.equipment.equipped.clone() {
-			mirror_active_outfit_slot(&txn, &player, slot, value).await?;
-		}
+		mirror_active_outfit_slots(
+			&txn,
+			player.id,
+			active_outfit_id,
+			body.equipment.equipped.clone(),
+		)
+		.await?;
 
 		txn.commit().await?;
 	}
 
 	for (slot, cosmetic_id) in body.equipment.equipped {
-		publish_equipment_change(&state, player.minecraft_uuid, slot, cosmetic_id).await;
+		publish_equipment_change(
+			&state,
+			player.minecraft_uuid,
+			slot,
+			cosmetic_id,
+			ChangeSource::Server,
+		)
+		.await;
 	}
 
 	Ok(NoContent)
