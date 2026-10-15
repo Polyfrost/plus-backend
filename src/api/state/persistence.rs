@@ -1,5 +1,6 @@
 use std::{
 	collections::{BTreeSet, HashMap},
+	hash::Hash,
 	sync::{Arc, Mutex, MutexGuard, PoisonError},
 	time::Duration,
 };
@@ -37,13 +38,15 @@ pub struct ParticleColorPersistence {
 }
 
 #[derive(Debug, Clone)]
-pub struct PersistQueue<T> {
+pub struct PersistQueue<T, K = Uuid> {
 	tx: mpsc::Sender<(u64, T)>,
-	order: Arc<WriteOrder>,
+	order: Arc<WriteOrder<K>>,
 }
 
-impl<T> PersistQueue<T> {
-	fn spawn<F>(worker: impl FnOnce(mpsc::Receiver<(u64, T)>, Arc<WriteOrder>) -> F) -> Self
+impl<T, K: Eq + Hash> PersistQueue<T, K> {
+	fn spawn<F>(
+		worker: impl FnOnce(mpsc::Receiver<(u64, T)>, Arc<WriteOrder<K>>) -> F,
+	) -> Self
 	where
 		F: Future<Output = ()> + Send + 'static,
 	{
@@ -60,23 +63,33 @@ impl<T> PersistQueue<T> {
 		}
 	}
 
-	pub fn supersede(&self, player: Uuid) {
-		self.order.supersede(player);
+	pub fn supersede(&self, key: K) {
+		self.order.supersede(key);
 	}
 }
 
-#[derive(Debug, Default)]
-struct WriteOrder(Mutex<WriteOrderState>);
+#[derive(Debug)]
+struct WriteOrder<K>(Mutex<WriteOrderState<K>>);
 
-#[derive(Debug, Default)]
-struct WriteOrderState {
-	next: u64,
-	pending: BTreeSet<u64>,
-	superseded: HashMap<Uuid, u64>,
+impl<K> Default for WriteOrder<K> {
+	fn default() -> Self {
+		Self(Mutex::new(WriteOrderState {
+			next: 0,
+			pending: BTreeSet::new(),
+			superseded: HashMap::new(),
+		}))
+	}
 }
 
-impl WriteOrder {
-	fn state(&self) -> MutexGuard<'_, WriteOrderState> {
+#[derive(Debug)]
+struct WriteOrderState<K> {
+	next: u64,
+	pending: BTreeSet<u64>,
+	superseded: HashMap<K, u64>,
+}
+
+impl<K: Eq + Hash> WriteOrder<K> {
+	fn state(&self) -> MutexGuard<'_, WriteOrderState<K>> {
 		self.0.lock().unwrap_or_else(PoisonError::into_inner)
 	}
 
@@ -88,7 +101,7 @@ impl WriteOrder {
 		seq
 	}
 
-	fn supersede(&self, player: Uuid) {
+	fn supersede(&self, key: K) {
 		let mut state = self.state();
 		if state.pending.is_empty() {
 			return;
@@ -96,13 +109,13 @@ impl WriteOrder {
 
 		let seq = state.next;
 		state.next += 1;
-		state.superseded.insert(player, seq);
+		state.superseded.insert(key, seq);
 	}
 
-	fn is_superseded(&self, player: Uuid, seq: u64) -> bool {
+	fn is_superseded(&self, key: K, seq: u64) -> bool {
 		self.state()
 			.superseded
-			.get(&player)
+			.get(&key)
 			.is_some_and(|&superseded| superseded > seq)
 	}
 
@@ -119,7 +132,7 @@ impl WriteOrder {
 /// Spawns the equipment writer and returns the channel feeding it.
 pub(super) fn spawn_equipment_queue(
 	database: DatabaseConnection,
-) -> PersistQueue<EquipmentPersistence> {
+) -> PersistQueue<EquipmentPersistence, (Uuid, BodySlot)> {
 	PersistQueue::spawn(|rx, order| persist_equipment_queue(database, rx, order))
 }
 
@@ -141,7 +154,7 @@ pub(super) fn spawn_playtime_flush(
 async fn persist_equipment_queue(
 	database: DatabaseConnection,
 	mut rx: mpsc::Receiver<(u64, EquipmentPersistence)>,
-	order: Arc<WriteOrder>,
+	order: Arc<WriteOrder<(Uuid, BodySlot)>>,
 ) {
 	use entities::{player_equipped_cosmetic, prelude::*, user};
 	use sea_orm::{
@@ -161,7 +174,7 @@ async fn persist_equipment_queue(
 			else {
 				return Ok::<_, sea_orm::DbErr>(());
 			};
-			if order.is_superseded(update.player, seq) {
+			if order.is_superseded((update.player, update.slot.clone()), seq) {
 				return Ok(());
 			}
 
@@ -218,7 +231,7 @@ async fn persist_equipment_queue(
 async fn persist_particle_color_queue(
 	database: DatabaseConnection,
 	mut rx: mpsc::Receiver<(u64, ParticleColorPersistence)>,
-	order: Arc<WriteOrder>,
+	order: Arc<WriteOrder<Uuid>>,
 ) {
 	use entities::{prelude::*, user};
 	use sea_orm::{

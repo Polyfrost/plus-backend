@@ -73,7 +73,8 @@ pub(super) struct ApiState {
 	pub(super) s3_public_url: Arc<str>,
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
 	pub(super) realtime: RealtimeState,
-	pub(super) equipment_persist: PersistQueue<EquipmentPersistence>,
+	pub(super) equipment_persist:
+		PersistQueue<EquipmentPersistence, (Uuid, entities::sea_orm_active_enums::BodySlot)>,
 	pub(super) particle_color_persist: PersistQueue<ParticleColorPersistence>,
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,

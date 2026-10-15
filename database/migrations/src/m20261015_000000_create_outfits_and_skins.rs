@@ -61,7 +61,10 @@ enum PlayerOutfitCosmetic {
 
 const SKIN_PLAYER_HASH_IDX: &str = "player_skin_player_id_hash_key";
 const OUTFIT_PLAYER_IDX: &str = "player_outfit_player_id_idx";
+const OUTFIT_SKIN_IDX: &str = "player_outfit_skin_id_idx";
+const OUTFIT_COSMETIC_COSMETIC_IDX: &str = "player_outfit_cosmetic_cosmetic_id_idx";
 const USER_ACTIVE_OUTFIT_FK: &str = "user_active_outfit_id_fkey";
+const USER_ACTIVE_OUTFIT_IDX: &str = "user_active_outfit_id_idx";
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -190,6 +193,17 @@ impl MigrationTrait for Migration {
 			.await?;
 
 		manager
+			.create_index(
+				Index::create()
+					.name(OUTFIT_SKIN_IDX)
+					.table(PlayerOutfit::Table)
+					.col(PlayerOutfit::SkinId)
+					.if_not_exists()
+					.to_owned(),
+			)
+			.await?;
+
+		manager
 			.create_table(
 				Table::create()
 					.table(PlayerOutfitCosmetic::Table)
@@ -237,6 +251,17 @@ impl MigrationTrait for Migration {
 			.await?;
 
 		manager
+			.create_index(
+				Index::create()
+					.name(OUTFIT_COSMETIC_COSMETIC_IDX)
+					.table(PlayerOutfitCosmetic::Table)
+					.col(PlayerOutfitCosmetic::CosmeticId)
+					.if_not_exists()
+					.to_owned(),
+			)
+			.await?;
+
+		manager
 			.alter_table(
 				Table::alter()
 					.table(User::Table)
@@ -256,6 +281,17 @@ impl MigrationTrait for Migration {
 							.not_null()
 							.default(false),
 					)
+					.to_owned(),
+			)
+			.await?;
+
+		manager
+			.create_index(
+				Index::create()
+					.name(USER_ACTIVE_OUTFIT_IDX)
+					.table(User::Table)
+					.col(User::ActiveOutfitId)
+					.if_not_exists()
 					.to_owned(),
 			)
 			.await

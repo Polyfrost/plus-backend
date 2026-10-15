@@ -20,8 +20,8 @@ use entities::{
 use schemars::JsonSchema;
 use sea_orm::{
 	ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, DatabaseTransaction,
-	EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
-	sea_query::Expr,
+	EntityTrait, Iterable, PaginatorTrait, QueryFilter, QueryOrder, Set,
+	TransactionTrait, sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -66,12 +66,14 @@ struct UpdateOutfitRequest {
 	mojang_cape_id: Option<Option<String>>,
 	#[serde(default, deserialize_with = "serde_with::rust::double_option::deserialize")]
 	particle_color: Option<Option<i32>>,
+	blank: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct ApplyOutfitResponse {
 	outfit: OutfitInfo,
 	skin: Option<SkinInfo>,
+	adopted: bool,
 }
 
 fn list_doc(op: TransformOperation) -> TransformOperation {
@@ -80,9 +82,10 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Lists the authenticated player's outfits, oldest first, along with the \
 			 id of the active outfit and the library limit. The first list creates \
-			 eight outfits, `Outfit #1` to `Outfit #8`; `Outfit #1` holds the \
-			 player's current look and becomes the active outfit, the rest are \
-			 blank.",
+			 eight blank outfits, `Outfit #1` to `Outfit #8`; `Outfit #1` holds the \
+			 player's current cosmetics and particle color and becomes the active \
+			 outfit, so the client can save the current skin and Mojang cape into \
+			 it.",
 		)
 		.tag("outfits")
 }
@@ -116,15 +119,19 @@ fn update_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Update an outfit")
 		.description(
 			"Updates an outfit's fields. Absent fields are left unchanged; an explicit \
-			 `null` clears `skin_id`, `mojang_cape_id` or `particle_color`. Setting \
-			 `skin_id` or `mojang_cape_id` to a value marks the outfit as no longer \
-			 blank. Changing the active outfit's `particle_color` also applies it to \
-			 the player and broadcasts it.",
+			 `null` clears `skin_id`, `mojang_cape_id` or `particle_color`. `blank: \
+			 false` marks the outfit as no longer blank, even when `skin_id` and \
+			 `mojang_cape_id` are `null`; clients send it with the `skin_id` and \
+			 `mojang_cape_id` they save into an adopted outfit. `blank: true` is \
+			 rejected. Without `blank`, setting `skin_id` or `mojang_cape_id` to a \
+			 value marks the outfit as no longer blank. Changing the active outfit's \
+			 `particle_color` also applies it to the player and broadcasts it.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::BAD_REQUEST.as_u16() }, String, _>(|res| {
 			res.description(
-				"The skin is not in the player's library, or a field is invalid",
+				"The skin is not in the player's library, `blank` is `true`, or a \
+				 field is invalid",
 			)
 		})
 		.response_with::<{ StatusCode::NOT_FOUND.as_u16() }, String, _>(|res| {
@@ -156,8 +163,12 @@ fn apply_doc(op: TransformOperation) -> TransformOperation {
 			 active. Changes are broadcast to websocket watchers and the player's own \
 			 connections. The client applies the outfit's skin and Mojang cape itself. \
 			 A blank outfit instead takes on the player's current cosmetics, and its \
-			 own particle color or else the current one, stops being blank and \
-			 becomes active without changing what is equipped.",
+			 own particle color or else the current one, and becomes active without \
+			 changing what is equipped. It stays blank: the response has `adopted` \
+			 set to `true`, the outfit's `blank` still `true` and its `skin_id` and \
+			 `mojang_cape_id` unset. The client then saves the player's current skin \
+			 and Mojang cape into the outfit with an update that also sends `blank: \
+			 false`, instead of changing them.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::NOT_FOUND.as_u16() }, String, _>(|res| {
@@ -217,7 +228,7 @@ async fn seed_starter_outfits(
 			name: Set(format!("{OUTFIT_NAME_PREFIX}{number}")),
 			favorite: Set(false),
 			particle_color: Set(if number == 1 { particle_color } else { None }),
-			blank: Set(number != 1),
+			blank: Set(true),
 			..Default::default()
 		}
 		.insert(&txn)
@@ -384,16 +395,34 @@ async fn activate_outfit<C: ConnectionTrait>(
 	Ok(())
 }
 
+fn clears_blank(
+	blank: Option<bool>,
+	skin_id: Option<Option<i32>>,
+	mojang_cape_id: Option<&Option<String>>,
+) -> Result<bool, OutfitError> {
+	match blank {
+		Some(true) => Err(OutfitError::InvalidBlank),
+		Some(false) => Ok(true),
+		None => Ok(
+			matches!(skin_id, Some(Some(_))) || matches!(mojang_cape_id, Some(Some(_)))
+		),
+	}
+}
+
 #[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<OutfitListResponse>, OutfitError> {
 	let mut active_outfit_id = player.active_outfit_id;
-	if !player.outfits_seeded
-		&& let Some(seeded) = seed_starter_outfits(&state, &player).await?
-	{
-		active_outfit_id = Some(seeded);
+	if !player.outfits_seeded {
+		active_outfit_id = match seed_starter_outfits(&state, &player).await? {
+			Some(seeded) => Some(seeded),
+			None => User::find_by_id(player.id)
+				.one(&state.database)
+				.await?
+				.and_then(|player| player.active_outfit_id),
+		};
 	}
 
 	let outfits = PlayerOutfit::find()
@@ -493,6 +522,7 @@ async fn update(
 ) -> Result<Json<OutfitInfo>, OutfitError> {
 	let name = body.name.as_deref().map(validate_name).transpose()?;
 	let mojang_cape_id = body.mojang_cape_id.map(normalize_cape_id).transpose()?;
+	let clears_blank = clears_blank(body.blank, body.skin_id, mojang_cape_id.as_ref())?;
 
 	let txn = state.database.begin().await?;
 	let player = lock_player(&txn, &player).await?;
@@ -510,7 +540,7 @@ async fn update(
 	if let Some(favorite) = body.favorite {
 		active.favorite = Set(favorite);
 	}
-	if matches!(body.skin_id, Some(Some(_))) || matches!(mojang_cape_id, Some(Some(_))) {
+	if clears_blank {
 		active.blank = Set(false);
 	}
 	if let Some(skin_id) = body.skin_id {
@@ -524,6 +554,7 @@ async fn update(
 	}
 	active.updated_at = Set(chrono::Utc::now().fixed_offset());
 	let outfit = active.update(&txn).await?;
+	let info = outfit_info(&txn, outfit).await?;
 
 	let applied_color = body.particle_color.filter(|_| is_active);
 	if let Some(particle_color) = applied_color {
@@ -535,7 +566,6 @@ async fn update(
 		override_particle_color(&state, player.minecraft_uuid, particle_color).await;
 	}
 
-	let info = outfit_info(&txn, outfit).await?;
 	txn.commit().await?;
 
 	if let Some(particle_color) = applied_color {
@@ -637,7 +667,9 @@ async fn apply(
 
 	let previous = {
 		let mut player_runtime = state.realtime.player_runtime.write().await;
-		state.equipment_persist.supersede(player.minecraft_uuid);
+		for slot in BodySlot::iter() {
+			state.equipment_persist.supersede((player.minecraft_uuid, slot));
+		}
 		state.particle_color_persist.supersede(player.minecraft_uuid);
 		player_runtime.get_mut(&player.minecraft_uuid).map(|runtime| {
 			runtime.particle_color = outfit.particle_color;
@@ -674,6 +706,7 @@ async fn apply(
 	Ok(Json(ApplyOutfitResponse {
 		outfit: OutfitInfo::from_model(outfit, outfit_cosmetics),
 		skin: skin.map(SkinInfo::from_model),
+		adopted: false,
 	}))
 }
 
@@ -693,7 +726,6 @@ async fn adopt_current_look(
 	insert_outfit_cosmetics(&txn, outfit.id, &equipped).await?;
 
 	let mut active: player_outfit::ActiveModel = outfit.into();
-	active.blank = Set(false);
 	active.particle_color = Set(particle_color);
 	active.updated_at = Set(chrono::Utc::now().fixed_offset());
 	let outfit = active.update(&txn).await?;
@@ -716,6 +748,7 @@ async fn adopt_current_look(
 	Ok(ApplyOutfitResponse {
 		outfit: OutfitInfo::from_model(outfit, equipped),
 		skin: skin.map(SkinInfo::from_model),
+		adopted: true,
 	})
 }
 
@@ -746,5 +779,28 @@ mod tests {
 			next_outfit_name(["Summer", "Outfit #1", "Outfit #x", "Outfit #2"]),
 			"Outfit #3"
 		);
+	}
+
+	#[test]
+	fn explicit_blank_false_clears_blank_without_a_look() {
+		assert!(super::clears_blank(Some(false), Some(None), Some(&None)).unwrap());
+		assert!(super::clears_blank(Some(false), None, None).unwrap());
+	}
+
+	#[test]
+	fn rejects_marking_an_outfit_blank() {
+		assert!(matches!(
+			super::clears_blank(Some(true), Some(Some(1)), None),
+			Err(super::OutfitError::InvalidBlank)
+		));
+	}
+
+	#[test]
+	fn absent_blank_clears_only_for_a_skin_or_cape() {
+		let cape = Some("cape".to_string());
+		assert!(super::clears_blank(None, Some(Some(1)), None).unwrap());
+		assert!(super::clears_blank(None, None, Some(&cape)).unwrap());
+		assert!(!super::clears_blank(None, Some(None), Some(&None)).unwrap());
+		assert!(!super::clears_blank(None, None, None).unwrap());
 	}
 }

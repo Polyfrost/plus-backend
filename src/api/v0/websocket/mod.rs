@@ -6,8 +6,8 @@ mod endpoint;
 pub mod structs;
 
 pub(crate) use endpoint::{
-	ChangeSource, announce_equipment_change, announce_particle_color_change,
-	broadcast_all, publish_equipment_change, send_to_owner, unequip_revoked,
+	announce_equipment_change, announce_particle_color_change, broadcast_all,
+	send_to_owner, unequip_revoked,
 };
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {

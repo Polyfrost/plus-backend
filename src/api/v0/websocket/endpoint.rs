@@ -768,49 +768,28 @@ pub(crate) async fn unequip_revoked(state: &ApiState, revoked: &HashMap<Uuid, Ve
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChangeSource {
-	Game,
-	Server,
-}
-
-pub(crate) async fn publish_equipment_change(
+async fn publish_equipment_change(
 	state: &ApiState,
 	player: Uuid,
 	slot: BodySlot,
 	cosmetic_id: Option<i32>,
-	source: ChangeSource,
 ) {
 	{
 		let mut player_runtime = state.realtime.player_runtime.write().await;
-		let player_state = match source {
-			ChangeSource::Game => Some(player_runtime.entry(player).or_default()),
-			ChangeSource::Server => player_runtime.get_mut(&player),
-		};
-		if let Some(player_state) = player_state {
-			if let Some(cosmetic_id) = cosmetic_id {
-				player_state.equipped.insert(slot.clone(), cosmetic_id);
-			} else {
-				player_state.equipped.remove(&slot);
-			}
+		let equipped = &mut player_runtime.entry(player).or_default().equipped;
+		if let Some(cosmetic_id) = cosmetic_id {
+			equipped.insert(slot.clone(), cosmetic_id);
+		} else {
+			equipped.remove(&slot);
 		}
-		if source == ChangeSource::Game {
-			state.equipment_persist.enqueue(EquipmentPersistence {
-				player,
-				slot: slot.clone(),
-				cosmetic_id,
-			});
-		}
+		state.equipment_persist.enqueue(EquipmentPersistence {
+			player,
+			slot: slot.clone(),
+			cosmetic_id,
+		});
 	}
 
-	announce_equipment_change(
-		state,
-		player,
-		slot,
-		cosmetic_id,
-		source == ChangeSource::Server,
-	)
-	.await;
+	announce_equipment_change(state, player, slot, cosmetic_id, false).await;
 }
 
 pub(crate) async fn announce_equipment_change(
@@ -831,30 +810,20 @@ pub(crate) async fn announce_equipment_change(
 	}
 }
 
-pub(crate) async fn publish_particle_color_change(
+async fn publish_particle_color_change(
 	state: &ApiState,
 	player: Uuid,
 	color: Option<i32>,
-	source: ChangeSource,
 ) {
 	{
 		let mut player_runtime = state.realtime.player_runtime.write().await;
-		let player_state = match source {
-			ChangeSource::Game => Some(player_runtime.entry(player).or_default()),
-			ChangeSource::Server => player_runtime.get_mut(&player),
-		};
-		if let Some(player_state) = player_state {
-			player_state.particle_color = color;
-		}
-		if source == ChangeSource::Game {
-			state
-				.particle_color_persist
-				.enqueue(ParticleColorPersistence { player, color });
-		}
+		player_runtime.entry(player).or_default().particle_color = color;
+		state
+			.particle_color_persist
+			.enqueue(ParticleColorPersistence { player, color });
 	}
 
-	announce_particle_color_change(state, player, color, source == ChangeSource::Server)
-		.await;
+	announce_particle_color_change(state, player, color, false).await;
 }
 
 pub(crate) async fn announce_particle_color_change(
@@ -983,23 +952,11 @@ async fn handle_packet(
 				validate_cosmetic(state, player.id, &slot, cosmetic_id).await?;
 			}
 
-			publish_equipment_change(
-				state,
-				player.minecraft_uuid,
-				slot,
-				cosmetic_id,
-				ChangeSource::Game,
-			)
-			.await;
+			publish_equipment_change(state, player.minecraft_uuid, slot, cosmetic_id)
+				.await;
 		}
 		ServerBoundPacket::SetParticleColor { color } => {
-			publish_particle_color_change(
-				state,
-				player.minecraft_uuid,
-				color,
-				ChangeSource::Game,
-			)
-			.await;
+			publish_particle_color_change(state, player.minecraft_uuid, color).await;
 		}
 		ServerBoundPacket::PlayEmote { emote_id } => {
 			validate_emote(state, player.id, emote_id).await?;

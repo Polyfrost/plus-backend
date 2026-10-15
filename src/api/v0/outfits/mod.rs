@@ -42,9 +42,15 @@ pub enum OutfitError {
 	OutfitLimit,
 	#[error("You can have at most {} skins", SKIN_LIMIT)]
 	SkinLimit,
-	#[error("Names must be between 1 and {} characters long", MAX_NAME_LENGTH)]
+	#[error(
+		"Names must be between 1 and {} characters long, without control characters",
+		MAX_NAME_LENGTH
+	)]
 	InvalidName,
-	#[error("Mojang cape ids must be at most {} characters long", MAX_CAPE_ID_LENGTH)]
+	#[error(
+		"Mojang cape ids must be at most {} characters long, without control characters",
+		MAX_CAPE_ID_LENGTH
+	)]
 	InvalidCapeId,
 	#[error(
 		"Texture hashes must be {}-{} hexadecimal characters",
@@ -52,6 +58,8 @@ pub enum OutfitError {
 		MAX_TEXTURE_HASH_LENGTH
 	)]
 	InvalidTextureHash,
+	#[error("Outfits can only be marked as not blank")]
+	InvalidBlank,
 	#[error("Unable to query database: {0}")]
 	Database(#[from] DbErr),
 }
@@ -64,7 +72,8 @@ impl IntoResponse for OutfitError {
 				Self::InvalidSkin
 				| Self::InvalidName
 				| Self::InvalidCapeId
-				| Self::InvalidTextureHash => StatusCode::BAD_REQUEST,
+				| Self::InvalidTextureHash
+				| Self::InvalidBlank => StatusCode::BAD_REQUEST,
 				Self::OutfitLimit | Self::SkinLimit => StatusCode::CONFLICT,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
@@ -158,7 +167,10 @@ impl OutfitInfo {
 
 fn validate_name(name: &str) -> Result<String, OutfitError> {
 	let trimmed = name.trim();
-	if trimmed.is_empty() || trimmed.chars().count() > MAX_NAME_LENGTH {
+	if trimmed.is_empty()
+		|| trimmed.chars().count() > MAX_NAME_LENGTH
+		|| trimmed.chars().any(char::is_control)
+	{
 		return Err(OutfitError::InvalidName);
 	}
 
@@ -189,7 +201,9 @@ fn normalize_cape_id(cape_id: Option<String>) -> Result<Option<String>, OutfitEr
 	if trimmed.is_empty() {
 		return Ok(None);
 	}
-	if trimmed.chars().count() > MAX_CAPE_ID_LENGTH {
+	if trimmed.chars().count() > MAX_CAPE_ID_LENGTH
+		|| trimmed.chars().any(char::is_control)
+	{
 		return Err(OutfitError::InvalidCapeId);
 	}
 

@@ -13,8 +13,8 @@ use axum::{
 use entities::{player_skin, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
-	TransactionTrait,
+	ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter,
+	QueryOrder, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
@@ -62,7 +62,8 @@ fn add_doc(op: TransformOperation) -> TransformOperation {
 			 `textures.minecraft.net` URL), with an optional `model` (`classic` or \
 			 `slim`, default `classic`) and `name`. Names default to `Skin #N`. \
 			 Adding a texture already in the library returns the existing entry \
-			 unchanged with `200`.",
+			 unchanged with `200`, even when a different `model` is given; use \
+			 `PATCH /skins/{id}` to change its model.",
 		)
 		.tag("outfits")
 		.response_with::<{ StatusCode::CREATED.as_u16() }, Json<SkinInfo>, _>(|res| {
@@ -117,14 +118,14 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		)
 }
 
-async fn find_skin(
-	state: &ApiState,
+async fn find_skin<C: ConnectionTrait>(
+	db: &C,
 	player_id: i32,
 	id: i32,
 ) -> Result<player_skin::Model, OutfitError> {
 	PlayerSkin::find_by_id(id)
 		.filter(player_skin::Column::PlayerId.eq(player_id))
-		.one(&state.database)
+		.one(db)
 		.await?
 		.ok_or(OutfitError::SkinMissing)
 }
@@ -205,7 +206,10 @@ async fn update(
 	Json(body): Json<UpdateSkinRequest>,
 ) -> Result<Json<SkinInfo>, OutfitError> {
 	let name = body.name.as_deref().map(validate_name).transpose()?;
-	let skin = find_skin(&state, player.id, id).await?;
+
+	let txn = state.database.begin().await?;
+	lock_player(&txn, &player).await?;
+	let skin = find_skin(&txn, player.id, id).await?;
 
 	let mut active: player_skin::ActiveModel = skin.into();
 	if let Some(name) = name {
@@ -218,7 +222,8 @@ async fn update(
 		active.model = Set(model.as_str().to_string());
 	}
 	active.updated_at = Set(chrono::Utc::now().fixed_offset());
-	let skin = active.update(&state.database).await?;
+	let skin = active.update(&txn).await?;
+	txn.commit().await?;
 
 	Ok(Json(SkinInfo::from_model(skin)))
 }
@@ -229,8 +234,11 @@ async fn delete(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, OutfitError> {
-	let skin = find_skin(&state, player.id, id).await?;
-	PlayerSkin::delete_by_id(skin.id).exec(&state.database).await?;
+	let txn = state.database.begin().await?;
+	lock_player(&txn, &player).await?;
+	let skin = find_skin(&txn, player.id, id).await?;
+	PlayerSkin::delete_by_id(skin.id).exec(&txn).await?;
+	txn.commit().await?;
 
 	Ok(StatusCode::NO_CONTENT)
 }
