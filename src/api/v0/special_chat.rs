@@ -11,9 +11,8 @@ use serde::Serialize;
 
 use crate::api::{
 	ApiState,
-	v0::account::AuthenticatedPlayer,
 	v0::groups::{
-		GroupError, find_user_by_uuid, special_chat_cooldown_target, special_chat_cooldown_until,
+		ChatPlayer, GroupError, find_user_by_uuid, special_chat_cooldown_target, special_chat_cooldown_until,
 	},
 	v0::social::is_blocked_either_way,
 	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
@@ -191,7 +190,7 @@ async fn get_or_create_special_chat_group(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn status(
 	State(state): State<ApiState>,
-	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	ChatPlayer { player, .. }: ChatPlayer,
 ) -> Result<Json<SpecialChatStatus>, SpecialChatError> {
 	use entities::{group_messages, prelude::*};
 

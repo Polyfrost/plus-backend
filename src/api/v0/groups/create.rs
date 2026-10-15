@@ -267,7 +267,7 @@ async fn open_dm(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn claim(
 	State(state): State<ApiState>,
-	OwnPlayer(player): OwnPlayer,
+	super::ChatPlayer { player, .. }: super::ChatPlayer,
 	Path(id): Path<i32>,
 ) -> Result<Json<GroupSummary>, GroupError> {
 	if !state.special_chat_targets.contains(&player.minecraft_uuid) {
