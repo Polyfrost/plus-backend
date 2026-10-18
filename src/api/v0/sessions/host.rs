@@ -11,16 +11,23 @@ use axum::{
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset, Utc};
+use entities::sea_orm_active_enums::GameLoader;
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api::{ApiState, v0::account::AuthenticatedPlayer, v0::sessions::SessionError};
+use crate::api::{
+	ApiState,
+	v0::account::{AuthenticatedPlayer, mods::valid_version},
+	v0::sessions::SessionError,
+};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CreateSessionRequest {
 	eos_session_id: Option<String>,
+	minecraft_version: Option<String>,
+	loader: Option<GameLoader>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -86,6 +93,8 @@ async fn create(
 		eos_session_id: Set(body.eos_session_id),
 		created_at: ActiveValue::NotSet,
 		expires_at: Set(expires_at.into()),
+		minecraft_version: Set(body.minecraft_version.filter(|version| valid_version(version))),
+		loader: Set(body.loader),
 	})
 	.exec_with_returning(&state.database)
 	.await?;

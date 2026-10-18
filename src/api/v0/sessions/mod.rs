@@ -14,7 +14,7 @@ pub(super) const SESSION_TTL_HOURS: i64 = 12;
 
 const DISCONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
-const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 pub(super) fn session_ttl() -> Duration {
 	Duration::hours(SESSION_TTL_HOURS)
@@ -181,30 +181,17 @@ pub(in crate::api) fn spawn_session_sweeper(state: ApiState) {
 
 async fn sweep_expired_invites(state: &ApiState) -> Result<(), SessionError> {
 	use entities::{game_sessions, prelude::*, session_invites};
+	use sea_orm::QuerySelect as _;
 
-	let pending = SessionInvites::find()
+	let expired = SessionInvites::find()
+		.select_only()
+		.column(session_invites::Column::SessionId)
+		.inner_join(GameSessions)
 		.filter(session_invites::Column::Status.eq(SessionInviteStatus::Pending))
+		.filter(game_sessions::Column::ExpiresAt.lte(chrono::Utc::now()))
+		.into_tuple::<uuid::Uuid>()
 		.all(&state.database)
 		.await?;
-	if pending.is_empty() {
-		return Ok(());
-	}
-
-	let mut session_ids = pending
-		.iter()
-		.map(|invite| invite.session_id)
-		.collect::<Vec<_>>();
-	session_ids.sort_unstable();
-	session_ids.dedup();
-
-	let expired = GameSessions::find()
-		.filter(game_sessions::Column::Id.is_in(session_ids))
-		.filter(game_sessions::Column::ExpiresAt.lte(chrono::Utc::now()))
-		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(|session| session.id)
-		.collect::<Vec<_>>();
 
 	let count = invites::expire_invites_for_sessions(state, expired).await?;
 	if count > 0 {

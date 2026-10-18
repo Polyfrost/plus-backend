@@ -72,7 +72,7 @@ fn valid_mod_id(id: &str) -> bool {
 			.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
 }
 
-fn valid_version(version: &str) -> bool {
+pub(in crate::api) fn valid_version(version: &str) -> bool {
 	!version.is_empty()
 		&& version.len() <= MAX_FIELD_LEN
 		&& version

@@ -11,7 +11,7 @@ use axum::{
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset, Utc};
-use entities::sea_orm_active_enums::SessionInviteStatus;
+use entities::sea_orm_active_enums::{GameLoader, SessionInviteStatus};
 use schemars::JsonSchema;
 use sea_orm::{
 	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
@@ -201,6 +201,8 @@ pub struct SessionInvite {
 	eos_session_id: Option<String>,
 	created_at: DateTime<FixedOffset>,
 	status: SessionInviteStatus,
+	minecraft_version: Option<String>,
+	loader: Option<GameLoader>,
 }
 
 fn send_doc(op: TransformOperation) -> TransformOperation {
@@ -308,6 +310,8 @@ async fn send(
 			sender: player.minecraft_uuid,
 			eos_product_user_id: player.eos_product_user_id,
 			eos_session_id: session.eos_session_id,
+			minecraft_version: session.minecraft_version,
+			loader: session.loader,
 			created_at: invite.created_at,
 			status: invite.status,
 		}),
@@ -362,6 +366,8 @@ async fn incoming(
 					eos_session_id: session.eos_session_id.clone(),
 					created_at: row.created_at,
 					status: row.status.clone(),
+					minecraft_version: session.minecraft_version.clone(),
+					loader: session.loader,
 				})
 			})
 			.collect(),

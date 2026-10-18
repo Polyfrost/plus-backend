@@ -362,3 +362,30 @@ pub enum OwnershipEventKind {
 	#[sea_orm(string_value = "expired")]
 	Expired,
 }
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "game_loader")]
+#[serde(rename_all = "lowercase")]
+pub enum GameLoader {
+	#[sea_orm(string_value = "fabric")]
+	Fabric,
+	#[sea_orm(string_value = "forge")]
+	Forge,
+	#[sea_orm(string_value = "neoforge")]
+	NeoForge,
+	#[sea_orm(string_value = "quilt")]
+	Quilt,
+	#[sea_orm(string_value = "ornithe")]
+	Ornithe,
+}
