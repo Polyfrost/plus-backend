@@ -32,6 +32,7 @@ pub use super::group_members::Entity as GroupMembers;
 pub use super::group_message_reads::Entity as GroupMessageReads;
 pub use super::group_messages::Entity as GroupMessages;
 pub use super::groups::Entity as Groups;
+pub use super::linked_account::Entity as LinkedAccount;
 pub use super::monthly_active_login::Entity as MonthlyActiveLogin;
 pub use super::oidc_signing_keys::Entity as OidcSigningKeys;
 pub use super::ownership_grant::Entity as OwnershipGrant;

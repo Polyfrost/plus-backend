@@ -40,7 +40,7 @@ sea-orm-migration = { version = "1.1.14", features = ["sqlx-postgres", "runtime-
 [workspace.dependencies.reqwest]
 version = "0.13.1"
 default-features = false
-features = ["charset", "gzip", "deflate", "brotli", "zstd", "json", "query", "rustls-no-provider"]
+features = ["charset", "gzip", "deflate", "brotli", "zstd", "json", "query", "form", "rustls-no-provider"]
 
 [workspace.dependencies.rustls]
 version = "0.23.35"

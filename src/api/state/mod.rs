@@ -35,6 +35,7 @@ use crate::{
 		api_tokens::ApiTokens,
 		rate_limit::{RateLimiter, RequestLimits},
 		v0::{
+			account::links::{self, DiscordOAuth},
 			cosmetics::CachedAssetInfo,
 			oidc::{self, AuthorizationCode, OidcSigningKey},
 		},
@@ -88,6 +89,8 @@ pub(super) struct ApiState {
 	pub(super) oidc_codes: Cache<String, AuthorizationCode>,
 	pub(super) special_chat_targets: Vec<Uuid>,
 	pub(super) special_chat_auto_reply: Option<String>,
+	pub(super) discord: Option<DiscordOAuth>,
+	pub(super) link_states: Cache<String, i32>,
 	pub(super) instrumentation: Instrumentation,
 }
 
@@ -156,6 +159,8 @@ impl ApiState {
 			oidc_codes: oidc::new_authorization_code_cache(),
 			special_chat_targets: args.special_chat_targets.clone(),
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
+			discord: DiscordOAuth::from_args(args),
+			link_states: links::new_link_state_cache(),
 			instrumentation,
 			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
