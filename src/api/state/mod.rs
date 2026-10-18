@@ -17,13 +17,12 @@ use pasetors::{
 use reqwest::{Client, ClientBuilder};
 use s3::{Bucket, creds::Credentials};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection, EntityTrait};
-use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 pub(in crate::api) use self::{
 	analytics_rollup::{ANALYTICS_DAILY_JOB, SESSION_LENGTH_BUCKETS},
 	instrumentation::Instrumentation,
-	persistence::{EquipmentPersistence, ParticleColorPersistence},
+	persistence::{EquipmentPersistence, ParticleColorPersistence, PersistQueue},
 	realtime::{
 		ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
 		RealtimeConnection, RealtimeState,
@@ -74,8 +73,9 @@ pub(super) struct ApiState {
 	pub(super) s3_public_url: Arc<str>,
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
 	pub(super) realtime: RealtimeState,
-	pub(super) equipment_persist_tx: mpsc::Sender<EquipmentPersistence>,
-	pub(super) particle_color_persist_tx: mpsc::Sender<ParticleColorPersistence>,
+	pub(super) equipment_persist:
+		PersistQueue<EquipmentPersistence, (Uuid, entities::sea_orm_active_enums::BodySlot)>,
+	pub(super) particle_color_persist: PersistQueue<ParticleColorPersistence>,
 	pub(super) admin_password: String,
 	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
@@ -135,8 +135,8 @@ impl ApiState {
 				.expect("Unable to generate paseto signing key"),
 			asset_cache,
 			realtime,
-			equipment_persist_tx: persistence::spawn_equipment_queue(database.clone()),
-			particle_color_persist_tx: persistence::spawn_particle_color_queue(
+			equipment_persist: persistence::spawn_equipment_queue(database.clone()),
+			particle_color_persist: persistence::spawn_particle_color_queue(
 				database.clone(),
 			),
 			admin_password: args.admin_password.clone(),

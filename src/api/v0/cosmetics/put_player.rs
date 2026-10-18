@@ -9,15 +9,24 @@ use axum::{
 	http::StatusCode,
 	response::{IntoResponse, NoContent},
 };
+use entities::sea_orm_active_enums::BodySlot;
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set,
+	TransactionTrait,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::{account::AuthenticatedPlayer, cosmetics::PartialEquippedCosmetics},
+	state::EquipmentPersistence,
+	v0::{
+		account::AuthenticatedPlayer,
+		cosmetics::PartialEquippedCosmetics,
+		outfits::mirror_active_outfit_slots,
+		websocket::announce_equipment_change,
+	},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -89,8 +98,13 @@ async fn endpoint(
 		use sea_orm::sea_query::{Expr, OnConflict};
 
 		let txn = state.database.begin().await?;
+		let active_outfit_id = User::find_by_id(player.id)
+			.lock_exclusive()
+			.one(&txn)
+			.await?
+			.and_then(|player| player.active_outfit_id);
 
-		for (slot, value) in body.equipment.equipped {
+		for (slot, value) in body.equipment.equipped.clone() {
 			if let Some(id) = value {
 				let owned = PlayerOwnedCosmetic::find()
 					.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
@@ -144,8 +158,69 @@ async fn endpoint(
 			}
 		}
 
-		txn.commit().await?;
+		mirror_active_outfit_slots(
+			&txn,
+			player.id,
+			active_outfit_id,
+			body.equipment.equipped.clone(),
+		)
+		.await?;
+
+		let applied = {
+			let mut player_runtime = state.realtime.player_runtime.write().await;
+			let mut runtime = player_runtime.get_mut(&player.minecraft_uuid);
+			let mut applied = Vec::new();
+			for (slot, cosmetic_id) in &body.equipment.equipped {
+				state
+					.equipment_persist
+					.supersede((player.minecraft_uuid, slot.clone()));
+				if let Some(runtime) = runtime.as_deref_mut() {
+					let previous = match cosmetic_id {
+						Some(cosmetic_id) => {
+							runtime.equipped.insert(slot.clone(), *cosmetic_id)
+						}
+						None => runtime.equipped.remove(slot),
+					};
+					applied.push((slot.clone(), previous, *cosmetic_id));
+				}
+			}
+			applied
+		};
+
+		if let Err(error) = txn.commit().await {
+			restore_runtime(&state, player.minecraft_uuid, applied).await;
+			return Err(error.into());
+		}
+	}
+
+	for (slot, cosmetic_id) in body.equipment.equipped {
+		announce_equipment_change(&state, player.minecraft_uuid, slot, cosmetic_id, true)
+			.await;
 	}
 
 	Ok(NoContent)
+}
+
+async fn restore_runtime(
+	state: &ApiState,
+	player: Uuid,
+	applied: Vec<(BodySlot, Option<i32>, Option<i32>)>,
+) {
+	let mut player_runtime = state.realtime.player_runtime.write().await;
+	let Some(runtime) = player_runtime.get_mut(&player) else {
+		return;
+	};
+	for (slot, previous, cosmetic_id) in applied {
+		if runtime.equipped.get(&slot).copied() == cosmetic_id {
+			match previous {
+				Some(previous) => runtime.equipped.insert(slot.clone(), previous),
+				None => runtime.equipped.remove(&slot),
+			};
+		}
+		state.equipment_persist.enqueue(EquipmentPersistence {
+			player,
+			cosmetic_id: runtime.equipped.get(&slot).copied(),
+			slot,
+		});
+	}
 }
