@@ -356,93 +356,20 @@ async fn endpoint(
 		return Err(UploadError::MissingSlots);
 	}
 
-	let is_bundle = is_zip(&data);
-	let data: Vec<u8> = if is_bundle {
-		strip_macos_junk(&data)?
-	} else {
-		data.to_vec()
-	};
-	if is_bundle {
-		extension = "zip".to_string();
-		content_type = Some("application/zip".to_string());
-	}
-	let asset_kind = if is_emote || is_bundle {
-		AssetKind::Bundle
-	} else {
-		AssetKind::Image
-	};
-	let default_content_type = if is_emote {
-		"application/zip"
-	} else {
-		"image/png"
-	};
-
-	let path = format!(
-		"{}/{}.{}",
-		storage_prefix(&cosmetic_type),
-		Uuid::now_v7(),
-		extension
-	);
-
-	state
-		.s3_bucket
-		.put_object_with_content_type(
-			&path,
-			&data,
-			content_type.as_deref().unwrap_or(default_content_type),
-		)
-		.await?;
-
-	use entities::{
-		asset, cosmetic, cosmetic_allowed_slot, cosmetic_group,
-		cosmetic_group_allowed_slot, prelude::*,
-	};
-
-	let asset = asset::ActiveModel {
-		storage_path: Set(Some(path)),
-		url: Set(None),
-		asset_kind: Set(asset_kind),
-		content_type: Set(content_type.or_else(|| Some(default_content_type.to_string()))),
-		hash: Set(Some(sha256_hex(&data))),
-		..Default::default()
-	}
-	.insert(&state.database)
+	let (asset, cover_asset_id) = store_cosmetic_file(
+		&state,
+		&cosmetic_type,
+		&slots,
+		model_variant.as_deref(),
+		&data,
+		extension,
+		content_type,
+	)
 	.await?;
 
-	let cover_asset_id = if state.render_service_url.is_empty() {
-		None
-	} else {
-		match crate::api::v0::cosmetics::cover::render_cover(
-			&state.render_client,
-			&state.render_service_url,
-			&cosmetic_type,
-			&slots,
-			model_variant.as_deref(),
-			is_bundle,
-			&data,
-		)
-		.await
-		{
-			Ok(png) => match crate::api::v0::collections::store_asset(
-				&state,
-				&png,
-				Some("image/png".to_string()),
-				"png",
-				"covers",
-			)
-			.await
-			{
-				Ok(id) => Some(id),
-				Err(error) => {
-					tracing::warn!("Unable to store cosmetic cover asset: {error}");
-					None
-				}
-			},
-			Err(error) => {
-				tracing::warn!("Unable to render cosmetic cover: {error}");
-				None
-			}
-		}
+	use entities::{
+		cosmetic, cosmetic_allowed_slot, cosmetic_group, cosmetic_group_allowed_slot,
+		prelude::*,
 	};
 
 	let group = match group_name {
@@ -562,13 +489,6 @@ async fn endpoint(
 		.await?;
 	}
 
-	let info = crate::api::v0::cosmetics::CachedAssetInfo::from_db_model(
-		&asset,
-		state.s3_bucket.clone(),
-	)
-	.await?;
-	state.asset_cache.insert(asset.id, info).await;
-
 	let groups = match &group {
 		Some(group) => {
 			let group_slots = CosmeticGroupAllowedSlot::find()
@@ -603,4 +523,112 @@ async fn endpoint(
 	.await?;
 
 	Ok(Json(infos.remove(0)))
+}
+
+/// Uploads a cosmetic's source file, renders its cover when the render service
+/// is configured, and returns the new asset with the cover's id.
+pub(super) async fn store_cosmetic_file(
+	state: &ApiState,
+	cosmetic_type: &CosmeticType,
+	slots: &[BodySlot],
+	model_variant: Option<&str>,
+	data: &[u8],
+	mut extension: String,
+	mut content_type: Option<String>,
+) -> Result<(entities::asset::Model, Option<i32>), UploadError> {
+	use entities::asset;
+
+	let is_emote = matches!(cosmetic_type, CosmeticType::Emote);
+	let is_bundle = is_zip(data);
+	let data: Vec<u8> = if is_bundle {
+		strip_macos_junk(data)?
+	} else {
+		data.to_vec()
+	};
+	if is_bundle {
+		extension = "zip".to_string();
+		content_type = Some("application/zip".to_string());
+	}
+	let asset_kind = if is_emote || is_bundle {
+		AssetKind::Bundle
+	} else {
+		AssetKind::Image
+	};
+	let default_content_type = if is_emote {
+		"application/zip"
+	} else {
+		"image/png"
+	};
+
+	let path = format!(
+		"{}/{}.{}",
+		storage_prefix(cosmetic_type),
+		Uuid::now_v7(),
+		extension
+	);
+
+	state
+		.s3_bucket
+		.put_object_with_content_type(
+			&path,
+			&data,
+			content_type.as_deref().unwrap_or(default_content_type),
+		)
+		.await?;
+
+	let asset = asset::ActiveModel {
+		storage_path: Set(Some(path)),
+		url: Set(None),
+		asset_kind: Set(asset_kind),
+		content_type: Set(content_type.or_else(|| Some(default_content_type.to_string()))),
+		hash: Set(Some(sha256_hex(&data))),
+		..Default::default()
+	}
+	.insert(&state.database)
+	.await?;
+
+	let cover_asset_id = if state.render_service_url.is_empty() {
+		None
+	} else {
+		match crate::api::v0::cosmetics::cover::render_cover(
+			&state.render_client,
+			&state.render_service_url,
+			cosmetic_type,
+			slots,
+			model_variant,
+			is_bundle,
+			&data,
+		)
+		.await
+		{
+			Ok(png) => match crate::api::v0::collections::store_asset(
+				state,
+				&png,
+				Some("image/png".to_string()),
+				"png",
+				"covers",
+			)
+			.await
+			{
+				Ok(id) => Some(id),
+				Err(error) => {
+					tracing::warn!("Unable to store cosmetic cover asset: {error}");
+					None
+				}
+			},
+			Err(error) => {
+				tracing::warn!("Unable to render cosmetic cover: {error}");
+				None
+			}
+		}
+	};
+
+	let info = crate::api::v0::cosmetics::CachedAssetInfo::from_db_model(
+		&asset,
+		state.s3_bucket.clone(),
+	)
+	.await?;
+	state.asset_cache.insert(asset.id, info).await;
+
+	Ok((asset, cover_asset_id))
 }
