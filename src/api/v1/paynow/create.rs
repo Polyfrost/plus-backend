@@ -12,7 +12,7 @@ use axum::{
 };
 use axum_client_ip::ClientIp;
 use chrono::Utc;
-use entities::{player_owned_cosmetic, prelude::*, tags_cosmetic, user};
+use entities::{player_owned_cosmetic, prelude::*, referral, tags_cosmetic, user};
 use schemars::JsonSchema;
 use sea_orm::{DbErr, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,8 @@ pub(super) enum CreateError {
 	TooManyPromoCodes,
 	#[error("Unknown or expired promo code {0}")]
 	UnknownPromoCode(String),
+	#[error("Unknown creator code {0}")]
+	UnknownReferral(String),
 	#[error("{0} is not on sale right now")]
 	NotAvailable(String),
 	#[error("{0} cannot be gifted")]
@@ -118,6 +120,7 @@ impl IntoResponse for CreateError {
 				| CreateError::UnknownProduct(_)
 				| CreateError::TooManyPromoCodes
 				| CreateError::UnknownPromoCode(_)
+				| CreateError::UnknownReferral(_)
 				| CreateError::NotAvailable(_)
 				| CreateError::GiftingDisabled(_)
 				| CreateError::MissingRequirement(_)
@@ -140,6 +143,10 @@ pub(super) struct CreateRequest {
 	/// buyer is told which.
 	#[serde(default)]
 	promo_codes: Vec<String>,
+	/// A creator code, from the buyer or a tracked link's `ref`. Its coupon,
+	/// if any, applies on its own.
+	#[serde(default)]
+	referral: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -158,7 +165,8 @@ pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"player already owns any of them or a product is sold out or at the ",
 			"buyer's limit, and 400 if a product id does not resolve to an ",
 			"enabled cosmetic or bundle, is outside its sale window, cannot be ",
-			"gifted, needs a cosmetic the player lacks, or a promo code is rejected."
+			"gifted, needs a cosmetic the player lacks, or a promo code or ",
+			"creator code is rejected."
 		))
 		.tag("checkout")
 }
@@ -174,6 +182,7 @@ pub(super) async fn endpoint(
 		products,
 		buyer,
 		promo_codes,
+		referral,
 	} = request;
 	let buyer = buyer.unwrap_or(player);
 
@@ -189,6 +198,8 @@ pub(super) async fn endpoint(
 	if promo_codes.len() > MAX_PROMO_CODES {
 		return Err(CreateError::TooManyPromoCodes);
 	}
+
+	let referral = find_referral(&state, referral.as_deref()).await?;
 
 	let products = dedupe(products);
 	if products.is_empty() {
@@ -227,6 +238,7 @@ pub(super) async fn endpoint(
 		&resolved,
 		&settings,
 		&promo_codes,
+		referral.as_ref().and_then(|(_, coupon)| coupon.as_deref()),
 		buyer,
 	)
 	.await?;
@@ -248,7 +260,7 @@ pub(super) async fn endpoint(
 		})
 		.collect();
 
-	let metadata = HashMap::from([
+	let mut metadata = HashMap::from([
 		("player".to_string(), player.to_string()),
 		("buyer".to_string(), buyer.to_string()),
 		("products".to_string(), products.join(",")),
@@ -257,6 +269,9 @@ pub(super) async fn endpoint(
 			applied.quoted_discount_minor.to_string(),
 		),
 	]);
+	if let Some((code, _)) = referral {
+		metadata.insert("referral".to_string(), code);
+	}
 
 	let session = state
 		.paynow
@@ -301,6 +316,30 @@ async fn enforce_rate_limit(
 		Some(_) => Err(CreateError::RateLimited),
 		None => Ok(()),
 	}
+}
+
+/// The code as stored, and its coupon's code if it has one.
+async fn find_referral(
+	state: &ApiState,
+	code: Option<&str>,
+) -> Result<Option<(String, Option<String>)>, CreateError> {
+	let Some(code) = code.map(normalise_code).filter(|code| !code.is_empty()) else {
+		return Ok(None);
+	};
+
+	let Some((referral, discount)) = Referral::find_by_id(&code)
+		.filter(referral::Column::Enabled.eq(true))
+		.find_also_related(Discount)
+		.one(&state.database)
+		.await?
+	else {
+		return Err(CreateError::UnknownReferral(code));
+	};
+
+	Ok(Some((
+		referral.code,
+		discount.and_then(|discount| discount.code),
+	)))
 }
 
 async fn reject_already_owned(
@@ -460,12 +499,18 @@ async fn apply_discounts(
 	resolved: &HashMap<String, Product>,
 	settings: &HashMap<Key, Settings>,
 	codes: &[String],
+	referral_coupon: Option<&str>,
 	buyer: Uuid,
 ) -> Result<AppliedDiscounts, CreateError> {
 	let buyer_id = user_id(state, buyer).await?;
 
-	let live =
-		live_rules(&state.database, codes, buyer_id, Utc::now().into()).await?;
+	let wanted: Vec<String> = codes
+		.iter()
+		.cloned()
+		.chain(referral_coupon.map(str::to_owned))
+		.collect();
+	let mut live =
+		live_rules(&state.database, &wanted, buyer_id, Utc::now().into()).await?;
 
 	// A code that matched nothing is the buyer's typo, or a campaign that has
 	// ended. Either way they should be told, not silently charged full price.
@@ -483,6 +528,21 @@ async fn apply_discounts(
 		}
 		paynow_codes.push(code);
 	}
+
+	// Unlike a typed code, a lapsed referral coupon must not cost the sale.
+	if let Some(code) = referral_coupon
+		&& honoured.contains(code)
+		&& !paynow_codes.iter().any(|known| known == code)
+	{
+		paynow_codes.push(code.to_owned());
+	}
+	live.retain(|discount| {
+		discount
+			.model
+			.code
+			.as_ref()
+			.is_none_or(|code| paynow_codes.contains(code))
+	});
 
 	let tags = tags_by_cosmetic(state, resolved).await?;
 	let lines: Vec<Sellable> = product_ids

@@ -46,6 +46,7 @@ pub mod player_mod;
 pub mod player_owned_cosmetic;
 pub mod product_requirement;
 pub mod product_settings;
+pub mod referral;
 pub mod relationship_requests;
 pub mod relationships;
 pub mod sea_orm_active_enums;

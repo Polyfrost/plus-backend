@@ -4,6 +4,7 @@ mod grants;
 mod hello;
 mod listings;
 mod paynow;
+mod referrals;
 mod store;
 mod tokens;
 
@@ -20,6 +21,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(discounts::router())
 		.merge(grants::router())
 		.merge(listings::router())
+		.merge(referrals::router())
 		.merge(store::router())
 		.merge(hello::router())
 		.merge(tokens::router())

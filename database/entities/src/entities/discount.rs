@@ -36,6 +36,8 @@ pub enum Relation {
 	DiscountRedemption,
 	#[sea_orm(has_many = "super::discount_target::Entity")]
 	DiscountTarget,
+	#[sea_orm(has_many = "super::referral::Entity")]
+	Referral,
 }
 
 impl Related<super::discount_redemption::Entity> for Entity {
@@ -47,6 +49,12 @@ impl Related<super::discount_redemption::Entity> for Entity {
 impl Related<super::discount_target::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::DiscountTarget.def()
+	}
+}
+
+impl Related<super::referral::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::Referral.def()
 	}
 }
 

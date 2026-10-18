@@ -151,6 +151,8 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 		);
 	}
 
+	let referral = metadata.get("referral").cloned();
+
 	let charge = OrderCharge {
 		amount_minor: Some(order.total_amount),
 		currency: order.currency.clone(),
@@ -193,6 +195,7 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 					"checkout_metadata": metadata.clone()
 				}),
 				charge,
+				referral,
 			)
 			.await?;
 

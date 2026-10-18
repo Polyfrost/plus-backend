@@ -44,6 +44,7 @@ pub use super::player_mod::Entity as PlayerMod;
 pub use super::player_owned_cosmetic::Entity as PlayerOwnedCosmetic;
 pub use super::product_requirement::Entity as ProductRequirement;
 pub use super::product_settings::Entity as ProductSettings;
+pub use super::referral::Entity as Referral;
 pub use super::relationship_requests::Entity as RelationshipRequests;
 pub use super::relationships::Entity as Relationships;
 pub use super::session_invites::Entity as SessionInvites;
