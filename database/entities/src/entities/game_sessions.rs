@@ -1,5 +1,6 @@
 //! `SeaORM` Entity
 
+use super::sea_orm_active_enums::GameLoader;
 use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
@@ -11,6 +12,8 @@ pub struct Model {
 	pub eos_session_id: Option<String>,
 	pub created_at: DateTimeWithTimeZone,
 	pub expires_at: DateTimeWithTimeZone,
+	pub minecraft_version: Option<String>,
+	pub loader: Option<GameLoader>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

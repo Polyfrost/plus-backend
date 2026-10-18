@@ -1,7 +1,7 @@
 mod link_puid;
 pub(crate) mod links;
 mod login;
-mod mods;
+pub(super) mod mods;
 
 use aide::{OperationInput, axum::ApiRouter, openapi::SecurityRequirement};
 use axum::{

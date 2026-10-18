@@ -74,6 +74,7 @@ mod m20261014_000000_create_dm_delegates;
 mod m20261015_000000_create_outfits_and_skins;
 mod m20261017_000000_create_referrals;
 mod m20261017_000000_create_linked_accounts;
+mod m20261017_000000_session_game_info;
 
 pub struct Migrator;
 
@@ -155,6 +156,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20261015_000000_create_outfits_and_skins::Migration),
       Box::new(m20261017_000000_create_referrals::Migration),
       Box::new(m20261017_000000_create_linked_accounts::Migration),
+			Box::new(m20261017_000000_session_game_info::Migration),
 		]
 	}
 }
