@@ -15,9 +15,10 @@ use entities::{
 	analytics_session_length_daily, analytics_slot_snapshot, prelude::*, user,
 };
 use sea_orm::{
-	ActiveValue, ColumnTrait as _, ConnectionTrait as _, DatabaseConnection,
-	DatabaseTransaction, DbErr, EntityTrait, FromQueryResult, PaginatorTrait as _,
-	QueryFilter as _, QuerySelect as _, Select, TransactionTrait as _,
+	ActiveModelTrait, ActiveValue, ColumnTrait as _, ConnectionTrait as _,
+	DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait, FromQueryResult,
+	IntoActiveModel, Iterable as _, PaginatorTrait as _, QueryFilter as _,
+	QuerySelect as _, Select, TransactionTrait as _,
 	prelude::DateTimeWithTimeZone,
 	sea_query::{Expr, OnConflict},
 };
@@ -30,6 +31,7 @@ const BACKFILL_INTERVAL: Duration = Duration::from_secs(30);
 const LATE_ARRIVAL_DAYS: u64 = 3;
 const MAX_DAYS_PER_RUN: u64 = 14;
 const STATEMENT_TIMEOUT: &str = "120s";
+const MAX_BIND_PARAMS: usize = u16::MAX as usize;
 pub(crate) const ANALYTICS_DAILY_JOB: &str = "analytics_daily";
 
 #[derive(Debug, Default, FromQueryResult)]
@@ -114,156 +116,140 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 		day = next;
 	}
 
-	if !hourly.is_empty() {
-		AnalyticsHourly::insert_many(hourly)
-			.on_conflict(
-				OnConflict::column(analytics_hourly::Column::HourStart)
-					.update_columns([
-						analytics_hourly::Column::Dow,
-						analytics_hourly::Column::HourOfDay,
-						analytics_hourly::Column::PlaytimeSeconds,
-						analytics_hourly::Column::ActivePlayers,
-						analytics_hourly::Column::SessionsStarted,
-						analytics_hourly::Column::PeakConcurrent,
-						analytics_hourly::Column::ComputedAt,
-					])
-					.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		hourly,
+		OnConflict::column(analytics_hourly::Column::HourStart)
+			.update_columns([
+				analytics_hourly::Column::Dow,
+				analytics_hourly::Column::HourOfDay,
+				analytics_hourly::Column::PlaytimeSeconds,
+				analytics_hourly::Column::ActivePlayers,
+				analytics_hourly::Column::SessionsStarted,
+				analytics_hourly::Column::PeakConcurrent,
+				analytics_hourly::Column::ComputedAt,
+			])
+			.to_owned(),
+	)
+	.await?;
 
-	if !clients.is_empty() {
-		AnalyticsClientDaily::insert_many(clients)
-			.on_conflict(
-				OnConflict::columns([
-					analytics_client_daily::Column::Day,
-					analytics_client_daily::Column::ClientVersion,
-					analytics_client_daily::Column::MinecraftVersion,
-					analytics_client_daily::Column::Loader,
-					analytics_client_daily::Column::Os,
-					analytics_client_daily::Column::Country,
-				])
-				.update_columns([
-					analytics_client_daily::Column::ActivePlayers,
-					analytics_client_daily::Column::ComputedAt,
-				])
-				.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		clients,
+		OnConflict::columns([
+			analytics_client_daily::Column::Day,
+			analytics_client_daily::Column::ClientVersion,
+			analytics_client_daily::Column::MinecraftVersion,
+			analytics_client_daily::Column::Loader,
+			analytics_client_daily::Column::Os,
+			analytics_client_daily::Column::Country,
+		])
+		.update_columns([
+			analytics_client_daily::Column::ActivePlayers,
+			analytics_client_daily::Column::ComputedAt,
+		])
+		.to_owned(),
+	)
+	.await?;
 
-	if !cosmetics.is_empty() {
-		AnalyticsCosmeticDaily::insert_many(cosmetics)
-			.on_conflict(
-				OnConflict::columns([
-					analytics_cosmetic_daily::Column::Day,
-					analytics_cosmetic_daily::Column::CosmeticId,
-				])
-				.update_columns([
-					analytics_cosmetic_daily::Column::Acquisitions,
-					analytics_cosmetic_daily::Column::AcquisitionsPaid,
-					analytics_cosmetic_daily::Column::AcquisitionsFree,
-					analytics_cosmetic_daily::Column::AcquisitionsGranted,
-					analytics_cosmetic_daily::Column::RevenueMinor,
-					analytics_cosmetic_daily::Column::Refunded,
-					analytics_cosmetic_daily::Column::ChargedBack,
-					analytics_cosmetic_daily::Column::RefundedMinor,
-					analytics_cosmetic_daily::Column::ChargedBackMinor,
-					analytics_cosmetic_daily::Column::ComputedAt,
-				])
-				.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		cosmetics,
+		OnConflict::columns([
+			analytics_cosmetic_daily::Column::Day,
+			analytics_cosmetic_daily::Column::CosmeticId,
+		])
+		.update_columns([
+			analytics_cosmetic_daily::Column::Acquisitions,
+			analytics_cosmetic_daily::Column::AcquisitionsPaid,
+			analytics_cosmetic_daily::Column::AcquisitionsFree,
+			analytics_cosmetic_daily::Column::AcquisitionsGranted,
+			analytics_cosmetic_daily::Column::RevenueMinor,
+			analytics_cosmetic_daily::Column::Refunded,
+			analytics_cosmetic_daily::Column::ChargedBack,
+			analytics_cosmetic_daily::Column::RefundedMinor,
+			analytics_cosmetic_daily::Column::ChargedBackMinor,
+			analytics_cosmetic_daily::Column::ComputedAt,
+		])
+		.to_owned(),
+	)
+	.await?;
 
-	if !lengths.is_empty() {
-		AnalyticsSessionLengthDaily::insert_many(lengths)
-			.on_conflict(
-				OnConflict::columns([
-					analytics_session_length_daily::Column::Day,
-					analytics_session_length_daily::Column::Bucket,
-				])
-				.update_columns([
-					analytics_session_length_daily::Column::Sessions,
-					analytics_session_length_daily::Column::ComputedAt,
-				])
-				.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		lengths,
+		OnConflict::columns([
+			analytics_session_length_daily::Column::Day,
+			analytics_session_length_daily::Column::Bucket,
+		])
+		.update_columns([
+			analytics_session_length_daily::Column::Sessions,
+			analytics_session_length_daily::Column::ComputedAt,
+		])
+		.to_owned(),
+	)
+	.await?;
 
-	if !rows.is_empty() {
-		AnalyticsDaily::insert_many(rows)
-			.on_conflict(
-				OnConflict::column(analytics_daily::Column::Day)
-					.update_columns(daily::rolled_up_columns())
-					.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		rows,
+		OnConflict::column(analytics_daily::Column::Day)
+			.update_columns(daily::rolled_up_columns())
+			.to_owned(),
+	)
+	.await?;
 
 	let cells = retention::collect_retention_cells(&txn, from, to).await?;
-	if !cells.is_empty() {
-		AnalyticsCohortRetention::insert_many(cells)
-			.on_conflict(
-				OnConflict::columns([
-					analytics_cohort_retention::Column::CohortDay,
-					analytics_cohort_retention::Column::DayOffset,
-				])
-				.update_columns([
-					analytics_cohort_retention::Column::CohortSize,
-					analytics_cohort_retention::Column::Retained,
-					analytics_cohort_retention::Column::ComputedAt,
-				])
-				.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		cells,
+		OnConflict::columns([
+			analytics_cohort_retention::Column::CohortDay,
+			analytics_cohort_retention::Column::DayOffset,
+		])
+		.update_columns([
+			analytics_cohort_retention::Column::CohortSize,
+			analytics_cohort_retention::Column::Retained,
+			analytics_cohort_retention::Column::ComputedAt,
+		])
+		.to_owned(),
+	)
+	.await?;
 
 	let week = catalog::week_start(today);
 	let (cosmetic_snapshot, slot_snapshot) =
 		catalog::snapshot_rows(&txn, week, computed_at).await?;
 
-	if !cosmetic_snapshot.is_empty() {
-		AnalyticsCosmeticSnapshot::insert_many(cosmetic_snapshot)
-			.on_conflict(
-				OnConflict::columns([
-					analytics_cosmetic_snapshot::Column::WeekStart,
-					analytics_cosmetic_snapshot::Column::CosmeticId,
-				])
-				.update_columns([
-					analytics_cosmetic_snapshot::Column::Owners,
-					analytics_cosmetic_snapshot::Column::Equipped,
-					analytics_cosmetic_snapshot::Column::ComputedAt,
-				])
-				.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		cosmetic_snapshot,
+		OnConflict::columns([
+			analytics_cosmetic_snapshot::Column::WeekStart,
+			analytics_cosmetic_snapshot::Column::CosmeticId,
+		])
+		.update_columns([
+			analytics_cosmetic_snapshot::Column::Owners,
+			analytics_cosmetic_snapshot::Column::Equipped,
+			analytics_cosmetic_snapshot::Column::ComputedAt,
+		])
+		.to_owned(),
+	)
+	.await?;
 
-	if !slot_snapshot.is_empty() {
-		AnalyticsSlotSnapshot::insert_many(slot_snapshot)
-			.on_conflict(
-				OnConflict::columns([
-					analytics_slot_snapshot::Column::WeekStart,
-					analytics_slot_snapshot::Column::Slot,
-				])
-				.update_columns([
-					analytics_slot_snapshot::Column::EquippedPlayers,
-					analytics_slot_snapshot::Column::ComputedAt,
-				])
-				.to_owned(),
-			)
-			.exec_without_returning(&txn)
-			.await?;
-	}
+	upsert(
+		&txn,
+		slot_snapshot,
+		OnConflict::columns([
+			analytics_slot_snapshot::Column::WeekStart,
+			analytics_slot_snapshot::Column::Slot,
+		])
+		.update_columns([
+			analytics_slot_snapshot::Column::EquippedPlayers,
+			analytics_slot_snapshot::Column::ComputedAt,
+		])
+		.to_owned(),
+	)
+	.await?;
 
 	txn.commit().await?;
 
@@ -281,6 +267,27 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 	info!(%from, %to, elapsed_ms = elapsed, "Rolled up analytics");
 
 	Ok(Rollup::CaughtUp)
+}
+
+async fn upsert<A>(
+	txn: &DatabaseTransaction,
+	rows: Vec<A>,
+	on_conflict: OnConflict,
+) -> Result<(), DbErr>
+where
+	A: ActiveModelTrait + Send,
+	<A::Entity as EntityTrait>::Model: IntoActiveModel<A>,
+{
+	let per_chunk = MAX_BIND_PARAMS / <A::Entity as EntityTrait>::Column::iter().count();
+	let mut rows = rows.into_iter().peekable();
+	while rows.peek().is_some() {
+		A::Entity::insert_many(rows.by_ref().take(per_chunk))
+			.on_conflict(on_conflict.clone())
+			.exec_without_returning(txn)
+			.await?;
+	}
+
+	Ok(())
 }
 
 /// Returns `(from, to, new_finalized_through)`, or `None` when already current.
