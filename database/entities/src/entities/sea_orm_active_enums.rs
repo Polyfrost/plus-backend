@@ -389,6 +389,18 @@ pub enum GameLoader {
 	#[sea_orm(string_value = "ornithe")]
 	Ornithe,
 }
+#[derive(
+	Debug,
+	Clone,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "link_provider")]
 #[serde(rename_all = "snake_case")]
 pub enum LinkProvider {
