@@ -34,6 +34,7 @@ pub mod group_members;
 pub mod group_message_reads;
 pub mod group_messages;
 pub mod groups;
+pub mod linked_account;
 pub mod monthly_active_login;
 pub mod oidc_signing_keys;
 pub mod ownership_grant;

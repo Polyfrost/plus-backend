@@ -71,6 +71,7 @@ mod m20260924_000001_ownership_expiry;
 mod m20260928_000000_create_player_mods;
 mod m20260929_000000_product_for_sale;
 mod m20261014_000000_create_dm_delegates;
+mod m20261017_000000_create_linked_accounts;
 
 pub struct Migrator;
 
@@ -149,6 +150,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260928_000000_create_player_mods::Migration),
 			Box::new(m20260929_000000_product_for_sale::Migration),
 			Box::new(m20261014_000000_create_dm_delegates::Migration),
+			Box::new(m20261017_000000_create_linked_accounts::Migration),
 		]
 	}
 }
