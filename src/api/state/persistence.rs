@@ -1,4 +1,9 @@
-use std::time::Duration;
+use std::{
+	collections::{BTreeSet, HashMap},
+	hash::Hash,
+	sync::{Arc, Mutex, MutexGuard, PoisonError},
+	time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use entities::sea_orm_active_enums::BodySlot;
@@ -7,7 +12,10 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::api::state::realtime::PlaytimeSessions;
+use crate::api::{
+	state::realtime::PlaytimeSessions,
+	v0::outfits::{mirror_active_outfit_particle_color, mirror_active_outfit_slots},
+};
 
 /// Capacity of the persistence channels before senders start to wait.
 const PERSIST_QUEUE_SIZE: usize = 256;
@@ -29,22 +37,110 @@ pub struct ParticleColorPersistence {
 	pub color: Option<i32>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PersistQueue<T, K = Uuid> {
+	tx: mpsc::Sender<(u64, T)>,
+	order: Arc<WriteOrder<K>>,
+}
+
+impl<T, K: Eq + Hash> PersistQueue<T, K> {
+	fn spawn<F>(
+		worker: impl FnOnce(mpsc::Receiver<(u64, T)>, Arc<WriteOrder<K>>) -> F,
+	) -> Self
+	where
+		F: Future<Output = ()> + Send + 'static,
+	{
+		let (tx, rx) = mpsc::channel(PERSIST_QUEUE_SIZE);
+		let order = Arc::new(WriteOrder::default());
+		tokio::spawn(worker(rx, order.clone()));
+		Self { tx, order }
+	}
+
+	pub fn enqueue(&self, update: T) {
+		let seq = self.order.begin();
+		if self.tx.try_send((seq, update)).is_err() {
+			self.order.finish(seq);
+		}
+	}
+
+	pub fn supersede(&self, key: K) {
+		self.order.supersede(key);
+	}
+}
+
+#[derive(Debug)]
+struct WriteOrder<K>(Mutex<WriteOrderState<K>>);
+
+impl<K> Default for WriteOrder<K> {
+	fn default() -> Self {
+		Self(Mutex::new(WriteOrderState {
+			next: 0,
+			pending: BTreeSet::new(),
+			superseded: HashMap::new(),
+		}))
+	}
+}
+
+#[derive(Debug)]
+struct WriteOrderState<K> {
+	next: u64,
+	pending: BTreeSet<u64>,
+	superseded: HashMap<K, u64>,
+}
+
+impl<K: Eq + Hash> WriteOrder<K> {
+	fn state(&self) -> MutexGuard<'_, WriteOrderState<K>> {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
+	fn begin(&self) -> u64 {
+		let mut state = self.state();
+		let seq = state.next;
+		state.next += 1;
+		state.pending.insert(seq);
+		seq
+	}
+
+	fn supersede(&self, key: K) {
+		let mut state = self.state();
+		if state.pending.is_empty() {
+			return;
+		}
+
+		let seq = state.next;
+		state.next += 1;
+		state.superseded.insert(key, seq);
+	}
+
+	fn is_superseded(&self, key: K, seq: u64) -> bool {
+		self.state()
+			.superseded
+			.get(&key)
+			.is_some_and(|&superseded| superseded > seq)
+	}
+
+	fn finish(&self, seq: u64) {
+		let mut state = self.state();
+		state.pending.remove(&seq);
+		match state.pending.first().copied() {
+			Some(oldest) => state.superseded.retain(|_, superseded| *superseded > oldest),
+			None => state.superseded.clear(),
+		}
+	}
+}
+
 /// Spawns the equipment writer and returns the channel feeding it.
 pub(super) fn spawn_equipment_queue(
 	database: DatabaseConnection,
-) -> mpsc::Sender<EquipmentPersistence> {
-	let (tx, rx) = mpsc::channel(PERSIST_QUEUE_SIZE);
-	tokio::spawn(persist_equipment_queue(database, rx));
-	tx
+) -> PersistQueue<EquipmentPersistence, (Uuid, BodySlot)> {
+	PersistQueue::spawn(|rx, order| persist_equipment_queue(database, rx, order))
 }
 
 /// Spawns the particle color writer and returns the channel feeding it.
 pub(super) fn spawn_particle_color_queue(
 	database: DatabaseConnection,
-) -> mpsc::Sender<ParticleColorPersistence> {
-	let (tx, rx) = mpsc::channel(PERSIST_QUEUE_SIZE);
-	tokio::spawn(persist_particle_color_queue(database, rx));
-	tx
+) -> PersistQueue<ParticleColorPersistence> {
+	PersistQueue::spawn(|rx, order| persist_particle_color_queue(database, rx, order))
 }
 
 /// Spawns the periodic playtime flusher for the given session map.
@@ -57,28 +153,35 @@ pub(super) fn spawn_playtime_flush(
 
 async fn persist_equipment_queue(
 	database: DatabaseConnection,
-	mut rx: mpsc::Receiver<EquipmentPersistence>,
+	mut rx: mpsc::Receiver<(u64, EquipmentPersistence)>,
+	order: Arc<WriteOrder<(Uuid, BodySlot)>>,
 ) {
 	use entities::{player_equipped_cosmetic, prelude::*, user};
 	use sea_orm::{
-		ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set,
+		ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set,
+		TransactionTrait,
 		sea_query::{Expr, OnConflict},
 	};
 
-	while let Some(update) = rx.recv().await {
+	while let Some((seq, update)) = rx.recv().await {
 		let result = async {
+			let txn = database.begin().await?;
 			let Some(player) = User::find()
 				.filter(user::Column::MinecraftUuid.eq(update.player))
-				.one(&database)
+				.lock_exclusive()
+				.one(&txn)
 				.await?
 			else {
-				return Ok::<(), sea_orm::DbErr>(());
+				return Ok::<_, sea_orm::DbErr>(());
 			};
+			if order.is_superseded((update.player, update.slot.clone()), seq) {
+				return Ok(());
+			}
 
 			if let Some(cosmetic_id) = update.cosmetic_id {
 				PlayerEquippedCosmetic::insert(player_equipped_cosmetic::ActiveModel {
 					player_id: Set(player.id),
-					slot: Set(update.slot),
+					slot: Set(update.slot.clone()),
 					cosmetic_id: Set(cosmetic_id),
 					updated_at: ActiveValue::NotSet,
 				})
@@ -94,19 +197,30 @@ async fn persist_equipment_queue(
 					)
 					.to_owned(),
 				)
-				.exec(&database)
+				.exec(&txn)
 				.await?;
 			} else {
 				PlayerEquippedCosmetic::delete_many()
 					.filter(player_equipped_cosmetic::Column::PlayerId.eq(player.id))
-					.filter(player_equipped_cosmetic::Column::Slot.eq(update.slot))
-					.exec(&database)
+					.filter(
+						player_equipped_cosmetic::Column::Slot.eq(update.slot.clone()),
+					)
+					.exec(&txn)
 					.await?;
 			}
 
-			Ok(())
+			mirror_active_outfit_slots(
+				&txn,
+				player.id,
+				player.active_outfit_id,
+				[(update.slot, update.cosmetic_id)],
+			)
+			.await?;
+
+			txn.commit().await
 		}
 		.await;
+		order.finish(seq);
 
 		if let Err(error) = result {
 			warn!("Unable to persist websocket equipment update: {error}");
@@ -116,28 +230,47 @@ async fn persist_equipment_queue(
 
 async fn persist_particle_color_queue(
 	database: DatabaseConnection,
-	mut rx: mpsc::Receiver<ParticleColorPersistence>,
+	mut rx: mpsc::Receiver<(u64, ParticleColorPersistence)>,
+	order: Arc<WriteOrder<Uuid>>,
 ) {
 	use entities::{prelude::*, user};
-	use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+	use sea_orm::{
+		ColumnTrait, EntityTrait, QueryFilter, QuerySelect, TransactionTrait,
+		sea_query::Expr,
+	};
 
-	while let Some(update) = rx.recv().await {
+	while let Some((seq, update)) = rx.recv().await {
 		let result = async {
+			let txn = database.begin().await?;
 			let Some(player) = User::find()
 				.filter(user::Column::MinecraftUuid.eq(update.player))
-				.one(&database)
+				.lock_exclusive()
+				.one(&txn)
 				.await?
 			else {
 				return Ok::<(), sea_orm::DbErr>(());
 			};
+			if order.is_superseded(update.player, seq) {
+				return Ok(());
+			}
 
-			let mut player: user::ActiveModel = player.into();
-			player.particle_color = Set(update.color);
-			player.update(&database).await?;
+			User::update_many()
+				.col_expr(user::Column::ParticleColor, Expr::value(update.color))
+				.filter(user::Column::Id.eq(player.id))
+				.exec(&txn)
+				.await?;
+			mirror_active_outfit_particle_color(
+				&txn,
+				player.id,
+				player.active_outfit_id,
+				update.color,
+			)
+			.await?;
 
-			Ok(())
+			txn.commit().await
 		}
 		.await;
+		order.finish(seq);
 
 		if let Err(error) = result {
 			warn!("Unable to persist websocket particle color update: {error}");
@@ -207,4 +340,48 @@ async fn heartbeat_sessions(
 		.await?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use uuid::Uuid;
+
+	use super::WriteOrder;
+
+	#[test]
+	fn supersedes_only_earlier_writes() {
+		let order = WriteOrder::default();
+		let player = Uuid::new_v4();
+		let earlier = order.begin();
+		order.supersede(player);
+		let later = order.begin();
+
+		assert!(order.is_superseded(player, earlier));
+		assert!(!order.is_superseded(player, later));
+		assert!(!order.is_superseded(Uuid::new_v4(), earlier));
+	}
+
+	#[test]
+	fn ignores_overwrites_with_nothing_pending() {
+		let order = WriteOrder::default();
+		let player = Uuid::new_v4();
+		order.supersede(player);
+
+		assert!(order.state().superseded.is_empty());
+		assert!(!order.is_superseded(player, order.begin()));
+	}
+
+	#[test]
+	fn forgets_overwrites_once_earlier_writes_finish() {
+		let order = WriteOrder::default();
+		let player = Uuid::new_v4();
+		let earlier = order.begin();
+		order.supersede(player);
+		let later = order.begin();
+
+		order.finish(earlier);
+		assert!(order.state().superseded.is_empty());
+		order.finish(later);
+		assert!(order.state().pending.is_empty());
+	}
 }

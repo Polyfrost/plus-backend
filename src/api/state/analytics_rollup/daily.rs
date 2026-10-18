@@ -450,27 +450,17 @@ async fn active_players(
 	from: NaiveDate,
 	to: NaiveDate,
 ) -> Result<i32, DbErr> {
-	let value = DailyPlaytime::find()
+	let count = DailyPlaytime::find()
 		.filter(daily_playtime::Column::Day.gte(from))
 		.filter(daily_playtime::Column::Day.lte(to))
 		.filter(daily_playtime::Column::TotalSeconds.gt(0))
 		.select_only()
-		.column_as(
-			Expr::expr(Func::count_distinct(Expr::col(
-				daily_playtime::Column::PlayerId,
-			))),
-			"value",
-		)
-		.into_model::<CountValue>()
-		.one(txn)
-		.await?
-		.unwrap_or_default();
+		.column(daily_playtime::Column::PlayerId)
+		.group_by(daily_playtime::Column::PlayerId)
+		.count(txn)
+		.await?;
 
-	Ok(value
-		.value
-		.unwrap_or_default()
-		.try_into()
-		.unwrap_or(i32::MAX))
+	Ok(count.try_into().unwrap_or(i32::MAX))
 }
 
 /// Active on `day` and registered before it.

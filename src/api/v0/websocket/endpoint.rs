@@ -768,6 +768,77 @@ pub(crate) async fn unequip_revoked(state: &ApiState, revoked: &HashMap<Uuid, Ve
 	}
 }
 
+async fn publish_equipment_change(
+	state: &ApiState,
+	player: Uuid,
+	slot: BodySlot,
+	cosmetic_id: Option<i32>,
+) {
+	{
+		let mut player_runtime = state.realtime.player_runtime.write().await;
+		let equipped = &mut player_runtime.entry(player).or_default().equipped;
+		if let Some(cosmetic_id) = cosmetic_id {
+			equipped.insert(slot.clone(), cosmetic_id);
+		} else {
+			equipped.remove(&slot);
+		}
+		state.equipment_persist.enqueue(EquipmentPersistence {
+			player,
+			slot: slot.clone(),
+			cosmetic_id,
+		});
+	}
+
+	announce_equipment_change(state, player, slot, cosmetic_id, false).await;
+}
+
+pub(crate) async fn announce_equipment_change(
+	state: &ApiState,
+	player: Uuid,
+	slot: BodySlot,
+	cosmetic_id: Option<i32>,
+	notify_owner: bool,
+) {
+	let packet = || ClientBoundPacket::PlayerCosmeticEquipped {
+		player,
+		slot: slot.clone(),
+		cosmetic_id,
+	};
+	broadcast_to_watchers(state, player, packet).await;
+	if notify_owner {
+		send_to_owner(state, player, packet).await;
+	}
+}
+
+async fn publish_particle_color_change(
+	state: &ApiState,
+	player: Uuid,
+	color: Option<i32>,
+) {
+	{
+		let mut player_runtime = state.realtime.player_runtime.write().await;
+		player_runtime.entry(player).or_default().particle_color = color;
+		state
+			.particle_color_persist
+			.enqueue(ParticleColorPersistence { player, color });
+	}
+
+	announce_particle_color_change(state, player, color, false).await;
+}
+
+pub(crate) async fn announce_particle_color_change(
+	state: &ApiState,
+	player: Uuid,
+	color: Option<i32>,
+	notify_owner: bool,
+) {
+	let packet = || ClientBoundPacket::PlayerParticleColorChanged { player, color };
+	broadcast_to_watchers(state, player, packet).await;
+	if notify_owner {
+		send_to_owner(state, player, packet).await;
+	}
+}
+
 pub(crate) async fn broadcast_all(
 	state: &ApiState,
 	mut make_packet: impl FnMut() -> ClientBoundPacket,
@@ -881,53 +952,11 @@ async fn handle_packet(
 				validate_cosmetic(state, player.id, &slot, cosmetic_id).await?;
 			}
 
-			{
-				let mut player_runtime = state.realtime.player_runtime.write().await;
-				let equipment = &mut player_runtime
-					.entry(player.minecraft_uuid)
-					.or_default()
-					.equipped;
-				if let Some(cosmetic_id) = cosmetic_id {
-					equipment.insert(slot.clone(), cosmetic_id);
-				} else {
-					equipment.remove(&slot);
-				}
-			}
-			let _ = state.equipment_persist_tx.try_send(EquipmentPersistence {
-				player: player.minecraft_uuid,
-				slot: slot.clone(),
-				cosmetic_id,
-			});
-			broadcast_to_watchers(state, player.minecraft_uuid, || {
-				ClientBoundPacket::PlayerCosmeticEquipped {
-					player: player.minecraft_uuid,
-					slot: slot.clone(),
-					cosmetic_id,
-				}
-			})
-			.await;
+			publish_equipment_change(state, player.minecraft_uuid, slot, cosmetic_id)
+				.await;
 		}
 		ServerBoundPacket::SetParticleColor { color } => {
-			{
-				let mut player_runtime = state.realtime.player_runtime.write().await;
-				player_runtime
-					.entry(player.minecraft_uuid)
-					.or_default()
-					.particle_color = color;
-			}
-			let _ = state
-				.particle_color_persist_tx
-				.try_send(ParticleColorPersistence {
-					player: player.minecraft_uuid,
-					color,
-				});
-			broadcast_to_watchers(state, player.minecraft_uuid, || {
-				ClientBoundPacket::PlayerParticleColorChanged {
-					player: player.minecraft_uuid,
-					color,
-				}
-			})
-			.await;
+			publish_particle_color_change(state, player.minecraft_uuid, color).await;
 		}
 		ServerBoundPacket::PlayEmote { emote_id } => {
 			validate_emote(state, player.id, emote_id).await?;

@@ -20,6 +20,8 @@ pub struct Model {
 	pub chargeback_count: i32,
 	#[sea_orm(column_type = "Text", nullable, unique)]
 	pub paynow_customer_id: Option<String>,
+	pub active_outfit_id: Option<i32>,
+	pub outfits_seeded: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -30,8 +32,18 @@ pub enum Relation {
 	MonthlyActiveLogin,
 	#[sea_orm(has_many = "super::player_equipped_cosmetic::Entity")]
 	PlayerEquippedCosmetic,
+	#[sea_orm(
+		belongs_to = "super::player_outfit::Entity",
+		from = "Column::ActiveOutfitId",
+		to = "super::player_outfit::Column::Id",
+		on_update = "NoAction",
+		on_delete = "SetNull"
+	)]
+	PlayerOutfit,
 	#[sea_orm(has_many = "super::player_owned_cosmetic::Entity")]
 	PlayerOwnedCosmetic,
+	#[sea_orm(has_many = "super::player_skin::Entity")]
+	PlayerSkin,
 	#[sea_orm(has_many = "super::transaction_line::Entity")]
 	TransactionLine,
 }
@@ -57,6 +69,12 @@ impl Related<super::player_equipped_cosmetic::Entity> for Entity {
 impl Related<super::player_owned_cosmetic::Entity> for Entity {
 	fn to() -> RelationDef {
 		Relation::PlayerOwnedCosmetic.def()
+	}
+}
+
+impl Related<super::player_skin::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::PlayerSkin.def()
 	}
 }
 

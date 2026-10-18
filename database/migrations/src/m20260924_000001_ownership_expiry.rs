@@ -78,9 +78,6 @@ struct OwnershipEventKind;
 struct TransactionProvider;
 
 #[derive(DeriveIden)]
-struct TransactionStatus;
-
-#[derive(DeriveIden)]
 struct Expired;
 
 const EXPIRES_IDX: &str = "player_owned_cosmetic_expires_idx";
@@ -307,8 +304,11 @@ impl MigrationTrait for Migration {
 									.eq(Expr::val("granted").as_enum(OwnershipEventKind)),
 							)
 							.and_where(
-								Expr::col((TransactionLine::Table, TransactionLine::Status))
-									.eq(Expr::val("chargeback").as_enum(TransactionStatus)),
+								Expr::expr(
+									Expr::col((TransactionLine::Table, TransactionLine::Status))
+										.cast_as(Alias::new("text")),
+								)
+								.eq("chargeback"),
 							)
 							.group_by_columns([
 								(CosmeticOwnershipEvent::Table, CosmeticOwnershipEvent::PlayerId),
