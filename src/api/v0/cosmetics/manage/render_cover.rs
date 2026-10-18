@@ -100,9 +100,7 @@ async fn endpoint(
 	_auth: AdminAuthenticationExtractor,
 	Json(body): Json<RenderCoverRequest>,
 ) -> Result<Json<RenderCoverResponse>, RenderCoverError> {
-	use entities::{
-		cosmetic, cosmetic_allowed_slot, cosmetic_group_allowed_slot, prelude::*,
-	};
+	use entities::{cosmetic, prelude::*};
 
 	if state.render_service_url.is_empty() {
 		return Err(RenderCoverError::RenderDisabled);
@@ -130,24 +128,7 @@ async fn endpoint(
 	};
 	let data = state.s3_bucket.get_object(storage_path).await?.to_vec();
 
-	let mut slots: Vec<BodySlot> = CosmeticAllowedSlot::find()
-		.filter(cosmetic_allowed_slot::Column::CosmeticId.eq(cosmetic.id))
-		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(|row| row.slot)
-		.collect();
-	if let Some(group_id) = cosmetic.group_id
-		&& slots.is_empty()
-	{
-		slots = CosmeticGroupAllowedSlot::find()
-			.filter(cosmetic_group_allowed_slot::Column::GroupId.eq(group_id))
-			.all(&state.database)
-			.await?
-			.into_iter()
-			.map(|row| row.slot)
-			.collect();
-	}
+	let slots = cosmetic_slots(&state.database, &cosmetic).await?;
 
 	let is_bundle = asset.asset_kind == AssetKind::Bundle;
 
@@ -181,4 +162,30 @@ async fn endpoint(
 		cosmetic_id: updated.id,
 		cover_asset_id,
 	}))
+}
+
+/// The slots a cosmetic renders in: its own, else its group's.
+pub(super) async fn cosmetic_slots<C: sea_orm::ConnectionTrait>(
+	db: &C,
+	cosmetic: &entities::cosmetic::Model,
+) -> Result<Vec<BodySlot>, sea_orm::DbErr> {
+	use entities::{cosmetic_allowed_slot, cosmetic_group_allowed_slot, prelude::*};
+
+	let slots: Vec<BodySlot> = CosmeticAllowedSlot::find()
+		.filter(cosmetic_allowed_slot::Column::CosmeticId.eq(cosmetic.id))
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|row| row.slot)
+		.collect();
+	match cosmetic.group_id {
+		Some(group_id) if slots.is_empty() => Ok(CosmeticGroupAllowedSlot::find()
+			.filter(cosmetic_group_allowed_slot::Column::GroupId.eq(group_id))
+			.all(db)
+			.await?
+			.into_iter()
+			.map(|row| row.slot)
+			.collect()),
+		_ => Ok(slots),
+	}
 }
