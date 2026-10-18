@@ -1,4 +1,5 @@
 mod link_puid;
+pub(crate) mod links;
 mod login;
 pub(super) mod mods;
 
@@ -31,6 +32,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.merge(login::router())
 		.merge(link_puid::router())
+		.merge(links::router())
 		.merge(mods::router())
 }
 

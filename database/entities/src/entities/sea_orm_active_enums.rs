@@ -389,3 +389,9 @@ pub enum GameLoader {
 	#[sea_orm(string_value = "ornithe")]
 	Ornithe,
 }
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "link_provider")]
+#[serde(rename_all = "snake_case")]
+pub enum LinkProvider {
+	#[sea_orm(string_value = "discord")]
+	Discord,
+}
