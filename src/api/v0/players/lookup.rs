@@ -5,9 +5,14 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use entities::sea_orm_active_enums::LinkProvider;
+
 use super::PlayerError;
 use crate::{
-	api::{ApiState, v0::account::AuthenticatedPlayer},
+	api::{
+		ApiState, admin_auth::AdminAuthenticationExtractor,
+		v0::account::AuthenticatedPlayer,
+	},
 	database::DatabaseUserExt,
 };
 
@@ -24,6 +29,22 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.tag("players")
 }
 
+fn by_link_doc(op: TransformOperation) -> TransformOperation {
+	op.id("lookupPlayerByLinkedAccount")
+		.summary("Look up a player by a linked account")
+		.description(
+			"Resolves a provider user id (e.g. a Discord user id) to the \
+			 player who linked it. 404 if nobody has. Admin password required.",
+		)
+		.tag("players")
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct LinkedPlayer {
+	id: Uuid,
+	username: Option<String>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub(in crate::api) struct LookupResponse {
 	pub id: Uuid,
@@ -31,10 +52,38 @@ pub(in crate::api) struct LookupResponse {
 }
 
 pub(super) fn router() -> aide::axum::ApiRouter<ApiState> {
-	aide::axum::ApiRouter::new().api_route(
-		"/by-username/{username}",
-		get_with(self::endpoint, self::endpoint_doc),
-	)
+	aide::axum::ApiRouter::new()
+		.api_route(
+			"/by-username/{username}",
+			get_with(self::endpoint, self::endpoint_doc),
+		)
+		.api_route(
+			"/by-link/{provider}/{provider_user_id}",
+			get_with(self::by_link, self::by_link_doc),
+		)
+}
+
+#[tracing::instrument(level = "debug", skip(state, _auth))]
+async fn by_link(
+	State(state): State<ApiState>,
+	_auth: AdminAuthenticationExtractor,
+	Path((provider, provider_user_id)): Path<(LinkProvider, String)>,
+) -> Result<Json<LinkedPlayer>, PlayerError> {
+	use entities::{linked_account, prelude::*};
+
+	let (_, player) = LinkedAccount::find()
+		.filter(linked_account::Column::Provider.eq(provider))
+		.filter(linked_account::Column::ProviderUserId.eq(provider_user_id))
+		.find_also_related(User)
+		.one(&state.database)
+		.await?
+		.ok_or(PlayerError::PlayerMissing)?;
+	let player = player.ok_or(PlayerError::PlayerMissing)?;
+
+	Ok(Json(LinkedPlayer {
+		id: player.minecraft_uuid,
+		username: player.username,
+	}))
 }
 
 #[derive(Deserialize)]

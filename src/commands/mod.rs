@@ -162,6 +162,22 @@ pub(crate) struct ServeArgs {
 		optional
 	)]
 	pub(crate) special_chat_auto_reply: Option<String>,
+	/// OAuth2 application used to link Discord accounts; linking is disabled when unset
+	#[bpaf(long("discord-client-id"), env("DISCORD_CLIENT_ID"), fallback(String::new()))]
+	pub(crate) discord_client_id: String,
+	#[bpaf(
+		long("discord-client-secret"),
+		env("DISCORD_CLIENT_SECRET"),
+		fallback(String::new())
+	)]
+	pub(crate) discord_client_secret: String,
+	/// Must point at `/account/links/discord/callback` and be registered with Discord
+	#[bpaf(
+		long("discord-redirect-uri"),
+		env("DISCORD_REDIRECT_URI"),
+		fallback(String::new())
+	)]
+	pub(crate) discord_redirect_uri: String,
 }
 
 fn parse_bind_addrs(value: String) -> Result<Vec<SocketAddr>, std::net::AddrParseError> {
