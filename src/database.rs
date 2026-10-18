@@ -45,6 +45,7 @@ pub(crate) trait DatabaseTransactionExt {
 		order_id: &str,
 		raw_metadata: serde_json::Value,
 		charged: OrderCharge,
+		referral_code: Option<String>,
 	) -> Result<transaction::Model, DbErr>;
 }
 
@@ -98,6 +99,7 @@ impl DatabaseTransactionExt for Transaction {
 		order_id: &str,
 		raw_metadata: serde_json::Value,
 		charged: OrderCharge,
+		referral_code: Option<String>,
 	) -> Result<transaction::Model, DbErr> {
 		// Insert first rather than find-then-insert: two deliveries for the
 		// same order can both miss the find.
@@ -111,6 +113,7 @@ impl DatabaseTransactionExt for Transaction {
 			amount_minor: ActiveValue::Set(charged.amount_minor),
 			currency: ActiveValue::Set(charged.currency.clone()),
 			discount_minor: ActiveValue::Set(charged.discount_minor),
+			referral_code: ActiveValue::Set(referral_code.clone()),
 			..Default::default()
 		})
 		.on_conflict(
@@ -140,6 +143,7 @@ impl DatabaseTransactionExt for Transaction {
 		update.amount_minor = Set(charged.amount_minor);
 		update.currency = Set(charged.currency);
 		update.discount_minor = Set(charged.discount_minor);
+		update.referral_code = Set(referral_code);
 
 		update.update(db).await
 	}

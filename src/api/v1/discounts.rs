@@ -155,7 +155,7 @@ pub struct DiscountBody {
 	pub max_per_player: Option<i32>,
 }
 
-fn enabled_by_default() -> bool {
+pub(super) fn enabled_by_default() -> bool {
 	true
 }
 

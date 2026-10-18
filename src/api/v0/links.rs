@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
 	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	pricing::normalise_code,
 	utils::{
 		hash::sha256_hex_parts,
 		user_agent::is_bot,
@@ -48,6 +49,8 @@ pub enum LinksError {
 	InvalidSlug,
 	#[error("Target url must be an absolute http(s) url")]
 	InvalidUrl,
+	#[error("No creator code {0} exists")]
+	UnknownReferral(String),
 	#[error("Unable to query database: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
 }
@@ -58,7 +61,9 @@ impl IntoResponse for LinksError {
 			match self {
 				Self::NotFound => StatusCode::NOT_FOUND,
 				Self::SlugTaken => StatusCode::CONFLICT,
-				Self::InvalidSlug | Self::InvalidUrl => StatusCode::BAD_REQUEST,
+				Self::InvalidSlug | Self::InvalidUrl | Self::UnknownReferral(_) => {
+					StatusCode::BAD_REQUEST
+				}
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
@@ -121,6 +126,7 @@ pub struct LinkInfo {
 	target_url: String,
 	clicks: i64,
 	created_at: DateTime<FixedOffset>,
+	referral: Option<String>,
 }
 
 impl LinkInfo {
@@ -130,6 +136,7 @@ impl LinkInfo {
 			target_url: link.target_url,
 			clicks: link.clicks,
 			created_at: link.created_at,
+			referral: link.referral_code,
 		}
 	}
 }
@@ -138,6 +145,10 @@ impl LinkInfo {
 struct CreateRequest {
 	slug: String,
 	target_url: String,
+	/// A creator code to credit; following the link adds `ref=CODE` to the
+	/// target so the store can pass it to checkout.
+	#[serde(default)]
+	referral: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -161,7 +172,9 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Create a tracked link")
 		.description(
 			"Creates a tracked short link redirecting `/go/{slug}` to an arbitrary \
-			 absolute http(s) url. Admin password required.",
+			 absolute http(s) url. With `referral`, the redirect carries \
+			 `ref=CODE` and the code's stats count the link's clicks. Admin \
+			 password required.",
 		)
 		.tag("links")
 }
@@ -227,7 +240,7 @@ async fn follow(
 		txn.commit().await?;
 	}
 
-	Ok(Redirect::temporary(&link.target_url))
+	Ok(Redirect::temporary(&target(&link)))
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
@@ -253,10 +266,21 @@ async fn create(
 		return Err(LinksError::SlugTaken);
 	}
 
+	let referral = body.referral.as_deref().map(normalise_code);
+	if let Some(code) = &referral
+		&& Referral::find_by_id(code)
+			.one(&state.database)
+			.await?
+			.is_none()
+	{
+		return Err(LinksError::UnknownReferral(code.clone()));
+	}
+
 	let link = tracked_links::ActiveModel {
 		slug: Set(body.slug),
 		target_url: Set(body.target_url),
 		clicks: Set(0),
+		referral_code: Set(referral),
 		..Default::default()
 	}
 	.insert(&state.database)
@@ -302,11 +326,45 @@ async fn delete(
 	Ok(StatusCode::NO_CONTENT)
 }
 
+fn target(link: &entities::tracked_links::Model) -> String {
+	let Some(code) = &link.referral_code else {
+		return link.target_url.clone();
+	};
+
+	match reqwest::Url::parse(&link.target_url) {
+		Ok(mut url) => {
+			url.query_pairs_mut().append_pair("ref", code);
+			url.into()
+		}
+		Err(_) => link.target_url.clone(),
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::net::IpAddr;
 
 	use super::VisitorId;
+
+	#[test]
+	fn referral_rides_along_as_ref() {
+		let link = |target: &str, code: Option<&str>| entities::tracked_links::Model {
+			slug: "x".into(),
+			target_url: target.into(),
+			clicks: 0,
+			created_at: chrono::Utc::now().fixed_offset(),
+			referral_code: code.map(str::to_owned),
+		};
+
+		assert_eq!(
+			super::target(&link("https://store.example/item?id=1", Some("LYNITH"))),
+			"https://store.example/item?id=1&ref=LYNITH",
+		);
+		assert_eq!(
+			super::target(&link("https://store.example/", None)),
+			"https://store.example/",
+		);
+	}
 
 	fn visitor(ip: &str, user_agent: &str) -> VisitorId {
 		VisitorId {

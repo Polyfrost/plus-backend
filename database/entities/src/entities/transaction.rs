@@ -25,6 +25,8 @@ pub struct Model {
 	pub refunded_at: Option<DateTimeWithTimeZone>,
 	pub refunded_minor: i64,
 	pub charged_back_at: Option<DateTimeWithTimeZone>,
+	#[sea_orm(column_type = "Text", nullable)]
+	pub referral_code: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

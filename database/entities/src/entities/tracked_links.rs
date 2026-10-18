@@ -11,9 +11,26 @@ pub struct Model {
 	pub target_url: String,
 	pub clicks: i64,
 	pub created_at: DateTimeWithTimeZone,
+	#[sea_orm(column_type = "Text", nullable)]
+	pub referral_code: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+	#[sea_orm(
+		belongs_to = "super::referral::Entity",
+		from = "Column::ReferralCode",
+		to = "super::referral::Column::Code",
+		on_update = "NoAction",
+		on_delete = "SetNull"
+	)]
+	Referral,
+}
+
+impl Related<super::referral::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::Referral.def()
+	}
+}
 
 impl ActiveModelBehavior for ActiveModel {}
