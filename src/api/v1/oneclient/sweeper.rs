@@ -30,6 +30,9 @@ pub(in crate::api) fn spawn_sync_sweeper(state: ApiState) {
 			if let Err(error) = expire_uploads(&state).await {
 				warn!("Unable to expire OneClient sync uploads: {error}");
 			}
+			if let Err(error) = expire_public_shares(&state).await {
+				warn!("Unable to expire OneClient public shares: {error}");
+			}
 			if let Err(error) = purge_tombstones(&state).await {
 				warn!("Unable to purge OneClient sync tombstones: {error}");
 			}
@@ -71,6 +74,47 @@ async fn expire_uploads(state: &ApiState) -> Result<(), SyncError> {
 				record.into_active_model().delete(&txn).await?;
 			}
 		}
+		txn.commit().await?;
+	}
+	Ok(())
+}
+
+async fn expire_public_shares(state: &ApiState) -> Result<(), SyncError> {
+	let now = Utc::now().fixed_offset();
+	let expired = OneclientSyncRecord::find()
+		.filter(oneclient_sync_record::Column::Deleted.eq(false))
+		.filter(oneclient_sync_record::Column::ExpiresAt.lt(now))
+		.limit(UPLOAD_BATCH)
+		.all(&state.database)
+		.await?;
+
+	for record in expired {
+		let txn = state.database.begin().await?;
+		let Some(record) = OneclientSyncRecord::find_by_id(record.id)
+			.lock_exclusive()
+			.one(&txn)
+			.await?
+			.filter(|record| {
+				!record.deleted && record.expires_at.is_some_and(|at| at < now)
+			})
+		else {
+			continue;
+		};
+		if let Some(key) = record.object_key.clone() {
+			oneclient_sync_garbage::ActiveModel {
+				object_key: Set(key),
+				..Default::default()
+			}
+			.insert(&txn)
+			.await?;
+		}
+		let revision = record.revision + 1;
+		let mut active = record.into_active_model();
+		active.deleted = Set(true);
+		active.revision = Set(revision);
+		active.object_key = Set(None);
+		active.updated_at = Set(Utc::now().fixed_offset());
+		active.update(&txn).await?;
 		txn.commit().await?;
 	}
 	Ok(())

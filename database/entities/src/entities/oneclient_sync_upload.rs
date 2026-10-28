@@ -25,6 +25,7 @@ pub struct Model {
 	pub provisioned: bool,
 	#[sea_orm(column_type = "Text")]
 	pub device: String,
+	pub uploader_id: Option<i32>,
 	pub expires_at: DateTimeWithTimeZone,
 }
 

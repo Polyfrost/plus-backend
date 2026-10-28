@@ -35,6 +35,7 @@ pub use super::groups::Entity as Groups;
 pub use super::linked_account::Entity as LinkedAccount;
 pub use super::monthly_active_login::Entity as MonthlyActiveLogin;
 pub use super::oidc_signing_keys::Entity as OidcSigningKeys;
+pub use super::oneclient_share_collaborator::Entity as OneclientShareCollaborator;
 pub use super::oneclient_sync_garbage::Entity as OneclientSyncGarbage;
 pub use super::oneclient_sync_record::Entity as OneclientSyncRecord;
 pub use super::oneclient_sync_upload::Entity as OneclientSyncUpload;

@@ -143,16 +143,12 @@ impl SyncStorage {
 		})
 	}
 
-	pub(super) fn staging_key(player: Uuid, upload: Uuid) -> String {
-		format!("staging/{}/{}.mrpack", player.simple(), upload.simple())
+	pub(super) fn staging_key(upload: Uuid) -> String {
+		format!("staging/{}.mrpack", upload.simple())
 	}
 
-	pub(super) fn payload_key(player: Uuid, code: &str, upload: Uuid) -> String {
-		format!(
-			"payloads/{}/{code}/{}.mrpack",
-			player.simple(),
-			upload.simple()
-		)
+	pub(super) fn payload_key(code: &str, upload: Uuid) -> String {
+		format!("payloads/{code}/{}.mrpack", upload.simple())
 	}
 
 	pub(super) fn is_payload_of(key: &str, upload: Uuid) -> bool {

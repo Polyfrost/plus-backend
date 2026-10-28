@@ -7,6 +7,8 @@ use std::{
 };
 
 use regex::Regex;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha512};
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -21,7 +23,7 @@ const ICON_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
 
 const MAX_ENTRIES: usize = 20_000;
 const MAX_ENTRY_NAME: usize = 512;
-const MAX_UNCOMPRESSED_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SHARE_BYTES: u64 = 1024 * 1024;
 const MAX_ICON_BYTES: u64 = 8 * 1024 * 1024;
@@ -29,6 +31,7 @@ const MAX_SETTING_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SETTINGS_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_SETTING_FILES: usize = 4000;
 const MAX_REPORTED: usize = 50;
+const MAX_LISTED: usize = 5000;
 
 const CONTENT_DIRS: &[&str] = &[
 	"mods",
@@ -158,6 +161,138 @@ pub(super) struct Sanitized {
 	pub(super) sha512: String,
 	pub(super) removed: Vec<String>,
 	pub(super) rewritten: bool,
+	pub(super) contents: Contents,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub(super) struct Contents {
+	pub(super) files: Vec<ContentFile>,
+	pub(super) settings: Vec<ContentFile>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub(super) modpack: Option<Value>,
+	#[serde(default)]
+	pub(super) bundles: Vec<String>,
+	#[serde(default)]
+	pub(super) truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub(super) struct ContentFile {
+	pub(super) path: String,
+	pub(super) size: u64,
+	pub(super) hash: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub(super) source: Option<String>,
+}
+
+impl Contents {
+	fn push(&mut self, path: &str, size: u64, hash: String, source: Option<String>) {
+		if self.files.len() + self.settings.len() >= MAX_LISTED {
+			self.truncated = true;
+			return;
+		}
+		let file = ContentFile {
+			path: path.to_string(),
+			size,
+			hash,
+			source,
+		};
+		if is_setting_path(path) {
+			self.settings.push(file);
+		} else {
+			self.files.push(file);
+		}
+	}
+}
+
+fn source_of(url: &str) -> String {
+	let host = reqwest::Url::parse(url)
+		.ok()
+		.and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+		.unwrap_or_default();
+	match host.as_str() {
+		"cdn.modrinth.com" => "modrinth",
+		"edge.forgecdn.net" | "mediafilez.forgecdn.net" => "curseforge",
+		"github.com" | "raw.githubusercontent.com" => "github",
+		"gitlab.com" => "gitlab",
+		_ => "other",
+	}
+	.to_string()
+}
+
+fn list_contents(
+	index: &Value,
+	share: &Value,
+	embedded: &[(String, u64, u32)],
+) -> Contents {
+	let mut contents = Contents::default();
+	let text = |value: &Value, key: &str| {
+		value
+			.get(key)
+			.and_then(Value::as_str)
+			.unwrap_or_default()
+			.to_string()
+	};
+
+	for file in index
+		.get("files")
+		.and_then(Value::as_array)
+		.into_iter()
+		.flatten()
+	{
+		let url = file
+			.get("downloads")
+			.and_then(Value::as_array)
+			.and_then(|urls| urls.first())
+			.and_then(Value::as_str)
+			.unwrap_or_default();
+		contents.push(
+			&text(file, "path"),
+			file.get("fileSize")
+				.and_then(Value::as_u64)
+				.unwrap_or_default(),
+			file.get("hashes")
+				.map(|hashes| text(hashes, "sha1"))
+				.unwrap_or_default(),
+			Some(source_of(url)),
+		);
+	}
+
+	for download in share
+		.get("downloads")
+		.and_then(Value::as_array)
+		.into_iter()
+		.flatten()
+	{
+		contents.push(
+			&text(download, "path"),
+			download
+				.get("size")
+				.and_then(Value::as_u64)
+				.unwrap_or_default(),
+			text(download, "sha1"),
+			Some(source_of(&text(download, "url"))),
+		);
+	}
+
+	for (path, size, crc) in embedded {
+		let source = (!is_setting_path(path)).then(|| "embedded".to_string());
+		contents.push(path, *size, format!("crc32:{crc:08x}"), source);
+	}
+
+	contents.modpack = share.get("modpack").filter(|pack| !pack.is_null()).cloned();
+	contents.bundles = share
+		.get("bundles")
+		.and_then(Value::as_array)
+		.into_iter()
+		.flatten()
+		.filter(|choice| choice.get("accepted").and_then(Value::as_bool) == Some(true))
+		.map(|choice| text(choice, "name"))
+		.filter(|name| !name.is_empty())
+		.collect();
+	contents.files.sort_by(|a, b| a.path.cmp(&b.path));
+	contents.settings.sort_by(|a, b| a.path.cmp(&b.path));
+	contents
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -244,6 +379,7 @@ pub(super) fn sanitize(
 	let mut setting_bytes = 0u64;
 	let mut index = None;
 	let mut share = None;
+	let mut embedded = Vec::new();
 
 	for position in 0..archive.len() {
 		let entry = archive.by_index_raw(position)?;
@@ -262,6 +398,7 @@ pub(super) fn sanitize(
 			return Err(invalid("The payload expands to more than the size limit"));
 		}
 		let entry_size = entry.size();
+		let entry_crc = entry.crc32();
 		let is_dir = entry.is_dir();
 		drop(entry);
 
@@ -307,6 +444,7 @@ pub(super) fn sanitize(
 		};
 
 		if is_content_path(relative) {
+			embedded.push((relative.to_string(), entry_size, entry_crc));
 			plan.push(Entry::Keep);
 			continue;
 		}
@@ -329,6 +467,7 @@ pub(super) fn sanitize(
 		}
 		setting_files += 1;
 		setting_bytes += bytes.len() as u64;
+		embedded.push((relative.to_string(), entry_size, entry_crc));
 		plan.push(Entry::Keep);
 	}
 
@@ -341,6 +480,7 @@ pub(super) fn sanitize(
 	let share_changed = sanitize_share(&mut share, &removed)?;
 	reject_secrets_in(&index)?;
 	reject_secrets_in(&share)?;
+	let contents = list_contents(&index, &share, &embedded);
 
 	let removed: Vec<String> = removed.into_iter().collect();
 	let skipped_files = plan.iter().any(|entry| matches!(entry, Entry::Skip));
@@ -350,6 +490,7 @@ pub(super) fn sanitize(
 			sha512,
 			removed,
 			rewritten: false,
+			contents,
 		});
 	}
 
@@ -364,6 +505,7 @@ pub(super) fn sanitize(
 		sha512,
 		removed: removed.into_iter().take(MAX_REPORTED).collect(),
 		rewritten: true,
+		contents,
 	})
 }
 
@@ -815,6 +957,27 @@ mod tests {
 		let result = sanitize(&input, &output, &declared(&input)).expect("test setup");
 		assert!(!result.rewritten);
 		assert!(result.removed.is_empty());
+
+		let files: Vec<(&str, Option<&str>)> = result
+			.contents
+			.files
+			.iter()
+			.map(|file| (file.path.as_str(), file.source.as_deref()))
+			.collect();
+		assert_eq!(
+			files,
+			vec![
+				("mods/local.jar", Some("embedded")),
+				("mods/sodium.jar", Some("modrinth")),
+			]
+		);
+		let settings: Vec<&str> = result
+			.contents
+			.settings
+			.iter()
+			.map(|file| file.path.as_str())
+			.collect();
+		assert_eq!(settings, vec!["config/hytils.toml", "options.txt"]);
 		std::fs::remove_file(&input).ok();
 	}
 

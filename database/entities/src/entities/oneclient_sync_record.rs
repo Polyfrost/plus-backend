@@ -1,12 +1,12 @@
 use sea_orm::entity::prelude::*;
 
-#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "oneclient_sync_record")]
 pub struct Model {
 	#[sea_orm(primary_key)]
 	pub id: i32,
 	pub player_id: i32,
-	#[sea_orm(column_type = "Text")]
+	#[sea_orm(column_type = "Text", unique)]
 	pub code: String,
 	pub revision: i64,
 	pub format: i32,
@@ -26,6 +26,11 @@ pub struct Model {
 	pub updated_by: String,
 	#[sea_orm(column_type = "Text", nullable)]
 	pub object_key: Option<String>,
+	#[sea_orm(column_type = "Text")]
+	pub visibility: String,
+	pub expires_at: Option<DateTimeWithTimeZone>,
+	#[sea_orm(column_type = "JsonBinary", nullable)]
+	pub contents: Option<Json>,
 	pub deleted: bool,
 	pub created_at: DateTimeWithTimeZone,
 	pub updated_at: DateTimeWithTimeZone,

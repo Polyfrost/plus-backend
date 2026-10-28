@@ -37,6 +37,7 @@ pub mod groups;
 pub mod linked_account;
 pub mod monthly_active_login;
 pub mod oidc_signing_keys;
+pub mod oneclient_share_collaborator;
 pub mod oneclient_sync_garbage;
 pub mod oneclient_sync_record;
 pub mod oneclient_sync_upload;

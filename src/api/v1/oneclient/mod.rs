@@ -1,3 +1,4 @@
+mod collaborators;
 mod payload;
 mod records;
 mod storage;
@@ -18,16 +19,19 @@ use tower_http::set_header::SetResponseHeaderLayer;
 pub(in crate::api) use self::{storage::SyncStorage, sweeper::spawn_sync_sweeper};
 use crate::api::ApiState;
 
-const MAX_PAYLOAD_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PAYLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_NAME_CHARS: usize = 64;
 const MAX_DEVICE_CHARS: usize = 64;
 const MAX_VERSION_CHARS: usize = 32;
 const MAX_FORMAT: i32 = 1000;
-const MAX_LIVE_RECORDS: u64 = 100;
-const MAX_ACCOUNT_BYTES: i64 = 512 * 1024 * 1024;
+const MAX_LIVE_RECORDS: u64 = 2;
+const MAX_ACCOUNT_BYTES: i64 = 12 * 1024 * 1024 * 1024 / 10;
+const MAX_PUBLIC_SHARES: u64 = 10;
+const MAX_COLLABORATORS: u64 = 10;
+const PUBLIC_SHARE_TTL: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const MAX_TOMBSTONES: u64 = 500;
 const LIST_PAGE_SIZE: u64 = 200;
-const UPLOAD_TTL: Duration = Duration::from_secs(15 * 60);
+const UPLOAD_TTL: Duration = Duration::from_secs(60 * 60);
 const DOWNLOAD_TTL: Duration = Duration::from_secs(10 * 60);
 const TOMBSTONE_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const WRITE_WINDOW: Duration = Duration::from_secs(60 * 60);
@@ -37,10 +41,12 @@ const LARGE_WRITES_PER_WINDOW: u32 = 24;
 const CONCURRENT_VALIDATIONS: usize = 4;
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	records::router().layer(SetResponseHeaderLayer::overriding(
-		header::CACHE_CONTROL,
-		HeaderValue::from_static("no-store"),
-	))
+	records::router().merge(collaborators::router()).layer(
+		SetResponseHeaderLayer::overriding(
+			header::CACHE_CONTROL,
+			HeaderValue::from_static("no-store"),
+		),
+	)
 }
 
 #[derive(thiserror::Error, Debug, OperationIo)]

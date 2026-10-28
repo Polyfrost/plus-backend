@@ -26,6 +26,9 @@ enum OneclientSyncRecord {
 	Provisioned,
 	UpdatedBy,
 	ObjectKey,
+	Visibility,
+	ExpiresAt,
+	Contents,
 	Deleted,
 	CreatedAt,
 	UpdatedAt,
@@ -47,7 +50,17 @@ enum OneclientSyncUpload {
 	Sha512,
 	Provisioned,
 	Device,
+	UploaderId,
 	ExpiresAt,
+}
+
+#[derive(DeriveIden)]
+enum OneclientShareCollaborator {
+	Table,
+	Id,
+	RecordId,
+	PlayerId,
+	AddedAt,
 }
 
 #[derive(DeriveIden)]
@@ -58,10 +71,14 @@ enum OneclientSyncGarbage {
 	CreatedAt,
 }
 
-const RECORD_PLAYER_CODE_IDX: &str = "oneclient_sync_record_player_id_code_key";
+const RECORD_CODE_IDX: &str = "oneclient_sync_record_code_key";
+const RECORD_PLAYER_IDX: &str = "oneclient_sync_record_player_id_visibility_idx";
+const RECORD_EXPIRES_IDX: &str = "oneclient_sync_record_expires_at_idx";
 const RECORD_DELETED_UPDATED_IDX: &str = "oneclient_sync_record_deleted_updated_at_idx";
 const UPLOAD_RECORD_IDX: &str = "oneclient_sync_upload_record_id_key";
 const UPLOAD_EXPIRES_IDX: &str = "oneclient_sync_upload_expires_at_idx";
+const COLLABORATOR_KEY_IDX: &str = "oneclient_share_collaborator_record_id_player_id_key";
+const COLLABORATOR_PLAYER_IDX: &str = "oneclient_share_collaborator_player_id_idx";
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -128,6 +145,22 @@ impl MigrationTrait for Migration {
 					)
 					.col(ColumnDef::new(OneclientSyncRecord::ObjectKey).text().null())
 					.col(
+						ColumnDef::new(OneclientSyncRecord::Visibility)
+							.text()
+							.not_null()
+							.default("private"),
+					)
+					.col(
+						ColumnDef::new(OneclientSyncRecord::ExpiresAt)
+							.timestamp_with_time_zone()
+							.null(),
+					)
+					.col(
+						ColumnDef::new(OneclientSyncRecord::Contents)
+							.json_binary()
+							.null(),
+					)
+					.col(
 						ColumnDef::new(OneclientSyncRecord::Deleted)
 							.boolean()
 							.not_null()
@@ -147,7 +180,10 @@ impl MigrationTrait for Migration {
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.from(OneclientSyncRecord::Table, OneclientSyncRecord::PlayerId)
+							.from(
+								OneclientSyncRecord::Table,
+								OneclientSyncRecord::PlayerId,
+							)
 							.to(User::Table, User::Id)
 							.on_delete(ForeignKeyAction::Cascade),
 					)
@@ -158,11 +194,31 @@ impl MigrationTrait for Migration {
 		manager
 			.create_index(
 				Index::create()
-					.name(RECORD_PLAYER_CODE_IDX)
+					.name(RECORD_CODE_IDX)
 					.table(OneclientSyncRecord::Table)
-					.col(OneclientSyncRecord::PlayerId)
 					.col(OneclientSyncRecord::Code)
 					.unique()
+					.to_owned(),
+			)
+			.await?;
+
+		manager
+			.create_index(
+				Index::create()
+					.name(RECORD_PLAYER_IDX)
+					.table(OneclientSyncRecord::Table)
+					.col(OneclientSyncRecord::PlayerId)
+					.col(OneclientSyncRecord::Visibility)
+					.to_owned(),
+			)
+			.await?;
+
+		manager
+			.create_index(
+				Index::create()
+					.name(RECORD_EXPIRES_IDX)
+					.table(OneclientSyncRecord::Table)
+					.col(OneclientSyncRecord::ExpiresAt)
 					.to_owned(),
 			)
 			.await?;
@@ -226,13 +282,26 @@ impl MigrationTrait for Migration {
 							.big_integer()
 							.not_null(),
 					)
-					.col(ColumnDef::new(OneclientSyncUpload::Sha512).text().not_null())
+					.col(
+						ColumnDef::new(OneclientSyncUpload::Sha512)
+							.text()
+							.not_null(),
+					)
 					.col(
 						ColumnDef::new(OneclientSyncUpload::Provisioned)
 							.boolean()
 							.not_null(),
 					)
-					.col(ColumnDef::new(OneclientSyncUpload::Device).text().not_null())
+					.col(
+						ColumnDef::new(OneclientSyncUpload::Device)
+							.text()
+							.not_null(),
+					)
+					.col(
+						ColumnDef::new(OneclientSyncUpload::UploaderId)
+							.integer()
+							.null(),
+					)
 					.col(
 						ColumnDef::new(OneclientSyncUpload::ExpiresAt)
 							.timestamp_with_time_zone()
@@ -240,8 +309,20 @@ impl MigrationTrait for Migration {
 					)
 					.foreign_key(
 						ForeignKey::create()
-							.from(OneclientSyncUpload::Table, OneclientSyncUpload::RecordId)
+							.from(
+								OneclientSyncUpload::Table,
+								OneclientSyncUpload::RecordId,
+							)
 							.to(OneclientSyncRecord::Table, OneclientSyncRecord::Id)
+							.on_delete(ForeignKeyAction::Cascade),
+					)
+					.foreign_key(
+						ForeignKey::create()
+							.from(
+								OneclientSyncUpload::Table,
+								OneclientSyncUpload::UploaderId,
+							)
+							.to(User::Table, User::Id)
 							.on_delete(ForeignKeyAction::Cascade),
 					)
 					.to_owned(),
@@ -295,10 +376,88 @@ impl MigrationTrait for Migration {
 			)
 			.await?;
 
+		manager
+			.create_table(
+				Table::create()
+					.table(OneclientShareCollaborator::Table)
+					.if_not_exists()
+					.col(
+						ColumnDef::new(OneclientShareCollaborator::Id)
+							.integer()
+							.auto_increment()
+							.primary_key(),
+					)
+					.col(
+						ColumnDef::new(OneclientShareCollaborator::RecordId)
+							.integer()
+							.not_null(),
+					)
+					.col(
+						ColumnDef::new(OneclientShareCollaborator::PlayerId)
+							.integer()
+							.not_null(),
+					)
+					.col(
+						ColumnDef::new(OneclientShareCollaborator::AddedAt)
+							.timestamp_with_time_zone()
+							.not_null()
+							.default(Expr::current_timestamp()),
+					)
+					.foreign_key(
+						ForeignKey::create()
+							.from(
+								OneclientShareCollaborator::Table,
+								OneclientShareCollaborator::RecordId,
+							)
+							.to(OneclientSyncRecord::Table, OneclientSyncRecord::Id)
+							.on_delete(ForeignKeyAction::Cascade),
+					)
+					.foreign_key(
+						ForeignKey::create()
+							.from(
+								OneclientShareCollaborator::Table,
+								OneclientShareCollaborator::PlayerId,
+							)
+							.to(User::Table, User::Id)
+							.on_delete(ForeignKeyAction::Cascade),
+					)
+					.to_owned(),
+			)
+			.await?;
+
+		manager
+			.create_index(
+				Index::create()
+					.name(COLLABORATOR_KEY_IDX)
+					.table(OneclientShareCollaborator::Table)
+					.col(OneclientShareCollaborator::RecordId)
+					.col(OneclientShareCollaborator::PlayerId)
+					.unique()
+					.to_owned(),
+			)
+			.await?;
+
+		manager
+			.create_index(
+				Index::create()
+					.name(COLLABORATOR_PLAYER_IDX)
+					.table(OneclientShareCollaborator::Table)
+					.col(OneclientShareCollaborator::PlayerId)
+					.to_owned(),
+			)
+			.await?;
+
 		Ok(())
 	}
 
 	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		manager
+			.drop_table(
+				Table::drop()
+					.table(OneclientShareCollaborator::Table)
+					.to_owned(),
+			)
+			.await?;
 		manager
 			.drop_table(Table::drop().table(OneclientSyncGarbage::Table).to_owned())
 			.await?;
