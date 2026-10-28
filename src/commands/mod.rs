@@ -178,6 +178,13 @@ pub(crate) struct ServeArgs {
 		fallback(String::new())
 	)]
 	pub(crate) discord_redirect_uri: String,
+	#[bpaf(
+		long("oneclient-sync-bucket"),
+		env("ONECLIENT_SYNC_BUCKET"),
+		argument::<String>("BUCKET"),
+		optional
+	)]
+	pub(crate) oneclient_sync_bucket: Option<String>,
 }
 
 fn parse_bind_addrs(value: String) -> Result<Vec<SocketAddr>, std::net::AddrParseError> {
