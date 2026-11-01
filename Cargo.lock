@@ -2350,6 +2350,7 @@ dependencies = [
  "pasetors",
  "rand 0.9.4",
  "rand_core 0.6.4",
+ "regex",
  "reqwest 0.13.4",
  "rsa",
  "rust-s3",
