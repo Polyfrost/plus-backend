@@ -105,6 +105,7 @@ impl FromRequestParts<ApiState> for OwnPlayer {
 
 pub(super) const MAX_DM_MEMBERS: usize = 2;
 pub(super) const MAX_GROUP_MEMBERS: usize = 50;
+pub(super) const MAX_PARTY_GROUP_MEMBERS: usize = 8;
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum GroupError {
@@ -126,6 +127,10 @@ pub enum GroupError {
 	DmImmutable,
 	#[error("The Special Chat group cannot be left")]
 	SpecialChatImmutable,
+	#[error(
+		"Party chat members follow the party, leave or kick through the party instead"
+	)]
+	PartyManaged,
 	#[error("That group is full")]
 	GroupFull,
 	#[error("That player is already a member of this group")]
@@ -163,6 +168,7 @@ impl IntoResponse for GroupError {
 				| Self::NotFriends
 				| Self::DmImmutable
 				| Self::SpecialChatImmutable
+				| Self::PartyManaged
 				| Self::GroupFull
 				| Self::AlreadyMember
 				| Self::NotSpecialChatGroup
@@ -257,6 +263,7 @@ pub(super) fn member_cap(kind: &GroupKind) -> usize {
 	match kind {
 		GroupKind::Dm => MAX_DM_MEMBERS,
 		GroupKind::Group => MAX_GROUP_MEMBERS,
+		GroupKind::Party => MAX_PARTY_GROUP_MEMBERS,
 	}
 }
 

@@ -33,12 +33,14 @@ use uuid::Uuid;
 use crate::{
 	api::{
 		api_tokens::ApiTokens,
+		eos::EosClient,
 		rate_limit::{RateLimiter, RequestLimits},
 		v0::{
 			account::links::{self, DiscordOAuth},
 			cosmetics::CachedAssetInfo,
 			oidc::{self, AuthorizationCode, OidcSigningKey},
 		},
+		v1::party::PartyRuntime,
 	},
 	commands::ServeArgs,
 	paynow::PayNowClient,
@@ -63,6 +65,14 @@ const CHAT_MESSAGES_PER_WINDOW: u32 = 10;
 
 const STATUS_WINDOW: Duration = Duration::from_secs(10);
 const STATUS_CHANGES_PER_WINDOW: u32 = 5;
+const PARTY_INVITE_WINDOW: Duration = Duration::from_secs(60);
+const PARTY_INVITES_PER_WINDOW: u32 = 20;
+const VOICE_WINDOW: Duration = Duration::from_secs(60);
+const VOICE_REQUESTS_PER_WINDOW: u32 = 10;
+const PARTY_STATE_WINDOW: Duration = Duration::from_secs(1);
+const PARTY_STATES_PER_WINDOW: u32 = 8;
+const PLAY_TOGETHER_WINDOW: Duration = Duration::from_secs(60);
+const PLAY_TOGETHERS_PER_WINDOW: u32 = 6;
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
@@ -96,6 +106,13 @@ pub(super) struct ApiState {
 	pub(super) discord: Option<DiscordOAuth>,
 	pub(super) link_states: Cache<String, i32>,
 	pub(super) instrumentation: Instrumentation,
+	pub(super) eos: Option<EosClient>,
+	pub(super) party: PartyRuntime,
+	pub(super) party_invite_limit: RateLimiter<i32>,
+	pub(super) party_state_limit: RateLimiter<ConnectionId>,
+	pub(super) voice_token_limit: RateLimiter<i32>,
+	pub(super) voice_pass_limit: RateLimiter<i32>,
+	pub(super) play_together_limit: RateLimiter<i32>,
 }
 
 #[derive(Clone)]
@@ -167,6 +184,22 @@ impl ApiState {
 			discord: DiscordOAuth::from_args(args),
 			link_states: links::new_link_state_cache(),
 			instrumentation,
+			eos: EosClient::from_args(args),
+			party: PartyRuntime::new(),
+			party_invite_limit: RateLimiter::new(
+				PARTY_INVITES_PER_WINDOW,
+				PARTY_INVITE_WINDOW,
+			),
+			party_state_limit: RateLimiter::new(
+				PARTY_STATES_PER_WINDOW,
+				PARTY_STATE_WINDOW,
+			),
+			voice_token_limit: RateLimiter::new(VOICE_REQUESTS_PER_WINDOW, VOICE_WINDOW),
+			voice_pass_limit: RateLimiter::new(VOICE_REQUESTS_PER_WINDOW, VOICE_WINDOW),
+			play_together_limit: RateLimiter::new(
+				PLAY_TOGETHERS_PER_WINDOW,
+				PLAY_TOGETHER_WINDOW,
+			),
 			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
 			database,

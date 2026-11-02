@@ -178,6 +178,49 @@ pub(crate) struct ServeArgs {
 		fallback(String::new())
 	)]
 	pub(crate) discord_redirect_uri: String,
+	#[bpaf(
+		long("eos-trusted-client-id"),
+		env("EOS_TRUSTED_CLIENT_ID"),
+		fallback(String::new())
+	)]
+	pub(crate) eos_trusted_client_id: String,
+	#[bpaf(
+		long("eos-trusted-client-secret"),
+		env("EOS_TRUSTED_CLIENT_SECRET"),
+		argument::<String>("SECRET"),
+		map(Secret),
+		fallback(Secret::default())
+	)]
+	pub(crate) eos_trusted_client_secret: Secret,
+	#[bpaf(
+		long("eos-deployment-id"),
+		env("EOS_DEPLOYMENT_ID"),
+		fallback(String::new())
+	)]
+	pub(crate) eos_deployment_id: String,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Secret(String);
+
+impl Secret {
+	pub(crate) fn expose(&self) -> &str {
+		&self.0
+	}
+
+	pub(crate) fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+}
+
+impl std::fmt::Debug for Secret {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(if self.0.is_empty() {
+			"\"\""
+		} else {
+			"\"<redacted>\""
+		})
+	}
 }
 
 fn parse_bind_addrs(value: String) -> Result<Vec<SocketAddr>, std::net::AddrParseError> {

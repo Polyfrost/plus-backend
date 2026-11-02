@@ -23,6 +23,7 @@ pub struct Model {
 	pub active_outfit_id: Option<i32>,
 	pub outfits_seeded: bool,
 	pub status_override: Option<PlayerStatus>,
+	pub eos_product_user_id_verified_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

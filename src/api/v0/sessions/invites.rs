@@ -261,8 +261,6 @@ async fn send(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path((session_id, target)): Path<(Uuid, Uuid)>,
 ) -> Result<(StatusCode, Json<SessionInvite>), SessionError> {
-	use entities::{prelude::*, session_invites};
-
 	let session = load_session(&state, session_id).await?;
 	if session.host_id != player.id {
 		return Err(SessionError::NotHost);
@@ -279,10 +277,24 @@ async fn send(
 		return Err(SessionError::NotFriends);
 	}
 
+	let invite = invite_to_session(&state, &player, &session, &target, true).await?;
+
+	Ok((StatusCode::CREATED, Json(invite)))
+}
+
+pub(in crate::api) async fn invite_to_session(
+	state: &ApiState,
+	sender: &entities::user::Model,
+	session: &entities::game_sessions::Model,
+	recipient: &entities::user::Model,
+	post_message: bool,
+) -> Result<SessionInvite, SessionError> {
+	use entities::{prelude::*, session_invites};
+
 	let invite = SessionInvites::insert(session_invites::ActiveModel {
 		session_id: Set(session.id),
-		sender_id: Set(player.id),
-		recipient_id: Set(target.id),
+		sender_id: Set(sender.id),
+		recipient_id: Set(recipient.id),
 		status: Set(SessionInviteStatus::Pending),
 		created_at: ActiveValue::NotSet,
 		responded_at: Set(None),
@@ -291,31 +303,30 @@ async fn send(
 	.exec_with_returning(&state.database)
 	.await?;
 
-	send_to_owner(&state, target.minecraft_uuid, || {
+	send_to_owner(state, recipient.minecraft_uuid, || {
 		ClientBoundPacket::SessionInviteReceived {
 			invite_id: invite.id,
 			session_id: session.id,
-			sender: player.minecraft_uuid,
+			sender: sender.minecraft_uuid,
 		}
 	})
 	.await;
 
-	post_invite_message(&state, &player, &target, invite.id).await?;
+	if post_message {
+		post_invite_message(state, sender, recipient, invite.id).await?;
+	}
 
-	Ok((
-		StatusCode::CREATED,
-		Json(SessionInvite {
-			id: invite.id,
-			session_id: session.id,
-			sender: player.minecraft_uuid,
-			eos_product_user_id: player.eos_product_user_id,
-			eos_session_id: session.eos_session_id,
-			minecraft_version: session.minecraft_version,
-			loader: session.loader,
-			created_at: invite.created_at,
-			status: invite.status,
-		}),
-	))
+	Ok(SessionInvite {
+		id: invite.id,
+		session_id: session.id,
+		sender: sender.minecraft_uuid,
+		eos_product_user_id: sender.eos_product_user_id.clone(),
+		eos_session_id: session.eos_session_id.clone(),
+		minecraft_version: session.minecraft_version.clone(),
+		loader: session.loader,
+		created_at: invite.created_at,
+		status: invite.status,
+	})
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

@@ -187,6 +187,8 @@ pub enum GroupKind {
 	Dm,
 	#[sea_orm(string_value = "group")]
 	Group,
+	#[sea_orm(string_value = "party")]
+	Party,
 }
 #[derive(
 	Debug,
@@ -427,4 +429,81 @@ pub enum PlayerStatus {
 	Online,
 	#[sea_orm(string_value = "offline")]
 	Offline,
+}
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "party_voice_mode")]
+#[serde(rename_all = "snake_case")]
+pub enum PartyVoiceMode {
+	#[sea_orm(string_value = "party")]
+	Party,
+	#[sea_orm(string_value = "proximity")]
+	Proximity,
+}
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "party_invite_policy"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PartyInvitePolicy {
+	#[sea_orm(string_value = "leader")]
+	Leader,
+	#[sea_orm(string_value = "members")]
+	Members,
+}
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "party_invite_status"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PartyInviteStatus {
+	#[sea_orm(string_value = "pending")]
+	Pending,
+	#[sea_orm(string_value = "accepted")]
+	Accepted,
+	#[sea_orm(string_value = "declined")]
+	Declined,
+	#[sea_orm(string_value = "cancelled")]
+	Cancelled,
+	#[sea_orm(string_value = "expired")]
+	Expired,
 }

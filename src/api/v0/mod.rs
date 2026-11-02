@@ -11,7 +11,7 @@ pub(super) mod oidc;
 pub(super) mod outfits;
 pub(super) mod players;
 pub(super) mod sessions;
-mod social;
+pub(super) mod social;
 mod special_chat;
 mod tags;
 mod transactions;

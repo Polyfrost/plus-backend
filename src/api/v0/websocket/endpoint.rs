@@ -407,6 +407,10 @@ async fn register_connection(
 		announce_presence(state, owner, status).await;
 	}
 
+	if is_first_connection {
+		crate::api::v1::party::on_player_online(state, owner).await;
+	}
+
 	connection_id
 }
 
@@ -522,6 +526,7 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		}
 
 		crate::api::v0::sessions::expire_sessions_after_grace(state, connection.owner);
+		crate::api::v1::party::on_player_offline(state, connection.owner).await;
 
 		// Notify anyone watching this player that they are now offline, unless
 		// they already appeared offline.
@@ -1020,6 +1025,41 @@ async fn handle_packet(
 				}
 			})
 			.await;
+		}
+		ServerBoundPacket::SetPartyState {
+			state: member_state,
+		} => {
+			if state.party_state_limit.check(connection_id).await.is_some() {
+				return Ok(());
+			}
+			member_state
+				.validate()
+				.map_err(WebsocketError::InvalidPartyState)?;
+
+			crate::api::v1::party::apply_member_state(
+				state,
+				player.minecraft_uuid,
+				player.id,
+				member_state,
+			)
+			.await;
+		}
+		ServerBoundPacket::StartPlayTogether { destination } => {
+			crate::api::v1::party::start_play_together(state, player, destination)
+				.await?;
+		}
+		ServerBoundPacket::CancelPlayTogether { id } => {
+			crate::api::v1::party::cancel_play_together(state, player, id).await?;
+		}
+		ServerBoundPacket::PlayTogetherResponse {
+			id,
+			response,
+			reason,
+		} => {
+			crate::api::v1::party::respond_to_play_together(
+				state, player, id, response, reason,
+			)
+			.await?;
 		}
 	}
 

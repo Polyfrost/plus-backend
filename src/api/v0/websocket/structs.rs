@@ -1,9 +1,17 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use entities::sea_orm_active_enums::{BodySlot, PlayerStatus, SessionInviteStatus};
+use chrono::{DateTime, Utc};
+use entities::sea_orm_active_enums::{
+	BodySlot, PartyInviteStatus, PlayerStatus, SessionInviteStatus,
+};
 use schemars::{JsonSchema, json_schema};
 use serde::{Deserialize, Serialize, ser::SerializeStruct as _};
 use uuid::Uuid;
+
+use crate::api::v1::party::models::{
+	MemberState, Party, PartyInvite, PartyLeftReason, PlayDestination, PlayEndReason,
+	PlayReason, PlayResponse,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WebsocketError {
@@ -23,11 +31,31 @@ pub enum WebsocketError {
 	UnownedEmote(i32),
 	#[error("Too many players in one request (max {limit})")]
 	TooManyPlayersInRequest { limit: usize },
+	#[error("Invalid party state: {0}")]
+	InvalidPartyState(&'static str),
+	#[error("Invalid Play together: {0}")]
+	InvalidPlayTogether(&'static str),
+	#[error("You are not in a party")]
+	NotInParty,
+	#[error("Only the party leader may do that")]
+	NotPartyLeader,
+	#[error("Too many requests, please slow down")]
+	RateLimited,
+	#[error("That Play together is no longer active")]
+	PlayTogetherInactive,
 }
 
 impl WebsocketError {
-	const ERROR_CODES: &[&str] =
-		&["fatal", "internal_server_error", "bad_request", "not_owned"];
+	const ERROR_CODES: &[&str] = &[
+		"fatal",
+		"internal_server_error",
+		"bad_request",
+		"not_owned",
+		"not_in_party",
+		"not_leader",
+		"rate_limited",
+		"play_together_inactive",
+	];
 
 	/// Whether this error describes an internal failure whose message must not
 	/// be sent to the client.
@@ -52,8 +80,14 @@ impl WebsocketError {
 			Self::DatabaseQuery(_) | Self::Serialization(_) => Self::ERROR_CODES[1],
 			Self::Deserialization(_)
 			| Self::InvalidSlot { .. }
-			| Self::TooManyPlayersInRequest { .. } => Self::ERROR_CODES[2],
+			| Self::TooManyPlayersInRequest { .. }
+			| Self::InvalidPartyState(_)
+			| Self::InvalidPlayTogether(_) => Self::ERROR_CODES[2],
 			Self::UnownedCosmetic(_) | Self::UnownedEmote(_) => Self::ERROR_CODES[3],
+			Self::NotInParty => Self::ERROR_CODES[4],
+			Self::NotPartyLeader => Self::ERROR_CODES[5],
+			Self::RateLimited => Self::ERROR_CODES[6],
+			Self::PlayTogetherInactive => Self::ERROR_CODES[7],
 		}
 	}
 }
@@ -123,6 +157,21 @@ pub enum ServerBoundPacket {
 		emote_id: i32,
 	},
 	StopEmote,
+	SetPartyState {
+		state: MemberState,
+	},
+	StartPlayTogether {
+		destination: PlayDestination,
+	},
+	CancelPlayTogether {
+		id: Uuid,
+	},
+	PlayTogetherResponse {
+		id: Uuid,
+		response: PlayResponse,
+		#[serde(default)]
+		reason: Option<PlayReason>,
+	},
 }
 
 /// A JSON object that the server will send to the client in the websocket
@@ -224,6 +273,44 @@ pub enum ClientBoundPacket {
 	SessionInviteUpdated {
 		invite_id: i32,
 		status: String,
+	},
+	PartyUpdated {
+		party: Party,
+	},
+	PartyMemberStateChanged {
+		party_id: Uuid,
+		player: Uuid,
+		state: MemberState,
+	},
+	PartyLeft {
+		party_id: Uuid,
+		reason: PartyLeftReason,
+	},
+	PartyInviteReceived {
+		invite: PartyInvite,
+	},
+	PartyInviteUpdated {
+		invite_id: Uuid,
+		status: PartyInviteStatus,
+	},
+	PlayTogetherStarted {
+		id: Uuid,
+		party_id: Uuid,
+		leader: Uuid,
+		destination: PlayDestination,
+		starts_at: DateTime<Utc>,
+		session_id: Option<Uuid>,
+	},
+	PlayTogetherUpdated {
+		id: Uuid,
+		player: Uuid,
+		response: PlayResponse,
+		reason: Option<PlayReason>,
+		session_id: Option<Uuid>,
+	},
+	PlayTogetherEnded {
+		id: Uuid,
+		reason: PlayEndReason,
 	},
 	/// An error response from the server
 	Error {

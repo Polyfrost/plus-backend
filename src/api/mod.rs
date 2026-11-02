@@ -1,6 +1,7 @@
 pub(crate) mod admin_auth;
 mod api_tokens;
 mod docs;
+mod eos;
 mod rate_limit;
 mod state;
 mod v0;
@@ -138,6 +139,8 @@ pub(crate) async fn start(args: ServeArgs) {
 	let state = ApiState::new(&args).await;
 	v0::sessions::spawn_session_sweeper(state.clone());
 	v1::spawn_expiry_sweeper(state.clone());
+	v1::party::spawn_invite_sweeper(state.clone());
+	v1::party::spawn_offline_sweep(state.clone());
 
 	let mut openapi_v0 = OpenApi::default();
 	let v0 = v0::setup_router()
@@ -145,8 +148,15 @@ pub(crate) async fn start(args: ServeArgs) {
 		.with_state(state.clone())
 		.finish_api_with(&mut openapi_v0, |spec| init_openapi_spec(spec, docs::V0));
 
+	let mut openapi_v1 = OpenApi::default();
+	let v1 = ApiRouter::new()
+		.nest("/v1", v1::setup_router().await)
+		.with_state(state.clone())
+		.finish_api_with(&mut openapi_v1, |spec| init_openapi_spec(spec, docs::V1));
+
 	// Manually add documentation for websockets because aide doesn't detect them
-	if let Some(components) = openapi_v0.components.as_mut() {
+	for openapi in [&mut openapi_v0, &mut openapi_v1] {
+		let components = openapi.components.get_or_insert_default();
 		components.schemas.insert(
 			ClientBoundPacket::schema_name().into_owned(),
 			SchemaObject {
@@ -164,12 +174,6 @@ pub(crate) async fn start(args: ServeArgs) {
 			},
 		);
 	}
-
-	let mut openapi_v1 = OpenApi::default();
-	let v1 = ApiRouter::new()
-		.nest("/v1", v1::setup_router().await)
-		.with_state(state.clone())
-		.finish_api_with(&mut openapi_v1, |spec| init_openapi_spec(spec, docs::V1));
 
 	// Final router object
 	let mut app = v0.merge(v1);

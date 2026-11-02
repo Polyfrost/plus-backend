@@ -57,6 +57,9 @@ async fn add(
 	if group.kind == GroupKind::Dm {
 		return Err(GroupError::DmImmutable);
 	}
+	if group.kind == GroupKind::Party {
+		return Err(GroupError::PartyManaged);
+	}
 	if group.owner_id != Some(player.id) {
 		return Err(GroupError::NotOwner);
 	}
@@ -97,6 +100,9 @@ async fn remove(
 	let group = load_group(&state, id).await?;
 	if group.kind == GroupKind::Dm {
 		return Err(GroupError::DmImmutable);
+	}
+	if group.kind == GroupKind::Party {
+		return Err(GroupError::PartyManaged);
 	}
 	if group.owner_id.is_none() && group.name.is_none() {
 		return Err(GroupError::SpecialChatImmutable);

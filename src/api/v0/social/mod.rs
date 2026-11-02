@@ -82,7 +82,7 @@ pub(crate) async fn are_friends(
 		.is_some())
 }
 
-pub(super) async fn is_blocked_either_way(
+pub(crate) async fn is_blocked_either_way(
 	state: &ApiState,
 	a: i32,
 	b: i32,

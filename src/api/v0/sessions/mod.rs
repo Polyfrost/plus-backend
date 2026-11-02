@@ -1,6 +1,8 @@
 mod host;
 mod invites;
 
+pub(in crate::api) use invites::{SessionInvite, invite_to_session};
+
 use aide::{OperationIo, axum::ApiRouter};
 use axum::{http::StatusCode, response::IntoResponse};
 use chrono::Duration;
@@ -82,7 +84,7 @@ pub(super) async fn find_user_by_uuid(
 		.ok_or(SessionError::PlayerMissing)
 }
 
-pub(super) async fn load_session(
+pub(in crate::api) async fn load_session(
 	state: &ApiState,
 	id: uuid::Uuid,
 ) -> Result<entities::game_sessions::Model, SessionError> {
