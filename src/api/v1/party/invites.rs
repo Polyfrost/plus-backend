@@ -33,10 +33,10 @@ use uuid::Uuid;
 
 use super::{
 	PartyError,
-	models::{Party, PartyInvite, PartyLeftReason},
+	models::{Party, PartyInvite},
 	roster::{
 		MAX_PARTY_SIZE, add_member, broadcast, create_party, current_party, find_user,
-		member_count, remove_member, uuids_of,
+		member_count, move_member, uuids_of,
 	},
 };
 use crate::api::{
@@ -247,6 +247,20 @@ pub(super) async fn cancel_pending_for_party(
 ) -> Result<(), DbErr> {
 	let pending = PartyInvites::find()
 		.filter(party_invites::Column::PartyId.eq(party))
+		.filter(party_invites::Column::Status.eq(PartyInviteStatus::Pending))
+		.all(&state.database)
+		.await?;
+	transition(state, &pending, PartyInviteStatus::Cancelled).await
+}
+
+pub(super) async fn cancel_pending_from(
+	state: &ApiState,
+	party: Uuid,
+	sender: i32,
+) -> Result<(), DbErr> {
+	let pending = PartyInvites::find()
+		.filter(party_invites::Column::PartyId.eq(party))
+		.filter(party_invites::Column::SenderId.eq(sender))
 		.filter(party_invites::Column::Status.eq(PartyInviteStatus::Pending))
 		.all(&state.database)
 		.await?;
@@ -466,13 +480,19 @@ async fn accept(
 		if current.is_some() && !body.leave_current {
 			return Err(PartyError::AlreadyInParty);
 		}
+		if is_blocked_either_way(&state, invite.sender_id, player.id).await? {
+			return Err(PartyError::Blocked);
+		}
+		if !are_friends(&state, invite.sender_id, player.id).await? {
+			return Err(PartyError::NotFriends);
+		}
 		if member_count(&state, party.id).await? >= MAX_PARTY_SIZE {
 			return Err(PartyError::PartyFull);
 		}
-		if let Some((current, _)) = &current {
-			remove_member(&state, current, &player, PartyLeftReason::Left).await?;
+		match &current {
+			Some((current, _)) => move_member(&state, current, &party, &player).await?,
+			None => add_member(&state, &party, &player).await?,
 		}
-		add_member(&state, &party, &player).await?;
 	}
 
 	transition(

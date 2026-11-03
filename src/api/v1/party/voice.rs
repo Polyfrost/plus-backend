@@ -212,13 +212,13 @@ async fn token(
 	let Some(eos) = state.eos.clone() else {
 		return Err(PartyError::VoiceUnavailable);
 	};
+	if let Some(wait) = state.voice_token_limit.check(player.id).await {
+		return Err(PartyError::RateLimited(wait));
+	}
 
 	let (party, membership) = require_party(&state, player.id).await?;
 	if party_view(&state, &party).await?.voice.transport != VoiceTransport::Rtc {
 		return Err(PartyError::TransportP2p);
-	}
-	if let Some(wait) = state.voice_token_limit.check(player.id).await {
-		return Err(PartyError::RateLimited(wait));
 	}
 
 	let puid = verified_puid(&state, &player).await?;
@@ -250,10 +250,10 @@ async fn pass(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<VoicePass>, PartyError> {
-	let (party, _) = require_party(&state, player.id).await?;
 	if let Some(wait) = state.voice_pass_limit.check(player.id).await {
 		return Err(PartyError::RateLimited(wait));
 	}
+	let (party, _) = require_party(&state, player.id).await?;
 
 	let puid = verified_puid(&state, &player).await?;
 	let issued_at = Utc::now();

@@ -1029,18 +1029,17 @@ async fn handle_packet(
 		ServerBoundPacket::SetPartyState {
 			state: member_state,
 		} => {
-			if state.party_state_limit.check(connection_id).await.is_some() {
-				return Ok(());
-			}
 			member_state
 				.validate()
 				.map_err(WebsocketError::InvalidPartyState)?;
 
+			let limited = state.party_state_limit.check(connection_id).await.is_some();
 			crate::api::v1::party::apply_member_state(
 				state,
 				player.minecraft_uuid,
 				player.id,
 				member_state,
+				limited,
 			)
 			.await;
 		}

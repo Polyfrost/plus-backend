@@ -20,7 +20,8 @@ pub(in crate::api) use self::{
 	live::PartyRuntime,
 	play::{cancel_play_together, respond_to_play_together, start_play_together},
 	roster::{
-		apply_member_state, on_player_offline, on_player_online, spawn_offline_sweep,
+		apply_member_state, on_player_offline, on_player_online, refresh_party,
+		spawn_offline_sweep,
 	},
 	voice::spawn_puid_verification,
 };

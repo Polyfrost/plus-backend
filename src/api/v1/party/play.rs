@@ -219,6 +219,10 @@ pub(in crate::api) async fn respond_to_play_together(
 	response: PlayResponse,
 	reason: Option<PlayReason>,
 ) -> Result<(), WebsocketError> {
+	if state.play_response_limit.check(player.id).await.is_some() {
+		return Err(WebsocketError::RateLimited);
+	}
+
 	let (party, _) = current_party(state, player.id)
 		.await?
 		.ok_or(WebsocketError::NotInParty)?;

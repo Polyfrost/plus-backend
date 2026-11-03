@@ -8,7 +8,7 @@ use entities::{
 	group_members, groups, parties, party_members,
 	prelude::*,
 	sea_orm_active_enums::{
-		GroupKind, GroupMemberRole, PartyInvitePolicy, PartyVoiceMode,
+		GroupKind, GroupMemberRole, PartyInvitePolicy, PartyVoiceMode, PlayerStatus,
 	},
 	user,
 };
@@ -31,6 +31,7 @@ use super::{
 use crate::api::{
 	ApiState,
 	eos::spawn_with_retries,
+	state::effective_status,
 	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
 };
 
@@ -191,10 +192,13 @@ pub(super) async fn party_view(
 
 	let online = {
 		let connections = state.realtime.connections_by_owner.read().await;
-		players
+		members
 			.iter()
-			.copied()
-			.filter(|player| connections.contains_key(player))
+			.filter(|(_, user)| {
+				let connected = connections.contains_key(&user.minecraft_uuid);
+				effective_status(connected, user.status_override) != PlayerStatus::Offline
+			})
+			.map(|(_, user)| user.minecraft_uuid)
 			.collect::<HashSet<_>>()
 	};
 	let mut states = state.party.states_of(&players).await;
@@ -227,15 +231,18 @@ pub(super) async fn party_view(
 		},
 		members: members
 			.into_iter()
-			.map(|(membership, user)| PartyMember {
-				player: user.minecraft_uuid,
-				joined_at: membership.joined_at.with_timezone(&Utc),
-				online: online.contains(&user.minecraft_uuid),
-				eos_product_user_id: user
-					.eos_product_user_id_verified_at
-					.and(user.eos_product_user_id),
-				voice_hard_muted: membership.voice_hard_muted,
-				state: states.remove(&user.minecraft_uuid),
+			.map(|(membership, user)| {
+				let online = online.contains(&user.minecraft_uuid);
+				PartyMember {
+					player: user.minecraft_uuid,
+					joined_at: membership.joined_at.with_timezone(&Utc),
+					online,
+					eos_product_user_id: user
+						.eos_product_user_id_verified_at
+						.and(user.eos_product_user_id),
+					voice_hard_muted: membership.voice_hard_muted,
+					state: states.remove(&user.minecraft_uuid).filter(|_| online),
+				}
 			})
 			.collect(),
 	})
@@ -362,29 +369,35 @@ pub(super) async fn touch(db: &impl ConnectionTrait, party: Uuid) -> Result<(), 
 	Ok(())
 }
 
-pub(super) async fn remove_member(
+async fn end_play_if_leader(
 	state: &ApiState,
 	party: &parties::Model,
 	user: &user::Model,
-	reason: PartyLeftReason,
 ) -> Result<(), DbErr> {
 	if party.leader_id == user.id {
 		let players = member_uuids(state, party.id).await?;
 		play::end(state, party.id, PlayEndReason::LeaderLeft, &players).await;
 	}
+	Ok(())
+}
 
-	let txn = state.database.begin().await?;
-
+/// Returns whether the party is now empty.
+async fn detach_member(
+	state: &ApiState,
+	db: &impl ConnectionTrait,
+	party: &parties::Model,
+	user: &user::Model,
+) -> Result<bool, DbErr> {
 	PartyMembers::delete_by_id((party.id, user.id))
-		.exec(&txn)
+		.exec(db)
 		.await?;
 	if let Some(group_id) = party.chat_group_id {
 		GroupMembers::delete_by_id((group_id, user.id))
-			.exec(&txn)
+			.exec(db)
 			.await?;
 	}
 
-	let remaining = members_of(&txn, party.id).await?;
+	let remaining = members_of(db, party.id).await?;
 	if !remaining.is_empty() && party.leader_id == user.id {
 		let online = {
 			let connections = state.realtime.connections_by_owner.read().await;
@@ -400,16 +413,24 @@ pub(super) async fn remove_member(
 			Parties::update_many()
 				.col_expr(parties::Column::LeaderId, next.into())
 				.filter(parties::Column::Id.eq(party.id))
-				.exec(&txn)
+				.exec(db)
 				.await?;
 		}
 	}
 	if !remaining.is_empty() {
-		touch(&txn, party.id).await?;
+		touch(db, party.id).await?;
 	}
 
-	txn.commit().await?;
+	Ok(remaining.is_empty())
+}
 
+async fn finish_removal(
+	state: &ApiState,
+	party: &parties::Model,
+	user: &user::Model,
+	reason: PartyLeftReason,
+	empty: bool,
+) -> Result<(), DbErr> {
 	state.party.forget_seen(user.minecraft_uuid).await;
 	leave_voice_room(state, party.id, user);
 	send_to_owner(state, user.minecraft_uuid, || {
@@ -420,11 +441,46 @@ pub(super) async fn remove_member(
 	})
 	.await;
 
-	if remaining.is_empty() {
+	if empty {
 		delete_party(state, party).await
 	} else {
+		invites::cancel_pending_from(state, party.id, user.id).await?;
 		broadcast(state, party.id).await.map(|_| ())
 	}
+}
+
+pub(super) async fn remove_member(
+	state: &ApiState,
+	party: &parties::Model,
+	user: &user::Model,
+	reason: PartyLeftReason,
+) -> Result<(), DbErr> {
+	end_play_if_leader(state, party, user).await?;
+
+	let txn = state.database.begin().await?;
+	let empty = detach_member(state, &txn, party, user).await?;
+	txn.commit().await?;
+
+	finish_removal(state, party, user, reason, empty).await
+}
+
+/// Moves `user` between parties in one transaction, so a failed join leaves
+/// them where they were.
+pub(super) async fn move_member(
+	state: &ApiState,
+	from: &parties::Model,
+	to: &parties::Model,
+	user: &user::Model,
+) -> Result<(), DbErr> {
+	end_play_if_leader(state, from, user).await?;
+
+	let txn = state.database.begin().await?;
+	let empty = detach_member(state, &txn, from, user).await?;
+	insert_member(&txn, to, user.id).await?;
+	touch(&txn, to.id).await?;
+	txn.commit().await?;
+
+	finish_removal(state, from, user, PartyLeftReason::Left, empty).await
 }
 
 pub(super) async fn disband(
@@ -524,7 +580,10 @@ async fn lookup_party_id(
 
 pub(in crate::api) async fn on_player_online(state: &ApiState, player: Uuid) {
 	state.party.forget_seen(player).await;
+	refresh_party(state, player).await;
+}
 
+pub(in crate::api) async fn refresh_party(state: &ApiState, player: Uuid) {
 	match lookup_party_id(state, player, None).await {
 		Ok(Some(party)) => broadcast_or_log(state, party).await,
 		Ok(None) => {}
@@ -610,35 +669,32 @@ pub(in crate::api) async fn apply_member_state(
 	player: Uuid,
 	user_id: i32,
 	member_state: MemberState,
+	limited: bool,
 ) {
 	state.party.set_state(player, member_state).await;
 
-	let party = match lookup_party_id(state, player, Some(user_id)).await {
-		Ok(Some(party)) => party,
-		Ok(None) => return,
-		Err(error) => {
-			warn!("Unable to look up the party of {player}: {error}");
-			return;
+	// Over the limit the state is still kept, but skips the database lookup.
+	let party = if limited {
+		state.party.party_of(player).await
+	} else {
+		match lookup_party_id(state, player, Some(user_id)).await {
+			Ok(party) => party,
+			Err(error) => {
+				warn!("Unable to look up the party of {player}: {error}");
+				return;
+			}
 		}
 	};
-	let Some(roster) = state.party.roster(party).await else {
+	let Some(party) = party else {
 		return;
 	};
-
-	let states = state.party.states_of(&roster).await;
-	let transport = transport_for(state, states.values());
-	if state.party.transport_changed(party, transport).await {
-		state.party.mark_forwarded(player).await;
-		broadcast_or_log(state, party).await;
-		return;
-	}
 
 	match state
 		.party
 		.schedule_forward(player, STATE_FORWARD_INTERVAL)
 		.await
 	{
-		Forward::Now => forward_state(state, party, player).await,
+		Forward::Now => flush_state(state, party, player).await,
 		Forward::Pending => {}
 		Forward::After(delay) => {
 			let state = state.clone();
@@ -646,14 +702,39 @@ pub(in crate::api) async fn apply_member_state(
 				tokio::time::sleep(delay).await;
 				state.party.finish_scheduled_forward(player).await;
 				if let Some(party) = state.party.party_of(player).await {
-					forward_state(&state, party, player).await;
+					flush_state(&state, party, player).await;
 				}
 			});
 		}
 	}
 }
 
+async fn flush_state(state: &ApiState, party: Uuid, player: Uuid) {
+	let Some(roster) = state.party.roster(party).await else {
+		return;
+	};
+
+	let states = state.party.states_of(&roster).await;
+	let transport = transport_for(state, states.values());
+	if state.party.transport_changed(party, transport).await {
+		broadcast_or_log(state, party).await;
+	} else {
+		forward_state(state, party, player).await;
+	}
+}
+
 async fn forward_state(state: &ApiState, party: Uuid, player: Uuid) {
+	let status_override = state
+		.realtime
+		.player_runtime
+		.read()
+		.await
+		.get(&player)
+		.and_then(|runtime| runtime.status_override);
+	if effective_status(true, status_override) == PlayerStatus::Offline {
+		return;
+	}
+
 	let Some(member_state) = state.party.state_of(player).await else {
 		return;
 	};

@@ -273,22 +273,41 @@ impl MigrationTrait for Migration {
 			)
 			.await?;
 
-		let db = manager.get_connection();
-		db.execute_unprepared(&format!(
-			"CREATE UNIQUE INDEX IF NOT EXISTS {PENDING_INVITE_INDEX} ON party_invites \
-			 (party_id, recipient_id) WHERE status = 'pending'"
-		))
-		.await?;
-		db.execute_unprepared(&format!(
-			"CREATE INDEX IF NOT EXISTS {INVITE_RECIPIENT_INDEX} ON party_invites \
-			 (recipient_id, status)"
-		))
-		.await?;
-		db.execute_unprepared(&format!(
-			"CREATE INDEX IF NOT EXISTS {INVITE_SENDER_INDEX} ON party_invites \
-			 (sender_id, status)"
-		))
-		.await?;
+		manager
+			.create_index(
+				Index::create()
+					.if_not_exists()
+					.name(PENDING_INVITE_INDEX)
+					.table(PartyInvites::Table)
+					.col(PartyInvites::PartyId)
+					.col(PartyInvites::RecipientId)
+					.unique()
+					.and_where(Expr::col(PartyInvites::Status).eq("pending"))
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.if_not_exists()
+					.name(INVITE_RECIPIENT_INDEX)
+					.table(PartyInvites::Table)
+					.col(PartyInvites::RecipientId)
+					.col(PartyInvites::Status)
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.if_not_exists()
+					.name(INVITE_SENDER_INDEX)
+					.table(PartyInvites::Table)
+					.col(PartyInvites::SenderId)
+					.col(PartyInvites::Status)
+					.to_owned(),
+			)
+			.await?;
 
 		manager
 			.alter_table(

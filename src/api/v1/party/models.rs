@@ -307,3 +307,55 @@ impl PlayDestination {
 		Ok(())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn state(capabilities: Vec<VoiceTransport>, in_voice: bool) -> MemberState {
+		MemberState {
+			location: MemberLocation {
+				kind: LocationKind::Menu,
+				key: None,
+				display: None,
+			},
+			voice: MemberVoice {
+				in_voice,
+				capabilities,
+				..MemberVoice::default()
+			},
+			svc_connected: false,
+			scene: None,
+		}
+	}
+
+	#[test]
+	fn rejects_duplicate_capabilities() {
+		let duplicated = state(vec![VoiceTransport::Rtc, VoiceTransport::Rtc], true);
+		assert!(duplicated.validate().is_err());
+		assert!(state(vec![VoiceTransport::Rtc], true).validate().is_ok());
+	}
+
+	#[test]
+	fn only_voice_members_without_rtc_block_it() {
+		assert!(state(vec![VoiceTransport::P2p], true).blocks_rtc());
+		assert!(!state(vec![VoiceTransport::P2p], false).blocks_rtc());
+		assert!(!state(vec![VoiceTransport::Rtc], true).blocks_rtc());
+	}
+
+	#[test]
+	fn server_destination_needs_an_address() {
+		let mut destination = PlayDestination {
+			kind: PlayDestinationKind::Server,
+			address: None,
+			name: "hub".to_string(),
+			mc_version: None,
+			loader: None,
+			mods: Vec::new(),
+		};
+		assert!(destination.validate().is_err());
+
+		destination.address = Some("play.example.com".to_string());
+		assert!(destination.validate().is_ok());
+	}
+}

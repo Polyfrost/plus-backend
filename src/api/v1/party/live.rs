@@ -15,6 +15,7 @@ use super::{
 #[derive(Debug, Clone)]
 pub(in crate::api) struct PartyRuntime {
 	inner: Arc<RwLock<Inner>>,
+	// ponytail: one lock for every party, per-party locks if it ever shows contention.
 	mutations: Arc<Mutex<()>>,
 	booted_at: Instant,
 	pub(super) plays: ActivePlays,
@@ -142,14 +143,6 @@ impl PartyRuntime {
 		self.inner.read().await.transports.get(&party) != Some(&transport)
 	}
 
-	pub(super) async fn mark_forwarded(&self, player: Uuid) {
-		self.inner
-			.write()
-			.await
-			.forwarded_at
-			.insert(player, Instant::now());
-	}
-
 	pub(super) async fn schedule_forward(
 		&self,
 		player: Uuid,
@@ -176,5 +169,36 @@ impl PartyRuntime {
 		let mut inner = self.inner.write().await;
 		inner.flush_pending.remove(&player);
 		inner.forwarded_at.insert(player, Instant::now());
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn schedule_forward_coalesces_within_the_interval() {
+		let runtime = PartyRuntime::new();
+		let player = Uuid::new_v4();
+		let interval = Duration::from_secs(60);
+
+		assert!(matches!(
+			runtime.schedule_forward(player, interval).await,
+			Forward::Now
+		));
+		assert!(matches!(
+			runtime.schedule_forward(player, interval).await,
+			Forward::After(_)
+		));
+		assert!(matches!(
+			runtime.schedule_forward(player, interval).await,
+			Forward::Pending
+		));
+
+		runtime.finish_scheduled_forward(player).await;
+		assert!(matches!(
+			runtime.schedule_forward(player, interval).await,
+			Forward::After(_)
+		));
 	}
 }

@@ -74,7 +74,8 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Sets the status other players see while the authorized player is connected. \
 			 `online` clears any override, so the status follows the connection again. \
-			 A disconnected player always shows as offline. This only hides presence: \
+			 A disconnected player always shows as offline. This only hides presence, \
+			 including online and live state in the party roster: \
 			 cosmetic and emote updates still reach players who can see them in-game.",
 		)
 		.tag("account")
@@ -130,6 +131,7 @@ async fn endpoint(
 
 	if let Some(status) = changed {
 		announce_presence(&state, owner, status).await;
+		crate::api::v1::party::refresh_party(&state, owner).await;
 	}
 
 	Ok(NoContent)
