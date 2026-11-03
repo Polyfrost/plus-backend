@@ -1210,6 +1210,9 @@ async fn apply_commit(
 		.one(&txn)
 		.await?
 		.is_some();
+	if record.object_key.as_deref() == Some(key.as_str()) {
+		return Ok(committed(&record));
+	}
 	if record.deleted || !still_reserved {
 		discard(&txn, Some(key)).await?;
 		txn.commit().await?;
