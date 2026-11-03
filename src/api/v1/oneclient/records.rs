@@ -28,9 +28,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-	LIST_PAGE_SIZE, MAX_ACCOUNT_BYTES, MAX_DEVICE_CHARS, MAX_FORMAT, MAX_LIVE_RECORDS,
-	MAX_NAME_CHARS, MAX_PAYLOAD_BYTES, MAX_PUBLIC_SHARES, MAX_TOMBSTONES,
-	MAX_VERSION_CHARS, PUBLIC_SHARE_TTL, SyncError, UPLOAD_TTL,
+	DOWNLOAD_TTL, LIST_PAGE_SIZE, MAX_ACCOUNT_BYTES, MAX_DEVICE_CHARS, MAX_FORMAT,
+	MAX_LIVE_RECORDS, MAX_NAME_CHARS, MAX_PAYLOAD_BYTES, MAX_PUBLIC_SHARES,
+	MAX_TOMBSTONES, MAX_VERSION_CHARS, PUBLIC_SHARE_TTL, SyncError, UPLOAD_GRACE,
+	UPLOAD_TTL,
 	payload::{self, Contents, Declared, PayloadError},
 	storage::{SyncStorage, TempFile},
 };
@@ -654,18 +655,33 @@ async fn lock_player_id(
 	Ok(())
 }
 
-async fn discard<C: ConnectionTrait>(
+pub(super) async fn discard<C: ConnectionTrait>(
 	db: &C,
 	key: Option<String>,
 ) -> Result<(), SyncError> {
 	if let Some(key) = key {
 		oneclient_sync_garbage::ActiveModel {
 			object_key: Set(key),
+			delete_after: Set((Utc::now() + DOWNLOAD_TTL).fixed_offset()),
 			..Default::default()
 		}
 		.insert(db)
 		.await?;
 	}
+	Ok(())
+}
+
+pub(super) async fn discard_staging<C: ConnectionTrait>(
+	db: &C,
+	upload: &oneclient_sync_upload::Model,
+) -> Result<(), SyncError> {
+	oneclient_sync_garbage::ActiveModel {
+		object_key: Set(upload.staging_key.clone()),
+		delete_after: Set(upload.expires_at + UPLOAD_GRACE),
+		..Default::default()
+	}
+	.insert(db)
+	.await?;
 	Ok(())
 }
 
@@ -763,7 +779,13 @@ async fn upload_target(
 ) -> Result<UploadTarget, SyncError> {
 	Ok(UploadTarget {
 		id: upload.id,
-		url: storage.upload_url(&upload.staging_key, upload.size).await?,
+		url: storage
+			.upload_url(
+				&upload.staging_key,
+				upload.size,
+				upload.expires_at.with_timezone(&Utc),
+			)
+			.await?,
 		method: "PUT",
 		headers: [("Content-Length", upload.size.to_string())].into(),
 		expires_at: upload.expires_at.with_timezone(&Utc),
@@ -1028,7 +1050,7 @@ async fn update(
 		{
 			return Err(conflict(&record));
 		}
-		discard(&txn, Some(open.staging_key.clone())).await?;
+		discard_staging(&txn, &open).await?;
 		open.into_active_model().delete(&txn).await?;
 	}
 
@@ -1192,7 +1214,7 @@ async fn commit(
 	}
 
 	discard(&txn, record.object_key.clone()).await?;
-	discard(&txn, Some(upload.staging_key.clone())).await?;
+	discard_staging(&txn, &upload).await?;
 	OneclientSyncUpload::delete_by_id(upload.id)
 		.exec(&txn)
 		.await?;
@@ -1254,7 +1276,7 @@ async fn reject_upload(
 		.rows_affected
 		> 0
 	{
-		discard(&txn, Some(upload.staging_key.clone())).await?;
+		discard_staging(&txn, upload).await?;
 		if record.revision == 0 {
 			record.into_active_model().delete(&txn).await?;
 		}
@@ -1293,7 +1315,7 @@ async fn delete(
 		.one(&txn)
 		.await?
 	{
-		discard(&txn, Some(open.staging_key.clone())).await?;
+		discard_staging(&txn, &open).await?;
 		open.into_active_model().delete(&txn).await?;
 	}
 	discard(&txn, record.object_key.clone()).await?;

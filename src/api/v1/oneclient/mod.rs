@@ -32,6 +32,7 @@ const PUBLIC_SHARE_TTL: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const MAX_TOMBSTONES: u64 = 500;
 const LIST_PAGE_SIZE: u64 = 200;
 const UPLOAD_TTL: Duration = Duration::from_secs(60 * 60);
+const UPLOAD_GRACE: Duration = Duration::from_secs(5 * 60);
 const DOWNLOAD_TTL: Duration = Duration::from_secs(10 * 60);
 const TOMBSTONE_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
 const WRITE_WINDOW: Duration = Duration::from_secs(60 * 60);

@@ -10,11 +10,13 @@ use sea_orm::{
 };
 use tracing::warn;
 
-use super::{DOWNLOAD_TTL, SyncError, TOMBSTONE_RETENTION};
+use super::{
+	SyncError, TOMBSTONE_RETENTION, UPLOAD_GRACE,
+	records::{discard, discard_staging},
+};
 use crate::api::ApiState;
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const UPLOAD_GRACE: Duration = Duration::from_secs(5 * 60);
 const UPLOAD_BATCH: u64 = 200;
 const GARBAGE_BATCH: u64 = 500;
 
@@ -64,12 +66,7 @@ async fn expire_uploads(state: &ApiState) -> Result<(), SyncError> {
 			.await?
 			.rows_affected;
 		if removed > 0 {
-			oneclient_sync_garbage::ActiveModel {
-				object_key: Set(upload.staging_key),
-				..Default::default()
-			}
-			.insert(&txn)
-			.await?;
+			discard_staging(&txn, &upload).await?;
 			if let Some(record) = record.filter(|record| record.revision == 0) {
 				record.into_active_model().delete(&txn).await?;
 			}
@@ -100,14 +97,7 @@ async fn expire_public_shares(state: &ApiState) -> Result<(), SyncError> {
 		else {
 			continue;
 		};
-		if let Some(key) = record.object_key.clone() {
-			oneclient_sync_garbage::ActiveModel {
-				object_key: Set(key),
-				..Default::default()
-			}
-			.insert(&txn)
-			.await?;
-		}
+		discard(&txn, record.object_key.clone()).await?;
 		let revision = record.revision + 1;
 		let mut active = record.into_active_model();
 		active.deleted = Set(true);
@@ -137,10 +127,7 @@ async fn collect_garbage(state: &ApiState) -> Result<(), SyncError> {
 		return Ok(());
 	};
 	let garbage = OneclientSyncGarbage::find()
-		.filter(
-			oneclient_sync_garbage::Column::CreatedAt
-				.lt((Utc::now() - DOWNLOAD_TTL).fixed_offset()),
-		)
+		.filter(oneclient_sync_garbage::Column::DeleteAfter.lt(Utc::now().fixed_offset()))
 		.order_by_asc(oneclient_sync_garbage::Column::Id)
 		.limit(GARBAGE_BATCH)
 		.all(&state.database)

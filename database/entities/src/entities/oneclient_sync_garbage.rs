@@ -7,7 +7,7 @@ pub struct Model {
 	pub id: i64,
 	#[sea_orm(column_type = "Text")]
 	pub object_key: String,
-	pub created_at: DateTimeWithTimeZone,
+	pub delete_after: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

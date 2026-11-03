@@ -68,7 +68,7 @@ enum OneclientSyncGarbage {
 	Table,
 	Id,
 	ObjectKey,
-	CreatedAt,
+	DeleteAfter,
 }
 
 const RECORD_CODE_IDX: &str = "oneclient_sync_record_code_key";
@@ -367,10 +367,9 @@ impl MigrationTrait for Migration {
 							.not_null(),
 					)
 					.col(
-						ColumnDef::new(OneclientSyncGarbage::CreatedAt)
+						ColumnDef::new(OneclientSyncGarbage::DeleteAfter)
 							.timestamp_with_time_zone()
-							.not_null()
-							.default(Expr::current_timestamp()),
+							.not_null(),
 					)
 					.to_owned(),
 			)

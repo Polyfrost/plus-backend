@@ -6,13 +6,14 @@ use std::{
 };
 
 use axum::http::{HeaderMap, HeaderValue, header};
+use chrono::{DateTime, Utc};
 use s3::{Bucket, creds::Credentials, error::S3Error};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use uuid::Uuid;
 
 use super::{
 	CONCURRENT_VALIDATIONS, DOWNLOAD_TTL, LARGE_WRITE_BYTES, LARGE_WRITES_PER_WINDOW,
-	SyncError, UPLOAD_TTL, WRITE_WINDOW, WRITES_PER_WINDOW,
+	SyncError, WRITE_WINDOW, WRITES_PER_WINDOW,
 };
 use crate::{api::rate_limit::RateLimiter, commands::ServeArgs};
 
@@ -159,12 +160,14 @@ impl SyncStorage {
 		&self,
 		key: &str,
 		size: i64,
+		expires_at: DateTime<Utc>,
 	) -> Result<String, SyncError> {
 		let mut headers = HeaderMap::new();
 		headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+		let ttl = (expires_at - Utc::now()).num_seconds().max(1) as u32;
 		Ok(self
 			.bucket
-			.presign_put(key, UPLOAD_TTL.as_secs() as u32, Some(headers), None)
+			.presign_put(key, ttl, Some(headers), None)
 			.await?)
 	}
 
