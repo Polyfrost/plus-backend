@@ -13,6 +13,7 @@ use tracing::warn;
 use super::{
 	SyncError, TOMBSTONE_RETENTION, UPLOAD_GRACE,
 	records::{discard, discard_staging},
+	storage::SyncStorage,
 };
 use crate::api::ApiState;
 
@@ -67,8 +68,15 @@ async fn expire_uploads(state: &ApiState) -> Result<(), SyncError> {
 			.rows_affected;
 		if removed > 0 {
 			discard_staging(&txn, &upload).await?;
-			if let Some(record) = record.filter(|record| record.revision == 0) {
-				record.into_active_model().delete(&txn).await?;
+			if let Some(record) = record {
+				discard(
+					&txn,
+					Some(SyncStorage::payload_key(&record.code, upload.id)),
+				)
+				.await?;
+				if record.revision == 0 {
+					record.into_active_model().delete(&txn).await?;
+				}
 			}
 		}
 		txn.commit().await?;

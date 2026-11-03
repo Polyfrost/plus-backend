@@ -1051,6 +1051,7 @@ async fn update(
 			return Err(conflict(&record));
 		}
 		discard_staging(&txn, &open).await?;
+		discard(&txn, Some(SyncStorage::payload_key(&record.code, open.id))).await?;
 		open.into_active_model().delete(&txn).await?;
 	}
 
@@ -1091,15 +1092,28 @@ async fn commit(
 	Path(path): Path<RecordPath>,
 	Json(body): Json<CommitRequest>,
 ) -> Result<Tagged<CommittedResponse>, SyncError> {
-	let storage = storage(&state)?;
+	storage(&state)?;
 	let code = parse_code(&path.id)?;
+	tokio::spawn(apply_commit(state, player.id, code, body.upload_id))
+		.await
+		.map_err(|error| SyncError::Io(std::io::Error::other(error)))?
+}
+
+async fn apply_commit(
+	state: ApiState,
+	player_id: i32,
+	code: String,
+	upload_id: Uuid,
+) -> Result<Tagged<CommittedResponse>, SyncError> {
+	let storage = storage(&state)?;
+	let _slot = storage.validation_slot(player_id).await?;
 	let record = find_code(&state.database, &code)
 		.await?
 		.ok_or(SyncError::NotFound)?;
-	let owner = record.player_id == player.id;
+	let owner = record.player_id == player_id;
 	if !owner
 		&& (record.visibility != PUBLIC
-			|| !is_collaborator(&state.database, record.id, player.id).await?)
+			|| !is_collaborator(&state.database, record.id, player_id).await?)
 	{
 		return Err(SyncError::NotFound);
 	}
@@ -1107,24 +1121,18 @@ async fn commit(
 		return Err(SyncError::Gone);
 	}
 
-	let upload = OneclientSyncUpload::find_by_id(body.upload_id)
+	let upload = OneclientSyncUpload::find_by_id(upload_id)
 		.filter(oneclient_sync_upload::Column::RecordId.eq(record.id))
 		.one(&state.database)
 		.await?
-		.filter(|upload| owner || upload.uploader_id == Some(player.id));
+		.filter(|upload| owner || upload.uploader_id == Some(player_id));
 	let Some(upload) = upload else {
 		if record
 			.object_key
 			.as_deref()
-			.is_some_and(|key| SyncStorage::is_payload_of(key, body.upload_id))
+			.is_some_and(|key| SyncStorage::is_payload_of(key, upload_id))
 		{
-			return Ok(Tagged(
-				record.revision,
-				CommittedResponse {
-					record: record_view(&record),
-					removed: Vec::new(),
-				},
-			));
+			return Ok(committed(&record));
 		}
 		return Err(if record.revision > 0 {
 			conflict(&record)
@@ -1133,8 +1141,7 @@ async fn commit(
 		});
 	};
 
-	storage.check_write(player.id, upload.size).await?;
-	let _slot = storage.validation_slot(player.id).await?;
+	storage.check_write(player_id, upload.size).await?;
 
 	match storage.uploaded_size(&upload.staging_key).await? {
 		None => return Err(SyncError::UploadMissing),
@@ -1236,26 +1243,35 @@ async fn commit(
 	}
 	active.object_key = Set(Some(key));
 	active.contents = Set(serde_json::to_value(&sanitized.contents).ok());
+	active.removed = Set(serde_json::to_value(&sanitized.removed).ok());
 	active.updated_at = Set(Utc::now().fixed_offset());
 	let record = active.update(&txn).await?;
 	txn.commit().await?;
 
 	if !sanitized.removed.is_empty() {
 		tracing::info!(
-			player = player.id,
+			player = player_id,
 			record = %record.code,
 			removed = sanitized.removed.len(),
 			"removed files from a synced instance"
 		);
 	}
 
-	Ok(Tagged(
+	Ok(committed(&record))
+}
+
+fn committed(record: &oneclient_sync_record::Model) -> Tagged<CommittedResponse> {
+	Tagged(
 		record.revision,
 		CommittedResponse {
-			record: record_view(&record),
-			removed: sanitized.removed,
+			record: record_view(record),
+			removed: record
+				.removed
+				.clone()
+				.and_then(|removed| serde_json::from_value(removed).ok())
+				.unwrap_or_default(),
 		},
-	))
+	)
 }
 
 async fn reject_upload(
@@ -1277,6 +1293,11 @@ async fn reject_upload(
 		> 0
 	{
 		discard_staging(&txn, upload).await?;
+		discard(
+			&txn,
+			Some(SyncStorage::payload_key(&record.code, upload.id)),
+		)
+		.await?;
 		if record.revision == 0 {
 			record.into_active_model().delete(&txn).await?;
 		}
@@ -1316,6 +1337,7 @@ async fn delete(
 		.await?
 	{
 		discard_staging(&txn, &open).await?;
+		discard(&txn, Some(SyncStorage::payload_key(&record.code, open.id))).await?;
 		open.into_active_model().delete(&txn).await?;
 	}
 	discard(&txn, record.object_key.clone()).await?;

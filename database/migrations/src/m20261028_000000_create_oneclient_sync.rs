@@ -29,6 +29,7 @@ enum OneclientSyncRecord {
 	Visibility,
 	ExpiresAt,
 	Contents,
+	Removed,
 	Deleted,
 	CreatedAt,
 	UpdatedAt,
@@ -157,6 +158,11 @@ impl MigrationTrait for Migration {
 					)
 					.col(
 						ColumnDef::new(OneclientSyncRecord::Contents)
+							.json_binary()
+							.null(),
+					)
+					.col(
+						ColumnDef::new(OneclientSyncRecord::Removed)
 							.json_binary()
 							.null(),
 					)

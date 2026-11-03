@@ -18,6 +18,7 @@ use super::{
 use crate::{api::rate_limit::RateLimiter, commands::ServeArgs};
 
 const BUSY_RETRY: Duration = Duration::from_secs(5);
+const SLOT_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
 pub(in crate::api) struct SyncStorage {
@@ -133,10 +134,9 @@ impl SyncStorage {
 			players: &self.validating,
 			player_id,
 		};
-		let permit = self
-			.validations
-			.acquire()
+		let permit = tokio::time::timeout(SLOT_WAIT, self.validations.acquire())
 			.await
+			.map_err(|_| SyncError::RateLimited(BUSY_RETRY))?
 			.expect("infallible: the validation semaphore is never closed");
 		Ok(ValidationSlot {
 			_permit: permit,
