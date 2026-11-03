@@ -139,6 +139,7 @@ pub(crate) async fn start(args: ServeArgs) {
 	let state = ApiState::new(&args).await;
 	v0::sessions::spawn_session_sweeper(state.clone());
 	v1::spawn_expiry_sweeper(state.clone());
+	v1::spawn_sync_sweeper(state.clone());
 	v1::party::spawn_invite_sweeper(state.clone());
 	v1::party::spawn_offline_sweep(state.clone());
 

@@ -18,7 +18,8 @@ use sea_orm::{ActiveValue::Set, EntityTrait as _};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
-	ApiState, v0::account::AuthenticatedPlayer, v0::websocket::announce_presence,
+	ApiState, state::effective_status, v0::account::AuthenticatedPlayer,
+	v0::websocket::announce_presence,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -73,7 +74,8 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Sets the status other players see while the authorized player is connected. \
 			 `online` clears any override, so the status follows the connection again. \
-			 A disconnected player always shows as offline.",
+			 A disconnected player always shows as offline. This only hides presence: \
+			 cosmetic and emote updates still reach players who can see them in-game.",
 		)
 		.tag("account")
 }
@@ -112,15 +114,22 @@ async fn endpoint(
 	.await?;
 
 	let owner = player.minecraft_uuid;
-	let before = state.realtime.status_of(owner).await;
+	let connected = state.realtime.connections_by_owner.read().await.contains_key(&owner);
+	let changed = state
+		.realtime
+		.player_runtime
+		.write()
+		.await
+		.get_mut(&owner)
+		.and_then(|runtime| {
+			let before = effective_status(connected, runtime.status_override);
+			runtime.status_override = status_override;
+			let after = effective_status(connected, status_override);
+			(before != after).then_some(after)
+		});
 
-	if let Some(runtime) = state.realtime.player_runtime.write().await.get_mut(&owner) {
-		runtime.status_override = status_override;
-	}
-	let after = state.realtime.status_of(owner).await;
-
-	if before != after {
-		announce_presence(&state, owner, after).await;
+	if let Some(status) = changed {
+		announce_presence(&state, owner, status).await;
 	}
 
 	Ok(NoContent)
@@ -141,7 +150,8 @@ mod tests {
 
 	#[test]
 	fn parses_request_body() {
-		let body: RequestBody = serde_json::from_str(r#"{"status":"offline"}"#).unwrap();
+		let body: RequestBody = serde_json::from_str(r#"{"status":"offline"}"#)
+			.expect("body should parse");
 		assert_eq!(body.status, PlayerStatus::Offline);
 	}
 }

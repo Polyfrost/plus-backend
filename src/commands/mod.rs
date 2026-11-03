@@ -179,6 +179,13 @@ pub(crate) struct ServeArgs {
 	)]
 	pub(crate) discord_redirect_uri: String,
 	#[bpaf(
+		long("oneclient-sync-bucket"),
+		env("ONECLIENT_SYNC_BUCKET"),
+		argument::<String>("BUCKET"),
+		optional
+	)]
+	pub(crate) oneclient_sync_bucket: Option<String>,
+	#[bpaf(
 		long("eos-trusted-client-id"),
 		env("EOS_TRUSTED_CLIENT_ID"),
 		fallback(String::new())

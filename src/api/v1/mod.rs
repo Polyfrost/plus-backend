@@ -3,12 +3,14 @@ mod discounts;
 mod grants;
 mod hello;
 mod listings;
+mod oneclient;
 pub(super) mod party;
 mod paynow;
 mod referrals;
 mod store;
 mod tokens;
 
+pub(super) use oneclient::{SyncStorage, spawn_sync_sweeper};
 pub(super) use paynow::spawn_expiry_sweeper;
 
 use aide::axum::ApiRouter;
@@ -19,6 +21,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.nest("/checkout", paynow::checkout_router().await)
 		.nest("/paynow", paynow::webhook_router().await)
+		.nest("/oneclient", oneclient::router())
 		.merge(discounts::router())
 		.merge(grants::router())
 		.merge(listings::router())

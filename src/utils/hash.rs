@@ -18,7 +18,7 @@ pub(crate) fn sha256_hex_parts(parts: &[&[u8]]) -> String {
 	hex(hasher.finalize())
 }
 
-fn hex(digest: impl AsRef<[u8]>) -> String {
+pub(crate) fn hex(digest: impl AsRef<[u8]>) -> String {
 	digest
 		.as_ref()
 		.iter()

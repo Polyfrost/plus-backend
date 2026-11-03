@@ -80,19 +80,6 @@ pub fn effective_status(
 	status_override.unwrap_or(PlayerStatus::Online)
 }
 
-impl RealtimeState {
-	pub async fn status_of(&self, player: Uuid) -> PlayerStatus {
-		let connected = self.connections_by_owner.read().await.contains_key(&player);
-		let status_override = self
-			.player_runtime
-			.read()
-			.await
-			.get(&player)
-			.and_then(|runtime| runtime.status_override);
-		effective_status(connected, status_override)
-	}
-}
-
 #[cfg(test)]
 mod status_tests {
 	use super::*;
