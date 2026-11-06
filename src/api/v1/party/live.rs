@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, MutexGuard, RwLock};
 use uuid::Uuid;
 
 use super::{
+	join::SharedJoinRequests,
 	models::{MemberState, VoiceTransport},
 	play::ActivePlays,
 };
@@ -19,6 +20,7 @@ pub(in crate::api) struct PartyRuntime {
 	mutations: Arc<Mutex<()>>,
 	booted_at: Instant,
 	pub(super) plays: ActivePlays,
+	pub(super) joins: SharedJoinRequests,
 }
 
 #[derive(Debug, Default)]
@@ -45,6 +47,7 @@ impl PartyRuntime {
 			mutations: Arc::default(),
 			booted_at: Instant::now(),
 			plays: ActivePlays::default(),
+			joins: SharedJoinRequests::default(),
 		}
 	}
 

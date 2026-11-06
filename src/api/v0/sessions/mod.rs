@@ -135,6 +135,10 @@ async fn expire_sessions_of_host(
 		.exec(&state.database)
 		.await?;
 
+	for id in &ids {
+		crate::api::v1::party::cancel_hosted_joins_for_session(state, *id).await;
+	}
+
 	let expired = invites::expire_invites_for_sessions(state, ids).await?;
 	info!(
 		host = %host.minecraft_uuid,

@@ -146,6 +146,7 @@ async fn close(
 	}
 
 	GameSessions::delete_by_id(id).exec(&state.database).await?;
+	crate::api::v1::party::cancel_hosted_joins_for_session(&state, id).await;
 
 	Ok(StatusCode::NO_CONTENT)
 }

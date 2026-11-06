@@ -197,6 +197,24 @@ pub enum VoiceTransport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum HostedJoinResult {
+	Allowed,
+	Denied,
+	Expired,
+	Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct HostedJoinRequest {
+	pub id: Uuid,
+	pub session_id: Uuid,
+	pub host: Uuid,
+	pub player: Uuid,
+	pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PartyLeftReason {
 	Left,
 	Kicked,

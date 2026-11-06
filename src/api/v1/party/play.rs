@@ -270,7 +270,7 @@ async fn link_session(
 	Ok(())
 }
 
-fn session_error(error: SessionError) -> PartyError {
+pub(super) fn session_error(error: SessionError) -> PartyError {
 	match error {
 		SessionError::SessionMissing | SessionError::SessionExpired => {
 			PartyError::SessionNotFound

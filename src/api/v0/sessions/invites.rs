@@ -192,6 +192,12 @@ async fn notify_invite_message_status(
 	Ok(())
 }
 
+impl SessionInvite {
+	pub(in crate::api) fn id(&self) -> i32 {
+		self.id
+	}
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SessionInvite {
 	id: i32,

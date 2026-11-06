@@ -20,7 +20,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use super::{
-	PartyError, invites,
+	PartyError, invites, join,
 	live::Forward,
 	models::{
 		MemberState, Party, PartyLeftReason, PartyMember, PartySettings, PartyVoice,
@@ -159,7 +159,7 @@ pub(super) async fn member_uuids(
 		.collect())
 }
 
-async fn connected(state: &ApiState, player: Uuid) -> bool {
+pub(super) async fn connected(state: &ApiState, player: Uuid) -> bool {
 	state
 		.realtime
 		.connections_by_owner
@@ -428,6 +428,7 @@ async fn finish_removal(
 	empty: bool,
 ) -> Result<(), DbErr> {
 	state.party.forget_seen(user.minecraft_uuid).await;
+	join::cancel_hosted_joins_in_party(state, party.id, Some(user.minecraft_uuid)).await;
 	leave_voice_room(state, party.id, user);
 	send_to_owner(state, user.minecraft_uuid, || {
 		ClientBoundPacket::PartyLeft {
@@ -508,6 +509,7 @@ pub(super) async fn disband(
 
 async fn delete_party(state: &ApiState, party: &parties::Model) -> Result<(), DbErr> {
 	invites::cancel_pending_for_party(state, party.id).await?;
+	join::cancel_hosted_joins_in_party(state, party.id, None).await;
 
 	let txn = state.database.begin().await?;
 	Parties::delete_by_id(party.id).exec(&txn).await?;
@@ -596,6 +598,7 @@ pub(in crate::api) async fn on_player_offline(state: &ApiState, player: Uuid) {
 		}
 	};
 	state.party.went_offline(player, party.is_some()).await;
+	join::cancel_hosted_joins_of_player(state, player).await;
 
 	let Some(party) = party else {
 		return;

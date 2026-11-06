@@ -76,6 +76,8 @@ const PLAY_TOGETHER_WINDOW: Duration = Duration::from_secs(60);
 const PLAY_TOGETHERS_PER_WINDOW: u32 = 6;
 const PLAY_RESPONSE_WINDOW: Duration = Duration::from_secs(60);
 const PLAY_RESPONSES_PER_WINDOW: u32 = 30;
+const HOSTED_JOIN_WINDOW: Duration = Duration::from_secs(60);
+const HOSTED_JOINS_PER_WINDOW: u32 = 10;
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
@@ -118,6 +120,7 @@ pub(super) struct ApiState {
 	pub(super) voice_pass_limit: RateLimiter<i32>,
 	pub(super) play_together_limit: RateLimiter<i32>,
 	pub(super) play_response_limit: RateLimiter<i32>,
+	pub(super) hosted_join_limit: RateLimiter<i32>,
 }
 
 #[derive(Clone)]
@@ -209,6 +212,10 @@ impl ApiState {
 			play_response_limit: RateLimiter::new(
 				PLAY_RESPONSES_PER_WINDOW,
 				PLAY_RESPONSE_WINDOW,
+			),
+			hosted_join_limit: RateLimiter::new(
+				HOSTED_JOINS_PER_WINDOW,
+				HOSTED_JOIN_WINDOW,
 			),
 			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,

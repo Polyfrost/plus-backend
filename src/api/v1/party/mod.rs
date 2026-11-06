@@ -1,4 +1,5 @@
 mod invites;
+mod join;
 mod live;
 pub(in crate::api) mod models;
 mod play;
@@ -17,6 +18,9 @@ use axum::{
 
 pub(in crate::api) use self::{
 	invites::spawn_invite_sweeper,
+	join::{
+		cancel_hosted_joins_for_session, request_hosted_join, respond_to_hosted_join,
+	},
 	live::PartyRuntime,
 	play::{cancel_play_together, respond_to_play_together, start_play_together},
 	roster::{
@@ -67,6 +71,20 @@ pub(in crate::api) enum PartyError {
 	SessionNotFound,
 	#[error("Only the session host may do that")]
 	NotHost,
+	#[error("You cannot ask to join your own session")]
+	OwnSession,
+	#[error("The session host is not in your party")]
+	HostNotInParty,
+	#[error("The session host is offline")]
+	HostOffline,
+	#[error("You are already in that session")]
+	AlreadyInSession,
+	#[error("You already have a pending invite to that session")]
+	AlreadyInvitedToSession,
+	#[error("You already asked to join that session")]
+	JoinRequestPending,
+	#[error("No such join request")]
+	JoinRequestNotFound,
 	#[error("Too many requests, please slow down")]
 	RateLimited(Duration),
 	#[error("Unable to query database: {0}")]
@@ -78,13 +96,18 @@ pub(in crate::api) enum PartyError {
 }
 
 impl PartyError {
+	pub(in crate::api) fn is_internal(&self) -> bool {
+		self.status().is_server_error()
+	}
+
 	fn status(&self) -> StatusCode {
 		match self {
 			Self::NotInParty
 			| Self::MemberNotFound
 			| Self::PlayerNotFound
 			| Self::InviteNotFound
-			| Self::SessionNotFound => StatusCode::NOT_FOUND,
+			| Self::SessionNotFound
+			| Self::JoinRequestNotFound => StatusCode::NOT_FOUND,
 			Self::NotLeader | Self::NotAllowedToInvite | Self::NotHost => {
 				StatusCode::FORBIDDEN
 			}
@@ -96,7 +119,13 @@ impl PartyError {
 			| Self::AlreadyInvited
 			| Self::PartyFull
 			| Self::TransportP2p
-			| Self::EosNotLinked => StatusCode::CONFLICT,
+			| Self::EosNotLinked
+			| Self::OwnSession
+			| Self::HostNotInParty
+			| Self::HostOffline
+			| Self::AlreadyInSession
+			| Self::AlreadyInvitedToSession
+			| Self::JoinRequestPending => StatusCode::CONFLICT,
 			Self::InviteExpired => StatusCode::GONE,
 			Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
 			Self::VoiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
@@ -106,7 +135,7 @@ impl PartyError {
 		}
 	}
 
-	fn code(&self) -> &'static str {
+	pub(in crate::api) fn code(&self) -> &'static str {
 		match self {
 			Self::NotInParty => "not_in_party",
 			Self::AlreadyInParty => "already_in_party",
@@ -127,6 +156,13 @@ impl PartyError {
 			Self::VoiceUnavailable => "voice_unavailable",
 			Self::SessionNotFound => "session_not_found",
 			Self::NotHost => "not_host",
+			Self::OwnSession => "own_session",
+			Self::HostNotInParty => "host_not_in_party",
+			Self::HostOffline => "host_offline",
+			Self::AlreadyInSession => "already_in_session",
+			Self::AlreadyInvitedToSession => "already_invited_to_session",
+			Self::JoinRequestPending => "join_request_pending",
+			Self::JoinRequestNotFound => "join_request_not_found",
 			Self::RateLimited(_) => "rate_limited",
 			Self::Database(_) | Self::Signing(_) | Self::Session(_) => "internal",
 		}
@@ -161,4 +197,5 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		.merge(invites::router())
 		.merge(voice::router())
 		.merge(play::router())
+		.merge(join::router())
 }

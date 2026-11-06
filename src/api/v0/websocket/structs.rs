@@ -8,9 +8,12 @@ use schemars::{JsonSchema, json_schema};
 use serde::{Deserialize, Serialize, ser::SerializeStruct as _};
 use uuid::Uuid;
 
-use crate::api::v1::party::models::{
-	MemberState, Party, PartyInvite, PartyLeftReason, PlayDestination, PlayEndReason,
-	PlayReason, PlayResponse,
+use crate::api::v1::party::{
+	PartyError,
+	models::{
+		HostedJoinResult, MemberState, Party, PartyInvite, PartyLeftReason,
+		PlayDestination, PlayEndReason, PlayReason, PlayResponse,
+	},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +46,19 @@ pub enum WebsocketError {
 	RateLimited,
 	#[error("That Play together is no longer active")]
 	PlayTogetherInactive,
+	#[error(transparent)]
+	Party(PartyError),
+}
+
+impl From<PartyError> for WebsocketError {
+	fn from(error: PartyError) -> Self {
+		match error {
+			PartyError::Database(error) => Self::DatabaseQuery(error),
+			PartyError::NotInParty => Self::NotInParty,
+			PartyError::RateLimited(_) => Self::RateLimited,
+			error => Self::Party(error),
+		}
+	}
 }
 
 impl WebsocketError {
@@ -55,15 +71,27 @@ impl WebsocketError {
 		"not_leader",
 		"rate_limited",
 		"play_together_inactive",
+		"session_not_found",
+		"own_session",
+		"host_not_in_party",
+		"host_offline",
+		"blocked",
+		"already_in_session",
+		"already_invited_to_session",
+		"join_request_pending",
+		"join_request_not_found",
+		"member_not_found",
+		"not_host",
 	];
 
 	/// Whether this error describes an internal failure whose message must not
 	/// be sent to the client.
 	pub fn is_internal(&self) -> bool {
-		matches!(
-			self,
-			Self::Fatal(_) | Self::DatabaseQuery(_) | Self::Serialization(_)
-		)
+		match self {
+			Self::Fatal(_) | Self::DatabaseQuery(_) | Self::Serialization(_) => true,
+			Self::Party(error) => error.is_internal(),
+			_ => false,
+		}
 	}
 
 	fn public_message(&self) -> Cow<'_, str> {
@@ -88,6 +116,8 @@ impl WebsocketError {
 			Self::NotPartyLeader => Self::ERROR_CODES[5],
 			Self::RateLimited => Self::ERROR_CODES[6],
 			Self::PlayTogetherInactive => Self::ERROR_CODES[7],
+			Self::Party(error) if error.is_internal() => Self::ERROR_CODES[1],
+			Self::Party(error) => error.code(),
 		}
 	}
 }
@@ -171,6 +201,13 @@ pub enum ServerBoundPacket {
 		response: PlayResponse,
 		#[serde(default)]
 		reason: Option<PlayReason>,
+	},
+	RequestHostedJoin {
+		session_id: Uuid,
+	},
+	HostedJoinResponse {
+		request_id: Uuid,
+		allow: bool,
 	},
 }
 
@@ -312,6 +349,24 @@ pub enum ClientBoundPacket {
 		id: Uuid,
 		reason: PlayEndReason,
 	},
+	HostedJoinRequested {
+		request_id: Uuid,
+		session_id: Uuid,
+		player: Uuid,
+		expires_at: DateTime<Utc>,
+	},
+	HostedJoinRequestSent {
+		request_id: Uuid,
+		session_id: Uuid,
+		host: Uuid,
+		expires_at: DateTime<Utc>,
+	},
+	HostedJoinResolved {
+		request_id: Uuid,
+		session_id: Uuid,
+		result: HostedJoinResult,
+		invite_id: Option<i32>,
+	},
 	/// An error response from the server
 	Error {
 		#[serde(flatten)]
@@ -337,6 +392,7 @@ mod tests {
 	use uuid::Uuid;
 
 	use super::{ClientBoundPacket, ServerBoundPacket};
+	use crate::api::v1::party::{PartyError, models::HostedJoinResult};
 
 	#[test]
 	fn parses_slot_based_equipment_update() {
@@ -416,6 +472,52 @@ mod tests {
 		assert_eq!(serialized["type"], "Error");
 		assert_eq!(serialized["error_code"], "bad_request");
 		assert_eq!(serialized["request_id"], 9);
+	}
+
+	#[test]
+	fn parses_hosted_join_packets() {
+		let id = Uuid::nil();
+		let packet: ServerBoundPacket = serde_json::from_str(&format!(
+			r#"{{"type":"RequestHostedJoin","session_id":"{id}"}}"#
+		))
+		.expect("packet should parse");
+		assert!(matches!(
+			packet,
+			ServerBoundPacket::RequestHostedJoin { session_id } if session_id == id
+		));
+
+		let packet: ServerBoundPacket = serde_json::from_str(&format!(
+			r#"{{"type":"HostedJoinResponse","request_id":"{id}","allow":true}}"#
+		))
+		.expect("packet should parse");
+		assert!(matches!(
+			packet,
+			ServerBoundPacket::HostedJoinResponse { request_id, allow: true } if request_id == id
+		));
+	}
+
+	#[test]
+	fn serializes_hosted_join_resolved_packet() {
+		let id = Uuid::nil();
+		let packet = ClientBoundPacket::HostedJoinResolved {
+			request_id: id,
+			session_id: id,
+			result: HostedJoinResult::Allowed,
+			invite_id: Some(4),
+		};
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(serialized["type"], "HostedJoinResolved");
+		assert_eq!(serialized["request_id"], id.to_string());
+		assert_eq!(serialized["result"], "allowed");
+		assert_eq!(serialized["invite_id"], 4);
+	}
+
+	#[test]
+	fn party_errors_keep_their_code() {
+		let error = super::WebsocketError::from(PartyError::HostOffline);
+		assert_eq!(error.error_code(), "host_offline");
+		assert!(super::WebsocketError::ERROR_CODES.contains(&error.error_code()));
 	}
 
 	#[test]

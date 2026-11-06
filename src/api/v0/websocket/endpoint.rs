@@ -1060,6 +1060,15 @@ async fn handle_packet(
 			)
 			.await?;
 		}
+		ServerBoundPacket::RequestHostedJoin { session_id } => {
+			crate::api::v1::party::request_hosted_join(state, player, session_id).await?;
+		}
+		ServerBoundPacket::HostedJoinResponse { request_id, allow } => {
+			crate::api::v1::party::respond_to_hosted_join(
+				state, player, request_id, allow,
+			)
+			.await?;
+		}
 	}
 
 	Ok(())
