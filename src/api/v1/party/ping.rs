@@ -42,6 +42,8 @@ pub struct PingTargetRequest {
 	pub id: Option<String>,
 	#[serde(default)]
 	pub entity: Option<String>,
+	#[serde(default)]
+	pub entity_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -63,6 +65,8 @@ pub struct PingTarget {
 	pub kind: PingTargetKind,
 	pub id: Option<String>,
 	pub entity: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub entity_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -147,6 +151,7 @@ impl PingTargetRequest {
 			kind,
 			id: self.id,
 			entity: self.entity,
+			entity_id: self.entity_id,
 		})
 	}
 }
