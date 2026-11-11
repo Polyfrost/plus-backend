@@ -79,6 +79,7 @@ mod m20261028_000000_create_oneclient_sync;
 mod m20261102_000000_player_status_override;
 mod m20261102_000001_add_party_group_kind;
 mod m20261102_000002_create_parties;
+mod m20261110_000000_add_nameplate_cosmetic;
 
 pub struct Migrator;
 
@@ -165,6 +166,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20261102_000000_player_status_override::Migration),
 			Box::new(m20261102_000001_add_party_group_kind::Migration),
 			Box::new(m20261102_000002_create_parties::Migration),
+			Box::new(m20261110_000000_add_nameplate_cosmetic::Migration),
 		]
 	}
 }

@@ -250,6 +250,8 @@ async fn endpoint(
 
 	txn.commit().await?;
 
+	crate::api::v0::cosmetics::notify_catalog_updated(&state).await;
+
 	if let Some(price) = &price_update {
 		state
 			.paynow

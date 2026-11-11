@@ -349,7 +349,7 @@ async fn load_members(
 			.await?;
 
 		for cosmetic in cosmetics {
-			if super::is_redundant_variant(cosmetic.variant_name.as_deref()) {
+			if super::is_redundant_variant(&cosmetic) {
 				continue;
 			}
 			members

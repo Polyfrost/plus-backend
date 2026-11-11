@@ -20,13 +20,18 @@ use crate::{
 	api::{
 		ApiState,
 		admin_auth::AdminAuthenticationExtractor,
-		v0::cosmetics::{CosmeticInfo, group_cosmetics},
+		v0::cosmetics::{
+			CosmeticInfo, group_cosmetics,
+			nameplate::{
+				NameplateBundle, NameplateBundleError, StoredBundleError, stored_bundle,
+			},
+		},
 	},
 	paynow::{PayNowError, catalog},
 	utils::{
 		hash::sha256_hex,
 		money::to_cents,
-		zip::{is_zip, strip_macos_junk},
+		zip::{is_zip, strip_macos_junk, strip_macos_junk_capped},
 	},
 };
 
@@ -54,6 +59,27 @@ pub enum UploadError {
 	Rejection(#[from] MultipartRejection),
 	#[error("Invalid ZIP bundle: {0}")]
 	Zip(#[from] zip::result::ZipError),
+	#[error(transparent)]
+	Nameplate(#[from] NameplateBundleError),
+	#[error("Nameplates take exactly one body slot, `nameplate`")]
+	InvalidNameplateSlots,
+	#[error("Send either a file or asset_from, not both")]
+	FileAndAssetFrom,
+	#[error("asset_from must name another nameplate that has an asset")]
+	InvalidAssetFrom,
+	#[error("The cover must be a PNG image")]
+	InvalidCover,
+	#[error("Unable to store the cover: {0}")]
+	Cover(#[from] crate::api::v0::collections::StoreAssetError),
+}
+
+impl From<StoredBundleError> for UploadError {
+	fn from(error: StoredBundleError) -> Self {
+		match error {
+			StoredBundleError::Bundle(error) => Self::Nameplate(error),
+			StoredBundleError::S3(error) => Self::S3(error),
+		}
+	}
 }
 
 impl IntoResponse for UploadError {
@@ -66,9 +92,14 @@ impl IntoResponse for UploadError {
 				| Self::MissingSlots
 				| Self::InvalidSlot
 				| Self::Zip(_)
+				| Self::Nameplate(_)
+				| Self::InvalidNameplateSlots
+				| Self::FileAndAssetFrom
+				| Self::InvalidAssetFrom
+				| Self::InvalidCover
 				| Self::Rejection(_) => StatusCode::BAD_REQUEST,
 				Self::PayNow(_) => StatusCode::BAD_GATEWAY,
-				Self::Database(_) | Self::S3(_) | Self::Multipart(_) => {
+				Self::Database(_) | Self::S3(_) | Self::Multipart(_) | Self::Cover(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
 				}
 			},
@@ -89,6 +120,7 @@ fn parse_cosmetic_type(value: &str) -> Option<CosmeticType> {
 		"boots" => Some(CosmeticType::Boots),
 		"shoulder" => Some(CosmeticType::Shoulder),
 		"pet" => Some(CosmeticType::Pet),
+		"nameplate" => Some(CosmeticType::Nameplate),
 		"emote" => Some(CosmeticType::Emote),
 		_ => None,
 	}
@@ -107,6 +139,7 @@ fn parse_body_slot(value: &str) -> Option<BodySlot> {
 		"boots" => Some(BodySlot::Boots),
 		"shoulder" => Some(BodySlot::Shoulder),
 		"pet" => Some(BodySlot::Pet),
+		"nameplate" => Some(BodySlot::Nameplate),
 		_ => None,
 	}
 }
@@ -123,6 +156,7 @@ fn default_name(cosmetic_type: &CosmeticType) -> &'static str {
 		CosmeticType::Boots => "Boots",
 		CosmeticType::Shoulder => "Shoulder",
 		CosmeticType::Pet => "Pet",
+		CosmeticType::Nameplate => "Nameplate",
 		CosmeticType::Emote => "Emote",
 	}
 }
@@ -139,6 +173,7 @@ fn storage_prefix(cosmetic_type: &CosmeticType) -> &'static str {
 		CosmeticType::Boots => "boots",
 		CosmeticType::Shoulder => "shoulders",
 		CosmeticType::Pet => "pets",
+		CosmeticType::Nameplate => "nameplates",
 		CosmeticType::Emote => "emotes",
 	}
 }
@@ -215,6 +250,10 @@ struct CosmeticUploadRequest {
 	model_variant: Option<String>,
 	/// Optional ordering of this variant within its group (default 0).
 	variant_order: Option<i32>,
+	variant_key: Option<String>,
+	asset_from: Option<i32>,
+	#[schemars(with = "Option<String>")]
+	cover: Option<String>,
 }
 
 impl OperationInput for FileUpload {
@@ -265,6 +304,9 @@ async fn endpoint(
 	let mut variant_name = None;
 	let mut model_variant = None;
 	let mut variant_order = 0;
+	let mut variant_key = None;
+	let mut asset_from = None;
+	let mut cover_data = None;
 
 	while let Some(field) = multipart.next_field().await? {
 		match field.name() {
@@ -336,6 +378,27 @@ async fn endpoint(
 					model_variant = Some(trimmed.to_string());
 				}
 			}
+			Some("asset_from") => {
+				let value = field.text().await?;
+				let trimmed = value.trim();
+				if !trimmed.is_empty() {
+					asset_from = Some(
+						trimmed
+							.parse::<i32>()
+							.map_err(|_| UploadError::InvalidAssetFrom)?,
+					);
+				}
+			}
+			Some("cover") => {
+				cover_data = Some(field.bytes().await?);
+			}
+			Some("variant_key") => {
+				let value = field.text().await?;
+				let trimmed = value.trim();
+				if !trimmed.is_empty() {
+					variant_key = Some(trimmed.to_string());
+				}
+			}
 			Some("variant_order") => {
 				let value = field.text().await?;
 				if let Ok(parsed) = value.trim().parse::<i32>() {
@@ -346,30 +409,67 @@ async fn endpoint(
 		}
 	}
 
-	let Some(data) = file_data else {
-		return Err(UploadError::MissingFile);
-	};
 	let cosmetic_type = cosmetic_type.ok_or(UploadError::InvalidType)?;
 
 	let is_emote = matches!(cosmetic_type, CosmeticType::Emote);
+	let is_nameplate = matches!(cosmetic_type, CosmeticType::Nameplate);
 	if !is_emote && slots.is_empty() {
 		return Err(UploadError::MissingSlots);
 	}
-
-	let (asset, cover_asset_id) = store_cosmetic_file(
-		&state,
-		&cosmetic_type,
-		&slots,
-		model_variant.as_deref(),
-		&data,
-		extension,
-		content_type,
-	)
-	.await?;
+	if is_nameplate && slots != [BodySlot::Nameplate] {
+		return Err(UploadError::InvalidNameplateSlots);
+	}
+	if cover_data.as_deref().is_some_and(|cover| !is_png(cover)) {
+		return Err(UploadError::InvalidCover);
+	}
 
 	use entities::{
 		cosmetic, cosmetic_allowed_slot, cosmetic_group, cosmetic_group_allowed_slot,
 		prelude::*,
+	};
+
+	let (asset, rendered_cover_id) = match (file_data, asset_from) {
+		(Some(_), Some(_)) => return Err(UploadError::FileAndAssetFrom),
+		(None, None) => return Err(UploadError::MissingFile),
+		(Some(data), None) => {
+			store_cosmetic_file(
+				&state,
+				&cosmetic_type,
+				&slots,
+				model_variant.as_deref(),
+				&data,
+				extension,
+				content_type,
+				&[variant_key.as_deref()],
+			)
+			.await?
+		}
+		(None, Some(source_id)) => {
+			if !is_nameplate {
+				return Err(UploadError::InvalidAssetFrom);
+			}
+			let source = Cosmetic::find_by_id(source_id)
+				.one(&state.database)
+				.await?
+				.filter(|source| source.r#type == CosmeticType::Nameplate)
+				.ok_or(UploadError::InvalidAssetFrom)?;
+			let asset = match source.asset_id {
+				Some(asset_id) => {
+					Asset::find_by_id(asset_id).one(&state.database).await?
+				}
+				None => None,
+			}
+			.ok_or(UploadError::InvalidAssetFrom)?;
+			if let Some(bundle) = stored_bundle(&state, &asset).await? {
+				bundle.check_variant_key(variant_key.as_deref())?;
+			}
+			(asset, None)
+		}
+	};
+
+	let cover_asset_id = match cover_data {
+		Some(cover) => Some(store_cover(&state, &cover).await?),
+		None => rendered_cover_id,
 	};
 
 	let group = match group_name {
@@ -438,6 +538,7 @@ async fn endpoint(
 		variant_name: Set(variant_name),
 		model_variant: Set(model_variant),
 		variant_order: Set(variant_order),
+		variant_key: Set(variant_key),
 		store_product_id: Set(store_product_id),
 		base_price: Set(price_value),
 		collection: Set(collection),
@@ -522,11 +623,14 @@ async fn endpoint(
 	)
 	.await?;
 
+	crate::api::v0::cosmetics::notify_catalog_updated(&state).await;
+
 	Ok(Json(infos.remove(0)))
 }
 
 /// Uploads a cosmetic's source file, renders its cover when the render service
 /// is configured, and returns the new asset with the cover's id.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn store_cosmetic_file(
 	state: &ApiState,
 	cosmetic_type: &CosmeticType,
@@ -535,16 +639,28 @@ pub(super) async fn store_cosmetic_file(
 	data: &[u8],
 	mut extension: String,
 	mut content_type: Option<String>,
+	variant_keys: &[Option<&str>],
 ) -> Result<(entities::asset::Model, Option<i32>), UploadError> {
 	use entities::asset;
 
 	let is_emote = matches!(cosmetic_type, CosmeticType::Emote);
 	let is_bundle = is_zip(data);
-	let data: Vec<u8> = if is_bundle {
+	let data: Vec<u8> = if is_bundle && matches!(cosmetic_type, CosmeticType::Nameplate) {
+		strip_macos_junk_capped(
+			data,
+			crate::api::v0::cosmetics::nameplate::MAX_UNPACKED_BYTES,
+		)?
+	} else if is_bundle {
 		strip_macos_junk(data)?
 	} else {
 		data.to_vec()
 	};
+	if matches!(cosmetic_type, CosmeticType::Nameplate) {
+		let bundle = NameplateBundle::read(&data)?;
+		for key in variant_keys {
+			bundle.check_variant_key(*key)?;
+		}
+	}
 	if is_bundle {
 		extension = "zip".to_string();
 		content_type = Some("application/zip".to_string());
@@ -587,7 +703,9 @@ pub(super) async fn store_cosmetic_file(
 	.insert(&state.database)
 	.await?;
 
-	let cover_asset_id = if state.render_service_url.is_empty() {
+	let cover_asset_id = if state.render_service_url.is_empty()
+		|| matches!(cosmetic_type, CosmeticType::Nameplate)
+	{
 		None
 	} else {
 		match crate::api::v0::cosmetics::cover::render_cover(
@@ -631,4 +749,25 @@ pub(super) async fn store_cosmetic_file(
 	state.asset_cache.insert(asset.id, info).await;
 
 	Ok((asset, cover_asset_id))
+}
+
+fn is_png(data: &[u8]) -> bool {
+	data.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
+pub(super) async fn store_cover(
+	state: &ApiState,
+	data: &[u8],
+) -> Result<i32, UploadError> {
+	if !is_png(data) {
+		return Err(UploadError::InvalidCover);
+	}
+	Ok(crate::api::v0::collections::store_asset(
+		state,
+		data,
+		Some("image/png".to_string()),
+		"png",
+		"covers",
+	)
+	.await?)
 }

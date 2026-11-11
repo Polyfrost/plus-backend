@@ -171,9 +171,7 @@ async fn endpoint(
 				Some(
 					group
 						.into_iter()
-						.filter(|c| {
-							!super::is_redundant_variant(c.variant_name.as_deref())
-						})
+						.filter(|c| !super::is_redundant_variant(c))
 						.map(VariantView::from_cosmetic)
 						.collect(),
 				),

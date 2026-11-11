@@ -19,8 +19,26 @@ pub enum UpdateVariantError {
 	MissingCosmetic,
 	#[error("At least one body slot must be provided")]
 	MissingSlots,
+	#[error("Nameplates take exactly one body slot, `nameplate`")]
+	InvalidNameplateSlots,
 	#[error("Database error: {0}")]
 	Database(#[from] sea_orm::error::DbErr),
+	#[error(transparent)]
+	Nameplate(#[from] crate::api::v0::cosmetics::nameplate::NameplateBundleError),
+	#[error("S3 error: {0}")]
+	S3(#[from] s3::error::S3Error),
+}
+
+impl From<crate::api::v0::cosmetics::nameplate::StoredBundleError>
+	for UpdateVariantError
+{
+	fn from(error: crate::api::v0::cosmetics::nameplate::StoredBundleError) -> Self {
+		use crate::api::v0::cosmetics::nameplate::StoredBundleError;
+		match error {
+			StoredBundleError::Bundle(error) => Self::Nameplate(error),
+			StoredBundleError::S3(error) => Self::S3(error),
+		}
+	}
 }
 
 impl IntoResponse for UpdateVariantError {
@@ -28,8 +46,10 @@ impl IntoResponse for UpdateVariantError {
 		crate::api::admin_error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
-				Self::MissingSlots => StatusCode::BAD_REQUEST,
-				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				Self::MissingSlots | Self::InvalidNameplateSlots | Self::Nameplate(_) => {
+					StatusCode::BAD_REQUEST
+				}
+				Self::Database(_) | Self::S3(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,
 		)
@@ -54,6 +74,11 @@ struct UpdateVariantRequest {
 	model_variant: Option<Option<String>>,
 	/// When set, the variant's position within its group.
 	variant_order: Option<i32>,
+	#[serde(
+		default,
+		deserialize_with = "serde_with::rust::double_option::deserialize"
+	)]
+	variant_key: Option<Option<String>>,
 	/// When set, replaces the body slots this variant may be equipped in.
 	/// Players equipping it in a removed slot are unequipped.
 	slots: Option<Vec<BodySlot>>,
@@ -104,9 +129,22 @@ async fn endpoint(
 		return Err(UpdateVariantError::MissingCosmetic);
 	};
 
+	if let Some(Some(variant_key)) = &body.variant_key
+		&& cosmetic.r#type == CosmeticType::Nameplate
+		&& let Some(asset_id) = cosmetic.asset_id
+		&& let Some(asset) = Asset::find_by_id(asset_id).one(&txn).await?
+		&& let Some(bundle) =
+			crate::api::v0::cosmetics::nameplate::stored_bundle(&state, &asset).await?
+	{
+		bundle.check_variant_key(Some(variant_key))?;
+	}
+
 	if let Some(slots) = &body.slots {
 		if slots.is_empty() && cosmetic.r#type != CosmeticType::Emote {
 			return Err(UpdateVariantError::MissingSlots);
+		}
+		if cosmetic.r#type == CosmeticType::Nameplate && slots != &[BodySlot::Nameplate] {
+			return Err(UpdateVariantError::InvalidNameplateSlots);
 		}
 
 		CosmeticAllowedSlot::delete_many()
@@ -156,11 +194,16 @@ async fn endpoint(
 	if let Some(variant_order) = body.variant_order {
 		active.variant_order = Set(variant_order);
 	}
+	if let Some(variant_key) = body.variant_key {
+		active.variant_key = Set(variant_key);
+	}
 	if active.is_changed() {
 		active.update(&txn).await?;
 	}
 
 	txn.commit().await?;
+
+	crate::api::v0::cosmetics::notify_catalog_updated(&state).await;
 
 	Ok(StatusCode::NO_CONTENT)
 }

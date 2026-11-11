@@ -9,8 +9,11 @@ use axum::{
 	http::StatusCode,
 	response::IntoResponse,
 };
+use entities::sea_orm_active_enums::CosmeticType;
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+use sea_orm::{
+	ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr,
+};
 use serde::Serialize;
 
 use super::create::{UploadError, store_cosmetic_file};
@@ -177,6 +180,21 @@ async fn endpoint(
 		return Err(ReplaceAssetError::MissingCosmetic);
 	};
 
+	let shared = match (&cosmetic.r#type, cosmetic.asset_id) {
+		(CosmeticType::Nameplate, Some(asset_id)) => {
+			Cosmetic::find()
+				.filter(cosmetic::Column::AssetId.eq(asset_id))
+				.filter(cosmetic::Column::Id.ne(cosmetic.id))
+				.all(&state.database)
+				.await?
+		}
+		_ => Vec::new(),
+	};
+	let variant_keys: Vec<Option<&str>> = std::iter::once(&cosmetic)
+		.chain(&shared)
+		.map(|row| row.variant_key.as_deref())
+		.collect();
+
 	let slots = super::render_cover::cosmetic_slots(&state.database, &cosmetic).await?;
 	let (asset, cover_asset_id) = store_cosmetic_file(
 		&state,
@@ -186,6 +204,7 @@ async fn endpoint(
 		&data,
 		extension,
 		content_type,
+		&variant_keys,
 	)
 	.await?;
 
@@ -195,6 +214,16 @@ async fn endpoint(
 	active.asset_id = Set(Some(asset.id));
 	active.cover_asset_id = Set(cover_asset_id);
 	let updated = active.update(&state.database).await?;
+
+	if !shared.is_empty() {
+		Cosmetic::update_many()
+			.col_expr(cosmetic::Column::AssetId, Expr::value(asset.id))
+			.filter(cosmetic::Column::Id.is_in(shared.iter().map(|row| row.id)))
+			.exec(&state.database)
+			.await?;
+	}
+
+	crate::api::v0::cosmetics::notify_catalog_updated(&state).await;
 
 	Ok(Json(ReplaceAssetResponse {
 		cosmetic_id: updated.id,

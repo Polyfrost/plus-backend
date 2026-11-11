@@ -59,6 +59,8 @@ pub enum BodySlot {
 	Shoulder,
 	#[sea_orm(string_value = "pet")]
 	Pet,
+	#[sea_orm(string_value = "nameplate")]
+	Nameplate,
 }
 #[derive(
 	Debug,
@@ -97,6 +99,8 @@ pub enum CosmeticType {
 	Shoulder,
 	#[sea_orm(string_value = "pet")]
 	Pet,
+	#[sea_orm(string_value = "nameplate")]
+	Nameplate,
 }
 #[derive(
 	Debug,

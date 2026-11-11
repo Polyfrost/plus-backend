@@ -19,6 +19,14 @@ fn is_macos_junk(name: &str) -> bool {
 
 /// Rewrites `data` as a new archive without directory entries or macOS junk.
 pub(crate) fn strip_macos_junk(data: &[u8]) -> Result<Vec<u8>, ZipError> {
+	strip_macos_junk_capped(data, u64::MAX)
+}
+
+pub(crate) fn strip_macos_junk_capped(
+	data: &[u8],
+	max_unpacked: u64,
+) -> Result<Vec<u8>, ZipError> {
+	let mut remaining = max_unpacked;
 	let mut archive = zip::ZipArchive::new(Cursor::new(data))?;
 	let mut out = Cursor::new(Vec::new());
 	{
@@ -32,8 +40,13 @@ pub(crate) fn strip_macos_junk(data: &[u8]) -> Result<Vec<u8>, ZipError> {
 			let options = zip::write::SimpleFileOptions::default()
 				.compression_method(zip::CompressionMethod::Deflated);
 			writer.start_file(name, options)?;
-			let mut buf = Vec::with_capacity(entry.size() as usize);
-			entry.read_to_end(&mut buf)?;
+			let mut buf = Vec::with_capacity(entry.size().min(remaining) as usize);
+			(&mut entry)
+				.take(remaining.saturating_add(1))
+				.read_to_end(&mut buf)?;
+			remaining = remaining.checked_sub(buf.len() as u64).ok_or(
+				ZipError::InvalidArchive("The archive unpacks past its size limit"),
+			)?;
 			writer.write_all(&buf)?;
 		}
 		writer.finish()?;
