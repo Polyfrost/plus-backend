@@ -1,23 +1,47 @@
 use aide::{
 	axum::{
 		ApiRouter,
-		routing::{delete_with, post_with},
+		routing::{delete_with, patch_with, post_with},
 	},
 	transform::TransformOperation,
 };
 use axum::{
+	Json,
 	extract::{Path, State},
 	http::StatusCode,
 };
-use entities::sea_orm_active_enums::{GroupKind, GroupMemberRole};
-use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use entities::{
+	groups,
+	sea_orm_active_enums::{GroupKind, GroupMemberRole},
+};
+use schemars::JsonSchema;
+use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::groups::{GroupError, OwnPlayer, find_user_by_uuid, load_group, member_cap, member_ids, require_membership},
+	v0::groups::{GroupError, OwnPlayer, find_user_by_uuid, load_group, member_cap, member_ids, messages::notify_other_members, require_membership},
 	v0::social::is_blocked_either_way,
+	v0::websocket::structs::ClientBoundPacket,
 };
+
+const MAX_GROUP_NAME_LENGTH: usize = 64;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RenameGroupRequest {
+	name: String,
+}
+
+fn rename_doc(op: TransformOperation) -> TransformOperation {
+	op.id("renameGroup")
+		.summary("Rename a group chat")
+		.description(
+			"Any member may rename the group. Not applicable to DMs or the \
+			 Special Chat group. Other members receive a `GroupRenamed` event.",
+		)
+		.tag("groups")
+}
 
 fn add_doc(op: TransformOperation) -> TransformOperation {
 	op.id("addGroupMember")
@@ -43,6 +67,44 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 			"/{id}/members/{player}",
 			delete_with(self::remove, self::remove_doc),
 		)
+}
+
+pub(super) fn v1_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().api_route("/{id}", patch_with(self::rename, self::rename_doc))
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn rename(
+	State(state): State<ApiState>,
+	OwnPlayer(player): OwnPlayer,
+	Path(id): Path<i32>,
+	Json(body): Json<RenameGroupRequest>,
+) -> Result<StatusCode, GroupError> {
+	let name = body.name.trim();
+	if name.is_empty() || name.chars().count() > MAX_GROUP_NAME_LENGTH {
+		return Err(GroupError::InvalidName);
+	}
+
+	require_membership(&state, id, player.id).await?;
+	let group = load_group(&state, id).await?;
+	if group.kind == GroupKind::Dm {
+		return Err(GroupError::DmImmutable);
+	}
+	if group.kind == GroupKind::Group && group.owner_id.is_none() && group.name.is_none() {
+		return Err(GroupError::SpecialChatImmutable);
+	}
+
+	let mut active: groups::ActiveModel = group.into();
+	active.name = Set(Some(name.to_string()));
+	active.update(&state.database).await?;
+
+	notify_other_members(&state, id, player.id, || ClientBoundPacket::GroupRenamed {
+		group_id: id,
+		name: name.to_string(),
+	})
+	.await?;
+
+	Ok(StatusCode::NO_CONTENT)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

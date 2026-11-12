@@ -53,6 +53,14 @@ pub struct GroupSummary {
 	unread: bool,
 	/// An unclaimed Special Chat group (see GET /special-chat).
 	special: bool,
+	/// A Special Chat group whose last message is from the player, not staff.
+	awaiting_reply: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GroupFilter {
+	/// Only Special Chat groups that are (or aren't) awaiting a staff reply.
+	awaiting_reply: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -188,7 +196,10 @@ async fn summarize(
 		.one(&state.database)
 		.await?;
 
+	let special =
+		group.kind == GroupKind::Group && group.owner_id.is_none() && group.name.is_none();
 	let mut unread = false;
+	let mut awaiting_reply = false;
 	let last_message = match last_message {
 		Some(message) => {
 			let sender = User::find_by_id(message.sender_id)
@@ -205,6 +216,11 @@ async fn summarize(
 				unread = last_read.is_none_or(|last_read| last_read < message.id);
 			}
 
+			awaiting_reply = special
+				&& sender.as_ref().is_some_and(|sender| {
+					!state.special_chat_targets.contains(&sender.minecraft_uuid)
+				});
+
 			sender.map(|sender| LastMessage {
 				content: message.content,
 				sender: sender.minecraft_uuid,
@@ -216,9 +232,8 @@ async fn summarize(
 
 	Ok(GroupSummary {
 		id: group.id,
-		special: group.kind == GroupKind::Group
-			&& group.owner_id.is_none()
-			&& group.name.is_none(),
+		special,
+		awaiting_reply,
 		name: display_name(&group.kind, group.name),
 		kind: group.kind,
 		members,
@@ -394,7 +409,7 @@ async fn list(
 	ChatPlayer { player, .. }: ChatPlayer,
 ) -> Result<Json<Vec<GroupSummary>>, GroupError> {
 	Ok(Json(
-		load(&state, player.id, Page::first(V0_LIST_CAP))
+		load(&state, player.id, Page::first(V0_LIST_CAP), None)
 			.await?
 			.items,
 	))
@@ -405,8 +420,11 @@ async fn list_paged(
 	State(state): State<ApiState>,
 	ChatPlayer { player, .. }: ChatPlayer,
 	Query(query): Query<CursorQuery>,
+	Query(filter): Query<GroupFilter>,
 ) -> Result<Json<CursorPage<GroupSummary>>, GroupError> {
-	Ok(Json(load(&state, player.id, query.into()).await?))
+	Ok(Json(
+		load(&state, player.id, query.into(), filter.awaiting_reply).await?,
+	))
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -424,6 +442,7 @@ async fn load(
 	state: &ApiState,
 	player_id: i32,
 	page: Page,
+	awaiting_reply: Option<bool>,
 ) -> Result<CursorPage<GroupSummary>, GroupError> {
 	let newest_message = SelectStatement::new()
 		.expr(Func::max(Expr::col((
@@ -453,6 +472,45 @@ async fn load(
 		.order_by(activity.clone(), Order::Desc)
 		.order_by(group_id.clone(), Order::Desc)
 		.limit(page.fetch_limit());
+	if let Some(awaiting_reply) = awaiting_reply {
+		let staff_ids = User::find()
+			.filter(user::Column::MinecraftUuid.is_in(state.special_chat_targets.clone()))
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|user| user.id);
+		let newest_sender = SelectStatement::new()
+			.column((group_messages::Entity, group_messages::Column::SenderId))
+			.from(group_messages::Entity)
+			.and_where(
+				Expr::col((group_messages::Entity, group_messages::Column::GroupId))
+					.equals((groups::Entity, groups::Column::Id)),
+			)
+			.and_where(
+				Expr::col((group_messages::Entity, group_messages::Column::DeletedAt))
+					.is_null(),
+			)
+			.order_by(
+				(group_messages::Entity, group_messages::Column::Id),
+				Order::Desc,
+			)
+			.limit(1)
+			.to_owned();
+		let newest_sender = Expr::expr(SimpleExpr::SubQuery(
+			None,
+			Box::new(newest_sender.into_sub_query_statement()),
+		));
+		select = select
+			.filter(groups::Column::Kind.eq(GroupKind::Group))
+			.filter(groups::Column::OwnerId.is_null())
+			.filter(groups::Column::Name.is_null())
+			.filter(newest_sender.clone().is_not_null())
+			.filter(if awaiting_reply {
+				newest_sender.is_not_in(staff_ids)
+			} else {
+				newest_sender.is_in(staff_ids)
+			});
+	}
 	if let Some(cursor) = page.cursor {
 		select = select.filter(Expr::tuple([activity, group_id]).lt(Expr::tuple([
 			Expr::val(cursor.rank).into(),

@@ -154,7 +154,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		.api_route("/{id}/read/{message_id}", post_with(self::mark_read, self::read_doc))
 }
 
-async fn notify_other_members(
+pub(super) async fn notify_other_members(
 	state: &ApiState,
 	group_id: i32,
 	exclude: i32,

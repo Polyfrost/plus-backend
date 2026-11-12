@@ -2,7 +2,7 @@ mod create;
 mod members;
 mod messages;
 
-pub(crate) use create::{get_or_create_dm_group, v1_router};
+pub(crate) use create::get_or_create_dm_group;
 
 use aide::{OperationInput, OperationIo, axum::ApiRouter};
 use axum::{
@@ -137,9 +137,9 @@ pub enum GroupError {
 	NotAMember,
 	#[error("Only the group owner may perform this action")]
 	NotOwner,
-	#[error("Direct messages cannot have members added or removed")]
+	#[error("Direct messages cannot be renamed or have members added or removed")]
 	DmImmutable,
-	#[error("The Special Chat group cannot be left")]
+	#[error("The Special Chat group cannot be left or renamed")]
 	SpecialChatImmutable,
 	#[error(
 		"Party chat members follow the party, leave or kick through the party instead"
@@ -151,6 +151,8 @@ pub enum GroupError {
 	AlreadyMember,
 	#[error("No such message")]
 	MessageMissing,
+	#[error("Group names must be between 1 and 64 characters")]
+	InvalidName,
 	#[error("Message content must be between 1 and 4000 characters")]
 	InvalidContent,
 	#[error("You may only edit or delete your own messages")]
@@ -187,7 +189,7 @@ impl IntoResponse for GroupError {
 				| Self::AlreadyMember
 				| Self::NotSpecialChatGroup
 				| Self::NotSpecialChatAccount => StatusCode::CONFLICT,
-				Self::InvalidContent => StatusCode::BAD_REQUEST,
+				Self::InvalidContent | Self::InvalidName => StatusCode::BAD_REQUEST,
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN
 				}
@@ -382,6 +384,12 @@ pub(super) async fn special_chat_cooldown_until(
 	Ok(row.map(|row| {
 		row.last_sent_at + chrono::Duration::seconds(SPECIAL_CHAT_COOLDOWN_SECS)
 	}))
+}
+
+pub(crate) fn v1_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.merge(create::v1_router())
+		.merge(members::v1_router())
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {

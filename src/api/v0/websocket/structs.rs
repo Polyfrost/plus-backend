@@ -310,6 +310,10 @@ pub enum ClientBoundPacket {
 		group_id: i32,
 		message_id: i64,
 	},
+	GroupRenamed {
+		group_id: i32,
+		name: String,
+	},
 	GlobalChatMessageReceived {
 		message_id: i64,
 		sender: Uuid,
