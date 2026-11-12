@@ -27,7 +27,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{Require, perm}},
 	pricing::{Targets, normalise_code},
 	storefront,
 };
@@ -240,7 +240,7 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Lists the discounts the backend prices with, newest first. These \
 			 drive the sale price the client mod shows and the coupon codes \
-			 checkout accepts. Admin password required.",
+			 checkout accepts. Requires `MANAGE_DISCOUNTS`.",
 		)
 		.tag("discounts")
 }
@@ -259,7 +259,7 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 			 each on what the last left.\n\nEvery sale and coupon is also \
 			 created on PayNow, so its store shows and charges it too; a 502 \
 			 means it was saved here but not there, and `provision-paynow \
-			 --sync-discounts` repairs it. Admin password required.",
+			 --sync-discounts` repairs it. Requires `MANAGE_DISCOUNTS`.",
 		)
 		.tag("discounts")
 }
@@ -269,7 +269,7 @@ fn update_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Replace a sale or coupon")
 		.description(
 			"Replaces every field of a discount, targets included. \
-			 `redemptions` is not resettable. Admin password required.",
+			 `redemptions` is not resettable. Requires `MANAGE_DISCOUNTS`.",
 		)
 		.tag("discounts")
 }
@@ -288,7 +288,7 @@ fn remove_doc(op: TransformOperation) -> TransformOperation {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn list(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_DISCOUNTS }>,
 	Query(filter): Query<ListFilter>,
 ) -> Result<Json<Vec<DiscountView>>, DiscountError> {
 	let mut query = Discount::find().order_by_desc(discount::Column::Id);
@@ -314,7 +314,7 @@ async fn list(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn create(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_DISCOUNTS }>,
 	Json(body): Json<DiscountBody>,
 ) -> Result<Json<DiscountView>, DiscountError> {
 	validate(&body)?;
@@ -343,7 +343,7 @@ async fn create(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn update(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_DISCOUNTS }>,
 	Path(id): Path<i32>,
 	Json(body): Json<DiscountBody>,
 ) -> Result<Json<DiscountView>, DiscountError> {
@@ -384,7 +384,7 @@ async fn update(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn remove(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_DISCOUNTS }>,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, DiscountError> {
 	let model = Discount::find_by_id(id)

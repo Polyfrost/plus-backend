@@ -63,9 +63,15 @@ FROM cosmetic
 WHERE type = 'cape'
 ON CONFLICT DO NOTHING;
 
-INSERT INTO "user" (minecraft_uuid, role)
-VALUES (:'wyvest_uuid'::uuid, 'admin')
+INSERT INTO "user" (minecraft_uuid)
+VALUES (:'wyvest_uuid'::uuid)
 ON CONFLICT (minecraft_uuid) DO NOTHING;
+
+INSERT INTO user_role (user_id, role_id)
+SELECT u.id, r.id
+FROM "user" u, role r
+WHERE u.minecraft_uuid = :'wyvest_uuid'::uuid AND r.name = 'Admin'
+ON CONFLICT DO NOTHING;
 
 INSERT INTO "transaction" (id, player_id, provider, status, raw_metadata)
 SELECT

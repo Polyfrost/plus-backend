@@ -106,10 +106,12 @@ pub(super) struct ApiState {
 		(Uuid, entities::sea_orm_active_enums::BodySlot),
 	>,
 	pub(super) particle_color_persist: PersistQueue<ParticleColorPersistence>,
-	pub(super) admin_password: String,
+	pub(super) link_hash_salt: String,
+	pub(super) dashboard_origins: Vec<http::HeaderValue>,
 	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
 	pub(super) checkout_limit: RateLimiter<IpAddr>,
+	pub(super) dashboard_login_limit: RateLimiter<IpAddr>,
 	pub(super) request_limits: RequestLimits,
 	pub(super) api_tokens: ApiTokens,
 	pub(super) chat_limit: RateLimiter<i32>,
@@ -188,7 +190,8 @@ impl ApiState {
 			particle_color_persist: persistence::spawn_particle_color_queue(
 				database.clone(),
 			),
-			admin_password: args.admin_password.clone(),
+			link_hash_salt: args.link_hash_salt.clone(),
+			dashboard_origins: args.dashboard_origins.clone(),
 			render_service_url: args.render_service_url.clone(),
 			global_chat_cooldown: Cache::builder()
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
@@ -197,6 +200,12 @@ impl ApiState {
 				"checkout",
 				CHECKOUTS_PER_COOLDOWN,
 				CHECKOUT_COOLDOWN,
+			),
+			// Each sign-in costs two calls to Minecraft services.
+			dashboard_login_limit: lockouts.limiter(
+				"dashboard_login",
+				10,
+				Duration::from_secs(60),
 			),
 			request_limits: RequestLimits {
 				default: lockouts.limiter(

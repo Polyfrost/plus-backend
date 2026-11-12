@@ -11,7 +11,7 @@ use sea_orm::{
 use serde::Deserialize;
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{Require, perm}},
 	storefront,
 	paynow::{PayNowError, catalog, models::UpsertProduct},
 	utils::money::to_cents,
@@ -91,7 +91,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			res.description("No cosmetic exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -102,7 +102,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Json(body): Json<UpdateRequest>,
 ) -> Result<StatusCode, UpdateError> {
 	use entities::{cosmetic, cosmetic_group, prelude::*};

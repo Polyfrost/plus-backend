@@ -70,4 +70,6 @@ pub mod tracked_link_hits;
 pub mod tracked_links;
 pub mod transaction;
 pub mod transaction_line;
+pub mod role;
 pub mod user;
+pub mod user_role;

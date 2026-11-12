@@ -14,6 +14,7 @@ pub struct Model {
 	pub exempt_prefixes: Vec<String>,
 	pub created_at: DateTimeWithTimeZone,
 	pub revoked_at: Option<DateTimeWithTimeZone>,
+	pub permissions: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

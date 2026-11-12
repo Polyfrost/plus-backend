@@ -14,7 +14,7 @@ use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use serde::Serialize;
 
 use super::create::{UploadError, store_cosmetic_file};
-use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
+use crate::api::{ApiState, permissions::{Require, perm}};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum ReplaceAssetError {
@@ -70,7 +70,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			res.description("No cosmetic exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -139,7 +139,7 @@ impl OperationInput for FileUpload {
 
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	FileUpload(mut multipart): FileUpload,
 ) -> Result<Json<ReplaceAssetResponse>, ReplaceAssetError> {
 	use entities::{cosmetic, prelude::*};

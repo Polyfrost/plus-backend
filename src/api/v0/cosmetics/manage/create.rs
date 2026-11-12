@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
 	api::{
 		ApiState,
-		admin_auth::AdminAuthenticationExtractor,
+		permissions::{Require, perm},
 		v0::cosmetics::{CosmeticInfo, group_cosmetics},
 	},
 	paynow::{PayNowError, catalog},
@@ -159,7 +159,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			res.description("The created cosmetic info")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -249,7 +249,7 @@ impl OperationInput for FileUpload {
 
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	FileUpload(mut multipart): FileUpload,
 ) -> Result<Json<CosmeticInfo>, UploadError> {
 	let mut file_data = None;

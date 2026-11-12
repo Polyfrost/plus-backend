@@ -27,21 +27,23 @@ START_PRICE = 10.00
 PRICE_STEP = 0.50
 
 
-def admin_password():
-	password = os.environ.get("ADMIN_PASSWORD")
-	if password:
-		return password
-	env_path = os.path.join(ROOT, ".env")
-	if os.path.exists(env_path):
-		with open(env_path) as handle:
-			for line in handle:
-				line = line.strip()
-				if line.startswith("ADMIN_PASSWORD="):
-					return line.split("=", 1)[1].strip()
-	sys.exit("error: ADMIN_PASSWORD not set (env or .env)")
+def dev_token():
+	"""Signs in through the debug-only dev login as the seeded admin."""
+	player = os.environ.get("DEV_PLAYER", "a5331404-0e77-440e-8bef-24c071dac1ae")
+	req = urllib.request.Request(
+		f"{API_BASE}/v1/dashboard/dev-login",
+		data=json.dumps({"player": player}).encode(),
+		method="POST",
+		headers={"Content-Type": "application/json"},
+	)
+	try:
+		with urllib.request.urlopen(req) as response:
+			return "Bearer " + json.load(response)["token"]
+	except urllib.error.URLError as error:
+		sys.exit(f"error: dev login failed (debug build running at {API_BASE}?): {error}")
 
 
-AUTH = admin_password()
+AUTH = dev_token()
 
 
 def chunk_size():

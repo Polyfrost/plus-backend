@@ -28,7 +28,7 @@ use crate::api::{
 		PlaytimeSession, RealtimeConnection, effective_status,
 	},
 	v0::{
-		account::{AuthenticatedPlayer, ClientKind},
+		account::{AuthenticatedPlayer, ClientKind, TokenAccess},
 		websocket::structs::{ClientBoundPacket, ServerBoundPacket, WebsocketError},
 	},
 };
@@ -1107,9 +1107,14 @@ async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	kind: ClientKind,
+	access: TokenAccess,
 	ws: WebSocketUpgrade,
 ) -> Response<Body> {
-	ws.on_upgrade(async move |mut socket| {
+	// Special Chat staff only watch for new messages; they send over HTTP.
+	let listen_only = access == TokenAccess::SpecialChat;
+	// Browsers send their token as the `bearer` subprotocol, and drop the
+	// connection unless the server picks it back.
+	ws.protocols(["bearer"]).on_upgrade(async move |mut socket| {
 		let (tx, mut rx) = mpsc::unbounded_channel();
 		let equipped = match load_equipped(&state, player.id).await {
 			Ok(equipped) => equipped,
@@ -1136,7 +1141,11 @@ async fn endpoint(
 					let Some(msg) = msg else {
 						break;
 					};
-					handle_msg(&mut socket, &state, &player, connection_id, msg).await
+					if listen_only {
+						Ok(())
+					} else {
+						handle_msg(&mut socket, &state, &player, connection_id, msg).await
+					}
 				}
 				packet = rx.recv() => {
 					let Some(packet) = packet else {

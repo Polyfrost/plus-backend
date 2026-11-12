@@ -11,7 +11,7 @@ use sea_orm::{
 use serde::Deserialize;
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{Require, perm}},
 	storefront,
 	paynow::{PayNowError, models::UpsertProduct},
 	utils::money::to_cents,
@@ -80,7 +80,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"Updates a bundle's metadata (enabled, name, collection, description), \
 			 optionally replaces its contained cosmetics, and sets its list price on \
 			 PayNow. Discounts are not set here: run a sale or a coupon from \
-			 `/v1/admin/discounts`. Admin password required.",
+			 `/v1/admin/discounts`. Requires `MANAGE_COSMETICS`.",
 		)
 		.tag("bundles")
 		.response_with::<{ StatusCode::NO_CONTENT.as_u16() }, (), _>(|res| {
@@ -90,7 +90,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			res.description("No bundle exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -101,7 +101,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Json(body): Json<UpdateRequest>,
 ) -> Result<StatusCode, UpdateError> {
 	use entities::{bundles, bundles_cosmetics, prelude::*};

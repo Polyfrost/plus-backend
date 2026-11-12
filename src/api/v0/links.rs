@@ -22,7 +22,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{Require, perm}},
 	pricing::normalise_code,
 	utils::{
 		hash::sha256_hex_parts,
@@ -183,8 +183,8 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listTrackedLinks")
 		.summary("List tracked links")
 		.description(
-			"Lists every tracked link with its unique-visit count. Admin password \
-			 required.",
+			"Lists every tracked link with its unique-visit count. Requires \
+			 `MANAGE_LINKS`.",
 		)
 		.tag("links")
 }
@@ -193,7 +193,7 @@ fn delete_doc(op: TransformOperation) -> TransformOperation {
 	op.id("deleteTrackedLink")
 		.summary("Delete a tracked link")
 		.description(
-			"Deletes the tracked link with the given slug. Admin password required.",
+			"Deletes the tracked link with the given slug. Requires `MANAGE_LINKS`.",
 		)
 		.tag("links")
 }
@@ -214,7 +214,7 @@ async fn follow(
 		.ok_or(LinksError::NotFound)?;
 
 	if !is_bot(&visitor.user_agent) {
-		let visitor_hash = visitor.hash(&state.admin_password, &slug);
+		let visitor_hash = visitor.hash(&state.link_hash_salt, &slug);
 		let txn = state.database.begin().await?;
 
 		let inserted = TrackedLinkHits::insert(tracked_link_hits::ActiveModel {
@@ -246,7 +246,7 @@ async fn follow(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn create(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_LINKS }>,
 	Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<LinkInfo>), LinksError> {
 	use entities::{prelude::*, tracked_links};
@@ -292,7 +292,7 @@ async fn create(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn list(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_LINKS }>,
 ) -> Result<Json<ListResponse>, LinksError> {
 	use entities::{prelude::*, tracked_links};
 
@@ -310,7 +310,7 @@ async fn list(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn delete(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_LINKS }>,
 	Path(slug): Path<String>,
 ) -> Result<StatusCode, LinksError> {
 	use entities::prelude::*;

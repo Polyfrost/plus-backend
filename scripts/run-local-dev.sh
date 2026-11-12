@@ -49,7 +49,6 @@ psql -d local -h localhost -p 5432 -f "$root/scripts/populate-db.sql"
 
 if [ ! -f "$root/.env" ]; then
 	cp "$root/.env.example" "$root/.env"
-	echo "ADMIN_PASSWORD=dev" >>"$root/.env"
 fi
 
 echo ""

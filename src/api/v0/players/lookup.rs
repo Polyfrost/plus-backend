@@ -10,7 +10,7 @@ use entities::sea_orm_active_enums::LinkProvider;
 use super::PlayerError;
 use crate::{
 	api::{
-		ApiState, admin_auth::AdminAuthenticationExtractor,
+		ApiState, permissions::{Require, perm},
 		v0::account::AuthenticatedPlayer,
 	},
 	database::DatabaseUserExt,
@@ -34,7 +34,7 @@ fn by_link_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Look up a player by a linked account")
 		.description(
 			"Resolves a provider user id (e.g. a Discord user id) to the \
-			 player who linked it. 404 if nobody has. Admin password required.",
+			 player who linked it. 404 if nobody has. Requires `VIEW_PLAYERS`.",
 		)
 		.tag("players")
 }
@@ -66,7 +66,7 @@ pub(super) fn router() -> aide::axum::ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn by_link(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::VIEW_PLAYERS }>,
 	Path((provider, provider_user_id)): Path<(LinkProvider, String)>,
 ) -> Result<Json<LinkedPlayer>, PlayerError> {
 	use entities::{linked_account, prelude::*};
@@ -128,7 +128,9 @@ pub(in crate::api) async fn resolve_username(
 
 	let existing = User::find()
 		.filter(user::Column::Username.is_not_null())
-		.filter(Expr::cust_with_values("username ILIKE $1", [username]))
+		// Exact, case-insensitive: `ILIKE` would read `_` and `%` in a name as
+		// wildcards, and this decides who receives a role.
+		.filter(Expr::cust_with_values("lower(username) = lower($1)", [username]))
 		.one(&state.database)
 		.await?;
 

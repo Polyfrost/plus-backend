@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::api::{
 	ApiState,
-	admin_auth::AdminAuthenticationExtractor,
+	permissions::{Require, perm},
 	v0::collections::{StoreAssetError, store_asset},
 };
 
@@ -136,7 +136,7 @@ impl OperationInput for FileUpload {
 
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	FileUpload(mut multipart): FileUpload,
 ) -> Result<(StatusCode, Json<CreateResponse>), CreateError> {
 	use entities::collections;

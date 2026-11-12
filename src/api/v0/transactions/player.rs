@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	v0::account::{AuthenticatedPlayer, role_at_least},
+	permissions,
+	v0::account::{AuthenticatedPlayer, TokenAccess},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -76,16 +77,21 @@ pub struct TransactionsResponse {
 pub(super) async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(authenticated): AuthenticatedPlayer,
+	access: TokenAccess,
 	Query(query): Query<TransactionsQuery>,
 ) -> Result<Json<TransactionsResponse>, TransactionsError> {
 	use entities::{prelude::*, transaction, user};
 
 	let target_uuid = query.player.unwrap_or(authenticated.minecraft_uuid);
+	// Someone else's purchases need VIEW_PLAYERS through the dashboard.
 	if target_uuid != authenticated.minecraft_uuid
-		&& !role_at_least(
-			&authenticated.role,
-			&entities::sea_orm_active_enums::PlayerRole::Moderator,
-		) {
+		&& (access != TokenAccess::Dashboard
+			|| !permissions::has(
+			permissions::union(
+				&permissions::roles_of(&state.database, authenticated.id).await?,
+			),
+			permissions::perm::VIEW_PLAYERS,
+		)) {
 		return Err(TransactionsError::Forbidden);
 	}
 

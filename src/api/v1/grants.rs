@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	admin_auth::AdminAuthenticationExtractor,
+	permissions::{Require, perm},
 	v0::{
 		cosmetics::grant::{GrantError, grant_cosmetic},
 		players::{PlayerError, lookup::resolve_username},
@@ -41,7 +41,7 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 			 grant. A cosmetic that belongs to a group grants every variant \
 			 in that group, so the response usually lists more ids than were \
 			 asked for. Granting something the player already owns is a no-op \
-			 rather than an error. Admin password required.",
+			 rather than an error. Requires `GRANT_COSMETICS`.",
 		)
 		.tag("grants")
 }
@@ -54,7 +54,7 @@ fn player_doc(op: TransformOperation) -> TransformOperation {
 			 grant would land on, so the dashboard can confirm the target \
 			 before granting. A username falls back to Mojang when the player \
 			 has never logged into PolyPlus; a UUID is accepted whether or not \
-			 anyone by that id has. Admin password required.",
+			 anyone by that id has. Requires `GRANT_COSMETICS`.",
 		)
 		.tag("grants")
 }
@@ -85,7 +85,7 @@ struct PlayerResponse {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn create(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::GRANT_COSMETICS }>,
 	Json(body): Json<GrantRequest>,
 ) -> Result<Json<GrantResponse>, GrantError> {
 	let granted = grant_cosmetic(&state, body.player, body.cosmetic_id).await?;
@@ -96,7 +96,7 @@ async fn create(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn player(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::GRANT_COSMETICS }>,
 	Path(query): Path<String>,
 ) -> Result<Json<PlayerResponse>, PlayerError> {
 	use entities::{prelude::*, user};

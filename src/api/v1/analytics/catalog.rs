@@ -18,7 +18,13 @@ use serde::{Deserialize, Serialize};
 use super::{
 	AnalyticsError, AnalyticsPeriod, PrivateAnalyticsAuth, resolve_series_bounds,
 };
-use crate::{api::ApiState, utils::pagination::MAX_PAGE_SIZE};
+use crate::{
+	api::{
+		ApiState,
+		permissions::{self, Require, perm},
+	},
+	utils::pagination::MAX_PAGE_SIZE,
+};
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -60,13 +66,13 @@ pub(super) struct CatalogEntry {
 	acquisitions_free: i64,
 	acquisitions_granted: i64,
 	/// A line's total shared evenly between the cosmetics it delivered.
-	revenue_minor: i64,
+	revenue_minor: Option<i64>,
 	/// Acquisitions taken back because the customer asked for their money.
-	refunded: i64,
+	refunded: Option<i64>,
 	/// Acquisitions taken back because the customer disputed the payment.
-	charged_back: i64,
-	refunded_minor: i64,
-	charged_back_minor: i64,
+	charged_back: Option<i64>,
+	refunded_minor: Option<i64>,
+	charged_back_minor: Option<i64>,
 	conversion: Option<f64>,
 	owners: Option<i32>,
 	equipped: Option<i32>,
@@ -113,9 +119,10 @@ pub(super) fn catalog_doc(op: TransformOperation) -> TransformOperation {
 #[tracing::instrument(level = "debug", skip(state))]
 pub(super) async fn catalog_endpoint(
 	State(state): State<ApiState>,
-	_auth: PrivateAnalyticsAuth,
+	Require(_, granted): PrivateAnalyticsAuth,
 	Query(query): Query<CatalogQuery>,
 ) -> Result<Json<CatalogResponse>, AnalyticsError> {
+	let show_revenue = permissions::has(granted, perm::VIEW_REVENUE);
 	let (start, end) =
 		resolve_series_bounds(query.period.validate()?, Utc::now().date_naive())?;
 	let limit = query.limit.clamp(1, MAX_PAGE_SIZE);
@@ -246,11 +253,13 @@ pub(super) async fn catalog_endpoint(
 				acquisitions_paid: row.paid.unwrap_or_default(),
 				acquisitions_free: row.free.unwrap_or_default(),
 				acquisitions_granted: row.granted.unwrap_or_default(),
-				revenue_minor: row.revenue.unwrap_or_default(),
-				refunded: row.refunded.unwrap_or_default(),
-				charged_back: row.charged_back.unwrap_or_default(),
-				refunded_minor: row.refunded_minor.unwrap_or_default(),
-				charged_back_minor: row.charged_back_minor.unwrap_or_default(),
+				// Money and give-backs only for VIEW_REVENUE; null otherwise.
+				revenue_minor: show_revenue.then(|| row.revenue.unwrap_or_default()),
+				refunded: show_revenue.then(|| row.refunded.unwrap_or_default()),
+				charged_back: show_revenue.then(|| row.charged_back.unwrap_or_default()),
+				refunded_minor: show_revenue.then(|| row.refunded_minor.unwrap_or_default()),
+				charged_back_minor: show_revenue
+					.then(|| row.charged_back_minor.unwrap_or_default()),
 				#[expect(
 					clippy::cast_precision_loss,
 					reason = "counts are far below the f64 mantissa"

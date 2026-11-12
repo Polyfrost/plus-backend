@@ -9,7 +9,7 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use serde::Deserialize;
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{Require, perm}},
 	storefront::sync_cosmetic_tags_or_warn,
 };
 
@@ -48,7 +48,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"Removes a tag from each of the given cosmetics. A cosmetic that \
 			 belongs to a group untags every variant of that group, mirroring how \
 			 the tag was applied. Cosmetics that do not carry the tag are left \
-			 alone. Admin password required.",
+			 alone. Requires `MANAGE_COSMETICS`.",
 		)
 		.tag("tags")
 }
@@ -60,7 +60,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Json(body): Json<RemoveRequest>,
 ) -> Result<StatusCode, RemoveError> {
 	use entities::{prelude::*, tags_cosmetic};

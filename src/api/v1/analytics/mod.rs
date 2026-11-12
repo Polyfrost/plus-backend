@@ -11,17 +11,11 @@ mod retention;
 mod sessions;
 
 use aide::{
-	OperationInput, OperationIo,
+	OperationIo,
 	axum::{ApiRouter, routing::get_with},
-	openapi::SecurityRequirement,
 };
-use axum::{
-	extract::FromRequestParts,
-	http::{StatusCode, request::Parts},
-	response::{IntoResponse, Response},
-};
+use axum::{http::StatusCode, response::IntoResponse};
 use chrono::{Days, NaiveDate};
-use entities::sea_orm_active_enums::PlayerRole;
 use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait as _, EntityTrait, QueryFilter as _, Select,
@@ -32,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
 	api::{
 		ApiState,
-		v0::account::{AuthenticatedPlayer, OPENAPI_SECURITY_NAME, role_at_least},
+		permissions::{Require, perm},
 	},
 	utils::time::start_of_day,
 };
@@ -44,82 +38,7 @@ const MAX_SERIES_POINTS: i64 = 1000;
 /// Days returned when the caller gives no `start`.
 const DEFAULT_SERIES_DAYS: u64 = 89;
 
-#[derive(Debug)]
-pub struct PrivateAnalyticsAuth;
-
-#[derive(Debug, PartialEq, Eq)]
-enum PrivateAuthCredential<'a> {
-	AdminPassword,
-	Bearer(&'a str),
-	MissingOrInvalid,
-}
-
-fn classify_authorization_header<'a>(
-	header: Option<&'a str>,
-	admin_password: &str,
-) -> PrivateAuthCredential<'a> {
-	match header {
-		Some(value) if value == admin_password => PrivateAuthCredential::AdminPassword,
-		Some(value) => value
-			.strip_prefix("Bearer ")
-			.map(PrivateAuthCredential::Bearer)
-			.unwrap_or(PrivateAuthCredential::MissingOrInvalid),
-		None => PrivateAuthCredential::MissingOrInvalid,
-	}
-}
-
-fn is_admin_role(role: &PlayerRole) -> bool {
-	role_at_least(role, &PlayerRole::Admin)
-}
-
-impl OperationInput for PrivateAnalyticsAuth {
-	fn operation_input(
-		_ctx: &mut aide::generate::GenContext,
-		operation: &mut aide::openapi::Operation,
-	) {
-		operation.security.extend([
-			SecurityRequirement::from([("Admin Password".to_string(), Vec::new())]),
-			SecurityRequirement::from([(OPENAPI_SECURITY_NAME.to_string(), Vec::new())]),
-		]);
-	}
-}
-
-impl FromRequestParts<ApiState> for PrivateAnalyticsAuth {
-	type Rejection = Response;
-
-	async fn from_request_parts(
-		parts: &mut Parts,
-		state: &ApiState,
-	) -> Result<Self, Self::Rejection> {
-		let auth_header = parts
-			.headers
-			.get("Authorization")
-			.and_then(|h| h.to_str().ok());
-
-		match classify_authorization_header(auth_header, &state.admin_password) {
-			PrivateAuthCredential::AdminPassword => Ok(Self),
-			PrivateAuthCredential::Bearer(_) => {
-				let player = AuthenticatedPlayer::from_request_parts(parts, state)
-					.await?
-					.0;
-				if is_admin_role(&player.role) {
-					Ok(Self)
-				} else {
-					Err((
-						StatusCode::FORBIDDEN,
-						"Authenticated player does not have permission",
-					)
-						.into_response())
-				}
-			}
-			PrivateAuthCredential::MissingOrInvalid => Err((
-				StatusCode::UNAUTHORIZED,
-				"Invalid or missing analytics authorization",
-			)
-				.into_response()),
-		}
-	}
-}
+pub(super) type PrivateAnalyticsAuth = Require<{ perm::VIEW_ANALYTICS }>;
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum AnalyticsError {
@@ -277,12 +196,8 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 #[cfg(test)]
 mod tests {
 	use chrono::NaiveDate;
-	use entities::sea_orm_active_enums::PlayerRole;
-
-	use super::{
-		AnalyticsError, AnalyticsPeriod, PrivateAuthCredential,
-		classify_authorization_header, is_admin_role,
-	};
+	
+	use super::{AnalyticsError, AnalyticsPeriod};
 
 	fn date(year: i32, month: u32, day: u32) -> NaiveDate {
 		NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
@@ -337,40 +252,5 @@ mod tests {
 
 		assert!(period.start_timestamp().is_none());
 		assert!(period.end_timestamp_exclusive().is_none());
-	}
-
-	#[test]
-	fn auth_header_accepts_admin_password() {
-		assert_eq!(
-			classify_authorization_header(Some("secret"), "secret"),
-			PrivateAuthCredential::AdminPassword
-		);
-	}
-
-	#[test]
-	fn auth_header_accepts_bearer_token() {
-		assert_eq!(
-			classify_authorization_header(Some("Bearer token"), "secret"),
-			PrivateAuthCredential::Bearer("token")
-		);
-	}
-
-	#[test]
-	fn auth_header_rejects_missing_or_invalid_values() {
-		assert_eq!(
-			classify_authorization_header(None, "secret"),
-			PrivateAuthCredential::MissingOrInvalid
-		);
-		assert_eq!(
-			classify_authorization_header(Some("token"), "secret"),
-			PrivateAuthCredential::MissingOrInvalid
-		);
-	}
-
-	#[test]
-	fn only_admin_role_can_use_bearer_analytics_auth() {
-		assert!(is_admin_role(&PlayerRole::Admin));
-		assert!(!is_admin_role(&PlayerRole::Moderator));
-		assert!(!is_admin_role(&PlayerRole::Player));
 	}
 }

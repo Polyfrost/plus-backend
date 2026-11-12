@@ -67,4 +67,6 @@ pub use super::tracked_link_hits::Entity as TrackedLinkHits;
 pub use super::tracked_links::Entity as TrackedLinks;
 pub use super::transaction::Entity as Transaction;
 pub use super::transaction_line::Entity as TransactionLine;
+pub use super::role::Entity as Role;
 pub use super::user::Entity as User;
+pub use super::user_role::Entity as UserRole;

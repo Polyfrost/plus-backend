@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
+use crate::api::{ApiState, permissions::{Require, perm}};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum RenderCoverError {
@@ -73,7 +73,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"Generates a cover image for an existing cosmetic by re-rendering its \
 			 source asset through the render service, stores it, and points the \
 			 cosmetic at the new cover. Skips cosmetics that already have a cover \
-			 unless `force` is set. Admin password required.",
+			 unless `force` is set. Requires `MANAGE_COSMETICS`.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<RenderCoverResponse>, _>(
@@ -83,7 +83,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			res.description("No cosmetic exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -97,7 +97,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Json(body): Json<RenderCoverRequest>,
 ) -> Result<Json<RenderCoverResponse>, RenderCoverError> {
 	use entities::{cosmetic, prelude::*};

@@ -17,7 +17,8 @@ use uuid::Uuid;
 use crate::{
 	api::{
 		ApiState,
-		v0::{account::AdminPlayer, websocket::structs::ClientBoundPacket},
+		permissions::{Require, perm},
+		v0::websocket::structs::ClientBoundPacket,
 	},
 	database::DatabaseUserExt,
 };
@@ -62,7 +63,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	AdminPlayer(_admin): AdminPlayer,
+	_auth: Require<{ perm::GRANT_COSMETICS }>,
 	Json(body): Json<GrantRequest>,
 ) -> Result<StatusCode, GrantError> {
 	grant_cosmetic(&state, body.player, body.cosmetic_id).await?;
