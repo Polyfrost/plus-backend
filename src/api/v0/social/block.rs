@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use aide::{
 	axum::{
 		ApiRouter,
@@ -7,20 +9,35 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset};
+use entities::{
+	blocks, prelude::*, relationship_requests, relationships,
+	sea_orm_active_enums::RelationshipRequestStatus, user,
+};
 use schemars::JsonSchema;
-use sea_orm::{ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::OnConflict,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::api::{
-	ApiState,
-	v0::account::AuthenticatedPlayer,
-	v0::social::{SocialError, canonical_pair, find_user_by_uuid},
+use crate::{
+	api::{
+		ApiState,
+		v0::{
+			account::AuthenticatedPlayer,
+			social::{SocialError, canonical_pair, find_user_by_uuid},
+		},
+	},
+	utils::pagination::{
+		Cursor, CursorPage, CursorQuery, Page, keyset_by_id, split_page,
+	},
 };
+
+const V0_LIST_CAP: u64 = 200;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct BlockedPlayer {
@@ -31,6 +48,14 @@ pub struct BlockedPlayer {
 fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listBlockedPlayers")
 		.summary("List blocked players")
+		.description("Lists the authenticated player's newest 200 blocks.")
+		.tag("social")
+}
+
+fn list_paged_doc(op: TransformOperation) -> TransformOperation {
+	op.id("listBlockedPlayersPaged")
+		.summary("List blocked players")
+		.description("Newest first. Pass the returned `cursor` back for the next page.")
 		.tag("social")
 }
 
@@ -55,7 +80,15 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.api_route("/blocked", get_with(self::list, self::list_doc))
 		.api_route("/blocked/{player}", post_with(self::block, self::block_doc))
-		.api_route("/blocked/{player}", delete_with(self::unblock, self::unblock_doc))
+		.api_route(
+			"/blocked/{player}",
+			delete_with(self::unblock, self::unblock_doc),
+		)
+}
+
+pub(super) fn v1_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.api_route("/blocked", get_with(self::list_paged, self::list_paged_doc))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -63,32 +96,55 @@ async fn list(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<Vec<BlockedPlayer>>, SocialError> {
-	use entities::{blocks, prelude::*, user};
+	Ok(Json(
+		load(&state, player.id, Page::first(V0_LIST_CAP))
+			.await?
+			.items,
+	))
+}
 
-	let rows = Blocks::find()
-		.filter(blocks::Column::BlockerId.eq(player.id))
-		.all(&state.database)
-		.await?;
+#[tracing::instrument(level = "debug", skip(state))]
+async fn list_paged(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	Query(query): Query<CursorQuery>,
+) -> Result<Json<CursorPage<BlockedPlayer>>, SocialError> {
+	Ok(Json(load(&state, player.id, query.into()).await?))
+}
 
-	let ids = rows.iter().map(|row| row.blocked_id).collect::<Vec<_>>();
-	let users = User::find()
-		.filter(user::Column::Id.is_in(ids))
+async fn load(
+	state: &ApiState,
+	player_id: i32,
+	page: Page,
+) -> Result<CursorPage<BlockedPlayer>, SocialError> {
+	let rows = keyset_by_id(
+		Blocks::find().filter(blocks::Column::BlockerId.eq(player_id)),
+		blocks::Column::Id,
+		page,
+	)
+	.all(&state.database)
+	.await?;
+	let (rows, cursor) = split_page(rows, page, |row| Cursor::id(row.id));
+
+	let users: HashMap<_, _> = User::find()
+		.filter(user::Column::Id.is_in(rows.iter().map(|row| row.blocked_id)))
 		.all(&state.database)
 		.await?
 		.into_iter()
 		.map(|user| (user.id, user.minecraft_uuid))
-		.collect::<std::collections::HashMap<_, _>>();
+		.collect();
 
-	Ok(Json(
-		rows.into_iter()
-			.filter_map(|row| {
-				users.get(&row.blocked_id).map(|uuid| BlockedPlayer {
-					player: *uuid,
-					since: row.created_at,
-				})
+	let items = rows
+		.into_iter()
+		.filter_map(|row| {
+			Some(BlockedPlayer {
+				player: *users.get(&row.blocked_id)?,
+				since: row.created_at,
 			})
-			.collect(),
-	))
+		})
+		.collect();
+
+	Ok(CursorPage { items, cursor })
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -97,9 +153,6 @@ async fn block(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(target): Path<Uuid>,
 ) -> Result<StatusCode, SocialError> {
-	use entities::{blocks, prelude::*, relationship_requests, relationships};
-	use sea_orm::sea_query::OnConflict;
-
 	let target = find_user_by_uuid(&state, target).await?;
 	if target.id == player.id {
 		return Err(SocialError::SelfTarget);
@@ -135,7 +188,9 @@ async fn block(
 					.eq(target.id)
 					.and(relationship_requests::Column::RecipientId.eq(player.id))),
 		)
-		.filter(relationship_requests::Column::Status.eq(entities::sea_orm_active_enums::RelationshipRequestStatus::Pending))
+		.filter(
+			relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending),
+		)
 		.exec(&state.database)
 		.await?;
 
@@ -148,8 +203,6 @@ async fn unblock(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(target): Path<Uuid>,
 ) -> Result<StatusCode, SocialError> {
-	use entities::{blocks, prelude::*};
-
 	let target = find_user_by_uuid(&state, target).await?;
 
 	Blocks::delete_many()

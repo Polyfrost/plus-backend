@@ -17,6 +17,8 @@ use sea_orm::{
 	sea_query::{Alias, Expr, Func},
 };
 
+use crate::database::count_first_logins;
+
 use super::{CountValue, count_in_day, day_bounds};
 
 const WEEKLY_WINDOW: u64 = 6;
@@ -99,13 +101,14 @@ pub(super) async fn collect_day(
 			active_players(txn, window_start(day, MONTHLY_WINDOW), day).await?,
 		),
 		new_users: ActiveValue::Set(
-			count_in_day(txn, User::find(), user::Column::CreatedAt, bounds).await?,
+			count_first_logins(txn, Some(day_start), Some(day_end))
+				.await?
+				.try_into()
+				.unwrap_or(i32::MAX),
 		),
 		returning_users: ActiveValue::Set(returning_players(txn, day, day_start).await?),
 		total_users: ActiveValue::Set(
-			User::find()
-				.filter(user::Column::CreatedAt.lt(day_end))
-				.count(txn)
+			count_first_logins(txn, None, Some(day_end))
 				.await?
 				.try_into()
 				.unwrap_or(i32::MAX),

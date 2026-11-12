@@ -2,7 +2,7 @@ mod create;
 mod members;
 mod messages;
 
-pub(crate) use create::get_or_create_dm_group;
+pub(crate) use create::{get_or_create_dm_group, v1_router};
 
 use aide::{OperationInput, OperationIo, axum::ApiRouter};
 use axum::{
@@ -42,13 +42,19 @@ impl FromRequestParts<ApiState> for ChatPlayer {
 	) -> Result<Self, Self::Rejection> {
 		use entities::prelude::*;
 
-		let caller = AuthenticatedPlayer::from_request_parts(parts, state).await?.0;
+		let caller = AuthenticatedPlayer::from_request_parts(parts, state)
+			.await?
+			.0;
 		let actual_id = caller.id;
 		let Some(header) = parts.headers.get(ACT_AS_HEADER) else {
-			return Ok(Self { player: caller, actual_id });
+			return Ok(Self {
+				player: caller,
+				actual_id,
+			});
 		};
 
-		let forbidden = || (StatusCode::FORBIDDEN, "Not a delegate of that player").into_response();
+		let forbidden =
+			|| (StatusCode::FORBIDDEN, "Not a delegate of that player").into_response();
 		let uuid = header
 			.to_str()
 			.ok()
@@ -71,7 +77,10 @@ impl FromRequestParts<ApiState> for ChatPlayer {
 			.map_err(internal)?
 			.ok_or_else(forbidden)?;
 
-		Ok(Self { player: owner, actual_id })
+		Ok(Self {
+			player: owner,
+			actual_id,
+		})
 	}
 }
 
@@ -94,9 +103,14 @@ impl FromRequestParts<ApiState> for OwnPlayer {
 		parts: &mut Parts,
 		state: &ApiState,
 	) -> Result<Self, Self::Rejection> {
-		let player = AuthenticatedPlayer::from_request_parts(parts, state).await?.0;
+		let player = AuthenticatedPlayer::from_request_parts(parts, state)
+			.await?
+			.0;
 		if parts.headers.contains_key(ACT_AS_HEADER) {
-			return Err((StatusCode::BAD_REQUEST, "This route doesn't support x-polyplus-act-as")
+			return Err((
+				StatusCode::BAD_REQUEST,
+				"This route doesn't support x-polyplus-act-as",
+			)
 				.into_response());
 		}
 		Ok(Self(player))
@@ -306,7 +320,8 @@ pub(super) async fn special_chat_cooldown_target(
 ) -> Result<Option<i32>, sea_orm::DbErr> {
 	use entities::prelude::*;
 
-	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some() {
+	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some()
+	{
 		return Ok(None);
 	}
 
@@ -338,7 +353,8 @@ pub(super) async fn enforce_special_chat_cooldown(
 	group: &entities::groups::Model,
 	sender_id: i32,
 ) -> Result<(), GroupError> {
-	let Some(cooldown_target_id) = special_chat_cooldown_target(state, group, sender_id).await?
+	let Some(cooldown_target_id) =
+		special_chat_cooldown_target(state, group, sender_id).await?
 	else {
 		return Ok(());
 	};
@@ -363,7 +379,9 @@ pub(super) async fn special_chat_cooldown_until(
 		.one(&state.database)
 		.await?;
 
-	Ok(row.map(|row| row.last_sent_at + chrono::Duration::seconds(SPECIAL_CHAT_COOLDOWN_SECS)))
+	Ok(row.map(|row| {
+		row.last_sent_at + chrono::Duration::seconds(SPECIAL_CHAT_COOLDOWN_SECS)
+	}))
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {

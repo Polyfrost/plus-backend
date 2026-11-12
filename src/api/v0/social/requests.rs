@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use aide::{
 	axum::{
 		ApiRouter,
@@ -7,22 +9,43 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset, Utc};
-use entities::sea_orm_active_enums::{RelationshipKind, RelationshipRequestStatus};
+use entities::{
+	prelude::*,
+	relationship_requests, relationships,
+	sea_orm_active_enums::{RelationshipKind, RelationshipRequestStatus},
+	user,
+};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+	ActiveModelTrait, ActiveValue, ColumnTrait, DbErr, EntityTrait, QueryFilter, Set,
+	sea_query::OnConflict,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::api::{
-	ApiState,
-	v0::account::AuthenticatedPlayer,
-	v0::social::{SocialError, canonical_pair, find_user_by_uuid, is_blocked_either_way},
-	v0::websocket::{send_to_owner, structs::ClientBoundPacket},
+use crate::{
+	api::{
+		ApiState,
+		v0::{
+			account::AuthenticatedPlayer,
+			social::{
+				SocialError, canonical_pair, find_user_by_uuid, is_blocked_either_way,
+			},
+			websocket::{send_to_owner, structs::ClientBoundPacket},
+		},
+	},
+	utils::pagination::{
+		Cursor, CursorPage, CursorQuery, Page, keyset_by_id, split_page,
+	},
 };
+
+const V0_LIST_CAP: u64 = 200;
+const PAGED_DESCRIPTION: &str =
+	"Newest first. Pass the returned `cursor` back for the next page.";
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct FriendRequest {
@@ -31,15 +54,58 @@ pub struct FriendRequest {
 	created_at: DateTime<FixedOffset>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Direction {
+	Incoming,
+	Outgoing,
+}
+
+impl Direction {
+	/// The column holding the listing player.
+	fn own_column(self) -> relationship_requests::Column {
+		match self {
+			Self::Incoming => relationship_requests::Column::RecipientId,
+			Self::Outgoing => relationship_requests::Column::SenderId,
+		}
+	}
+
+	fn other_id(self, row: &relationship_requests::Model) -> i32 {
+		match self {
+			Self::Incoming => row.sender_id,
+			Self::Outgoing => row.recipient_id,
+		}
+	}
+}
+
 fn incoming_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listIncomingFriendRequests")
 		.summary("List incoming friend requests")
+		.description(
+			"Lists the newest 200 pending requests sent to the authenticated player.",
+		)
 		.tag("social")
 }
 
 fn outgoing_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listOutgoingFriendRequests")
 		.summary("List outgoing friend requests")
+		.description(
+			"Lists the newest 200 pending requests the authenticated player sent.",
+		)
+		.tag("social")
+}
+
+fn incoming_paged_doc(op: TransformOperation) -> TransformOperation {
+	op.id("listIncomingFriendRequestsPaged")
+		.summary("List incoming friend requests")
+		.description(PAGED_DESCRIPTION)
+		.tag("social")
+}
+
+fn outgoing_paged_doc(op: TransformOperation) -> TransformOperation {
+	op.id("listOutgoingFriendRequestsPaged")
+		.summary("List outgoing friend requests")
+		.description(PAGED_DESCRIPTION)
 		.tag("social")
 }
 
@@ -74,41 +140,39 @@ fn cancel_doc(op: TransformOperation) -> TransformOperation {
 
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
-		.api_route("/requests/incoming", get_with(self::incoming, self::incoming_doc))
-		.api_route("/requests/outgoing", get_with(self::outgoing, self::outgoing_doc))
+		.api_route(
+			"/requests/incoming",
+			get_with(self::incoming, self::incoming_doc),
+		)
+		.api_route(
+			"/requests/outgoing",
+			get_with(self::outgoing, self::outgoing_doc),
+		)
 		.api_route("/requests/{id}", post_with(self::send, self::send_doc))
-		.api_route("/requests/{id}/accept", post_with(self::accept, self::accept_doc))
-		.api_route("/requests/{id}/decline", post_with(self::decline, self::decline_doc))
-		.api_route("/requests/{id}", delete_with(self::cancel, self::cancel_doc))
+		.api_route(
+			"/requests/{id}/accept",
+			post_with(self::accept, self::accept_doc),
+		)
+		.api_route(
+			"/requests/{id}/decline",
+			post_with(self::decline, self::decline_doc),
+		)
+		.api_route(
+			"/requests/{id}",
+			delete_with(self::cancel, self::cancel_doc),
+		)
 }
 
-async fn requests_with_uuid(
-	state: &ApiState,
-	rows: Vec<entities::relationship_requests::Model>,
-	uuid_of: impl Fn(&entities::relationship_requests::Model) -> i32,
-) -> Result<Vec<FriendRequest>, SocialError> {
-	use entities::{prelude::*, user};
-
-	let ids = rows.iter().map(&uuid_of).collect::<Vec<_>>();
-	let users = User::find()
-		.filter(user::Column::Id.is_in(ids))
-		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(|user| (user.id, user.minecraft_uuid))
-		.collect::<std::collections::HashMap<_, _>>();
-
-	Ok(rows
-		.into_iter()
-		.filter_map(|row| {
-			let other = uuid_of(&row);
-			users.get(&other).map(|uuid| FriendRequest {
-				id: row.id,
-				player: *uuid,
-				created_at: row.created_at,
-			})
-		})
-		.collect())
+pub(super) fn v1_router() -> ApiRouter<ApiState> {
+	ApiRouter::new()
+		.api_route(
+			"/requests/incoming",
+			get_with(self::incoming_paged, self::incoming_paged_doc),
+		)
+		.api_route(
+			"/requests/outgoing",
+			get_with(self::outgoing_paged, self::outgoing_paged_doc),
+		)
 }
 
 #[tracing::instrument(level = "debug", skip(state))]
@@ -116,16 +180,11 @@ async fn incoming(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<Vec<FriendRequest>>, SocialError> {
-	use entities::{prelude::*, relationship_requests};
-
-	let rows = RelationshipRequests::find()
-		.filter(relationship_requests::Column::RecipientId.eq(player.id))
-		.filter(relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending))
-		.all(&state.database)
-		.await?;
-
+	let page = Page::first(V0_LIST_CAP);
 	Ok(Json(
-		requests_with_uuid(&state, rows, |row| row.sender_id).await?,
+		load(&state, player.id, Direction::Incoming, page)
+			.await?
+			.items,
 	))
 }
 
@@ -134,23 +193,79 @@ async fn outgoing(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 ) -> Result<Json<Vec<FriendRequest>>, SocialError> {
-	use entities::{prelude::*, relationship_requests};
-
-	let rows = RelationshipRequests::find()
-		.filter(relationship_requests::Column::SenderId.eq(player.id))
-		.filter(relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending))
-		.all(&state.database)
-		.await?;
-
+	let page = Page::first(V0_LIST_CAP);
 	Ok(Json(
-		requests_with_uuid(&state, rows, |row| row.recipient_id).await?,
+		load(&state, player.id, Direction::Outgoing, page)
+			.await?
+			.items,
 	))
 }
 
-async fn make_friends(state: &ApiState, a: i32, b: i32) -> Result<(), sea_orm::DbErr> {
-	use entities::{prelude::*, relationships};
-	use sea_orm::sea_query::OnConflict;
+#[tracing::instrument(level = "debug", skip(state))]
+async fn incoming_paged(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	Query(query): Query<CursorQuery>,
+) -> Result<Json<CursorPage<FriendRequest>>, SocialError> {
+	Ok(Json(
+		load(&state, player.id, Direction::Incoming, query.into()).await?,
+	))
+}
 
+#[tracing::instrument(level = "debug", skip(state))]
+async fn outgoing_paged(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	Query(query): Query<CursorQuery>,
+) -> Result<Json<CursorPage<FriendRequest>>, SocialError> {
+	Ok(Json(
+		load(&state, player.id, Direction::Outgoing, query.into()).await?,
+	))
+}
+
+async fn load(
+	state: &ApiState,
+	player_id: i32,
+	direction: Direction,
+	page: Page,
+) -> Result<CursorPage<FriendRequest>, SocialError> {
+	let rows = keyset_by_id(
+		RelationshipRequests::find()
+			.filter(direction.own_column().eq(player_id))
+			.filter(
+				relationship_requests::Column::Status
+					.eq(RelationshipRequestStatus::Pending),
+			),
+		relationship_requests::Column::Id,
+		page,
+	)
+	.all(&state.database)
+	.await?;
+	let (rows, cursor) = split_page(rows, page, |row| Cursor::id(row.id));
+
+	let users: HashMap<_, _> = User::find()
+		.filter(user::Column::Id.is_in(rows.iter().map(|row| direction.other_id(row))))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|user| (user.id, user.minecraft_uuid))
+		.collect();
+
+	let items = rows
+		.into_iter()
+		.filter_map(|row| {
+			Some(FriendRequest {
+				id: row.id,
+				player: *users.get(&direction.other_id(&row))?,
+				created_at: row.created_at,
+			})
+		})
+		.collect();
+
+	Ok(CursorPage { items, cursor })
+}
+
+async fn make_friends(state: &ApiState, a: i32, b: i32) -> Result<(), DbErr> {
 	let (low, high) = canonical_pair(a, b);
 
 	Relationships::insert(relationships::ActiveModel {
@@ -161,9 +276,12 @@ async fn make_friends(state: &ApiState, a: i32, b: i32) -> Result<(), sea_orm::D
 		..Default::default()
 	})
 	.on_conflict(
-		OnConflict::columns([relationships::Column::UserAId, relationships::Column::UserBId])
-			.do_nothing()
-			.to_owned(),
+		OnConflict::columns([
+			relationships::Column::UserAId,
+			relationships::Column::UserBId,
+		])
+		.do_nothing()
+		.to_owned(),
 	)
 	.exec_without_returning(&state.database)
 	.await?;
@@ -177,8 +295,6 @@ async fn send(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(target): Path<Uuid>,
 ) -> Result<(StatusCode, Json<Option<FriendRequest>>), SocialError> {
-	use entities::{prelude::*, relationship_requests};
-
 	let target = find_user_by_uuid(&state, target).await?;
 	if target.id == player.id {
 		return Err(SocialError::SelfTarget);
@@ -186,11 +302,14 @@ async fn send(
 	if is_blocked_either_way(&state, player.id, target.id).await? {
 		return Err(SocialError::Blocked);
 	}
+	if let Some(wait) = state.friend_request_limit.check(player.id).await {
+		return Err(SocialError::RateLimited(wait));
+	}
 
 	let (low, high) = canonical_pair(player.id, target.id);
 	let already_friends = Relationships::find()
-		.filter(entities::relationships::Column::UserAId.eq(low))
-		.filter(entities::relationships::Column::UserBId.eq(high))
+		.filter(relationships::Column::UserAId.eq(low))
+		.filter(relationships::Column::UserBId.eq(high))
 		.one(&state.database)
 		.await?
 		.is_some();
@@ -201,7 +320,9 @@ async fn send(
 	if let Some(incoming) = RelationshipRequests::find()
 		.filter(relationship_requests::Column::SenderId.eq(target.id))
 		.filter(relationship_requests::Column::RecipientId.eq(player.id))
-		.filter(relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending))
+		.filter(
+			relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending),
+		)
 		.one(&state.database)
 		.await?
 	{
@@ -226,7 +347,9 @@ async fn send(
 	let existing_outgoing = RelationshipRequests::find()
 		.filter(relationship_requests::Column::SenderId.eq(player.id))
 		.filter(relationship_requests::Column::RecipientId.eq(target.id))
-		.filter(relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending))
+		.filter(
+			relationship_requests::Column::Status.eq(RelationshipRequestStatus::Pending),
+		)
 		.one(&state.database)
 		.await?;
 	if existing_outgoing.is_some() {
@@ -265,9 +388,7 @@ async fn send(
 async fn load_pending_request(
 	state: &ApiState,
 	id: i32,
-) -> Result<entities::relationship_requests::Model, SocialError> {
-	use entities::prelude::*;
-
+) -> Result<relationship_requests::Model, SocialError> {
 	RelationshipRequests::find_by_id(id)
 		.one(&state.database)
 		.await?
@@ -281,14 +402,12 @@ async fn accept(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, SocialError> {
-	use entities::prelude::*;
-
 	let request = load_pending_request(&state, id).await?;
 	if request.recipient_id != player.id {
 		return Err(SocialError::RequestForbidden);
 	}
 
-	let mut active: entities::relationship_requests::ActiveModel = request.clone().into();
+	let mut active: relationship_requests::ActiveModel = request.clone().into();
 	active.status = Set(RelationshipRequestStatus::Accepted);
 	active.responded_at = Set(Some(Utc::now().into()));
 	active.update(&state.database).await?;
@@ -317,14 +436,12 @@ async fn decline(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, SocialError> {
-	use entities::prelude::*;
-
 	let request = load_pending_request(&state, id).await?;
 	if request.recipient_id != player.id {
 		return Err(SocialError::RequestForbidden);
 	}
 
-	let mut active: entities::relationship_requests::ActiveModel = request.clone().into();
+	let mut active: relationship_requests::ActiveModel = request.clone().into();
 	active.status = Set(RelationshipRequestStatus::Declined);
 	active.responded_at = Set(Some(Utc::now().into()));
 	active.update(&state.database).await?;
@@ -356,7 +473,7 @@ async fn cancel(
 		return Err(SocialError::RequestForbidden);
 	}
 
-	let mut active: entities::relationship_requests::ActiveModel = request.into();
+	let mut active: relationship_requests::ActiveModel = request.into();
 	active.status = Set(RelationshipRequestStatus::Cancelled);
 	active.responded_at = Set(Some(Utc::now().into()));
 	active.update(&state.database).await?;

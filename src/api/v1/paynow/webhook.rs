@@ -25,11 +25,11 @@ use crate::{
 		v0::websocket::{send_to_owner, structs::ClientBoundPacket, unequip_revoked},
 	},
 	database::{DatabaseTransactionExt, DatabaseUserExt, OrderCharge},
-	pricing,
 	paynow::{
 		models::{Order, Payment, WebhookEnvelope},
 		webhook::verify,
 	},
+	pricing,
 };
 
 /// Verifies the signature, then grants, revokes or restores the cosmetics an
@@ -46,7 +46,7 @@ pub(super) async fn endpoint(
 		Utc::now().timestamp_millis(),
 	) {
 		warn!("Rejected PayNow webhook: {error}");
-		return StatusCode::BAD_REQUEST;
+		return StatusCode::UNAUTHORIZED;
 	}
 
 	let envelope: WebhookEnvelope = match serde_json::from_slice(&body) {
@@ -315,13 +315,8 @@ async fn handle_refund(state: &ApiState, event_id: &str, payment: Payment) -> Ha
 				return Ok(None);
 			}
 
-			let grants = grant::revoke_lines(
-				txn,
-				&line_ids,
-				refunded_at,
-				status.clone(),
-			)
-			.await?;
+			let grants =
+				grant::revoke_lines(txn, &line_ids, refunded_at, status.clone()).await?;
 
 			let remaining = TransactionLine::find()
 				.filter(transaction_line::Column::TransactionId.eq(transaction_id))

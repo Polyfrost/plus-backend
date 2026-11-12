@@ -5,7 +5,7 @@ mod category;
 mod collections;
 pub(super) mod cosmetics;
 // mod global_chat; // todo: Currently disabled
-mod groups;
+pub(super) mod groups;
 mod links;
 pub(super) mod oidc;
 pub(super) mod outfits;
