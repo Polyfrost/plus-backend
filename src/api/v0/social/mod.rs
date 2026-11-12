@@ -1,5 +1,6 @@
 mod block;
 mod friends;
+mod relationship;
 mod requests;
 
 use std::time::Duration;
@@ -123,6 +124,7 @@ pub(crate) fn v1_router() -> ApiRouter<ApiState> {
 		.merge(friends::v1_router())
 		.merge(requests::v1_router())
 		.merge(block::v1_router())
+		.merge(relationship::v1_router())
 }
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
