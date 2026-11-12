@@ -15,7 +15,10 @@ use super::{
 	CONCURRENT_VALIDATIONS, DOWNLOAD_TTL, LARGE_WRITE_BYTES, LARGE_WRITES_PER_WINDOW,
 	SyncError, WRITE_WINDOW, WRITES_PER_WINDOW,
 };
-use crate::{api::rate_limit::RateLimiter, commands::ServeArgs};
+use crate::{
+	api::{lockouts::LockoutLog, rate_limit::RateLimiter},
+	commands::ServeArgs,
+};
 
 const BUSY_RETRY: Duration = Duration::from_secs(5);
 const SLOT_WAIT: Duration = Duration::from_secs(10);
@@ -70,7 +73,10 @@ impl Drop for TempFile {
 }
 
 impl SyncStorage {
-	pub(in crate::api) fn connect(args: &ServeArgs) -> Option<Self> {
+	pub(in crate::api) fn connect(
+		args: &ServeArgs,
+		lockouts: &LockoutLog,
+	) -> Option<Self> {
 		let name = args.oneclient_sync_bucket.as_deref()?.trim();
 		if name.is_empty() {
 			return None;
@@ -95,8 +101,12 @@ impl SyncStorage {
 
 		Some(Self {
 			bucket: bucket.into(),
-			writes: RateLimiter::new(WRITES_PER_WINDOW, WRITE_WINDOW),
-			large_writes: RateLimiter::new(LARGE_WRITES_PER_WINDOW, WRITE_WINDOW),
+			writes: lockouts.limiter("oneclient_writes", WRITES_PER_WINDOW, WRITE_WINDOW),
+			large_writes: lockouts.limiter(
+				"oneclient_large_writes",
+				LARGE_WRITES_PER_WINDOW,
+				WRITE_WINDOW,
+			),
 			validations: Arc::new(Semaphore::new(CONCURRENT_VALIDATIONS)),
 			validating: Arc::default(),
 		})

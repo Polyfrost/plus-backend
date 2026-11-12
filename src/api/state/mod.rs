@@ -34,6 +34,7 @@ use crate::{
 	api::{
 		api_tokens::ApiTokens,
 		eos::EosClient,
+		lockouts::LockoutLog,
 		rate_limit::{RateLimiter, RequestLimits},
 		v0::{
 			account::links::{self, DiscordOAuth},
@@ -66,6 +67,10 @@ const CHAT_MESSAGES_PER_WINDOW: u32 = 10;
 
 const STATUS_WINDOW: Duration = Duration::from_secs(10);
 const STATUS_CHANGES_PER_WINDOW: u32 = 5;
+const PACKET_WINDOW: Duration = Duration::from_secs(10);
+const PACKETS_PER_WINDOW: u32 = 150;
+const FRIEND_REQUEST_WINDOW: Duration = Duration::from_secs(60);
+const FRIEND_REQUESTS_PER_WINDOW: u32 = 10;
 const PARTY_INVITE_WINDOW: Duration = Duration::from_secs(60);
 const PARTY_INVITES_PER_WINDOW: u32 = 20;
 const VOICE_WINDOW: Duration = Duration::from_secs(60);
@@ -96,8 +101,10 @@ pub(super) struct ApiState {
 	pub(super) s3_public_url: Arc<str>,
 	pub(super) asset_cache: Cache<i32, CachedAssetInfo>,
 	pub(super) realtime: RealtimeState,
-	pub(super) equipment_persist:
-		PersistQueue<EquipmentPersistence, (Uuid, entities::sea_orm_active_enums::BodySlot)>,
+	pub(super) equipment_persist: PersistQueue<
+		EquipmentPersistence,
+		(Uuid, entities::sea_orm_active_enums::BodySlot),
+	>,
 	pub(super) particle_color_persist: PersistQueue<ParticleColorPersistence>,
 	pub(super) link_hash_salt: String,
 	pub(super) dashboard_origins: Vec<http::HeaderValue>,
@@ -120,6 +127,8 @@ pub(super) struct ApiState {
 	pub(super) instrumentation: Instrumentation,
 	pub(super) eos: Option<EosClient>,
 	pub(super) party: PartyRuntime,
+	pub(super) packet_limit: RateLimiter<i32>,
+	pub(super) friend_request_limit: RateLimiter<i32>,
 	pub(super) party_invite_limit: RateLimiter<i32>,
 	pub(super) party_state_limit: RateLimiter<ConnectionId>,
 	pub(super) voice_token_limit: RateLimiter<i32>,
@@ -167,6 +176,7 @@ impl ApiState {
 		);
 
 		let oidc_signing_key = oidc::load_or_generate_signing_key(&database).await;
+		let lockouts = LockoutLog::spawn(database.clone());
 
 		ApiState {
 			paynow: PayNowApiState::new(args),
@@ -186,16 +196,36 @@ impl ApiState {
 			global_chat_cooldown: Cache::builder()
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
 				.build(),
-			checkout_limit: RateLimiter::new(CHECKOUTS_PER_COOLDOWN, CHECKOUT_COOLDOWN),
+			checkout_limit: lockouts.limiter(
+				"checkout",
+				CHECKOUTS_PER_COOLDOWN,
+				CHECKOUT_COOLDOWN,
+			),
 			// Each sign-in costs two calls to Minecraft services.
-			dashboard_login_limit: RateLimiter::new(10, Duration::from_secs(60)),
+			dashboard_login_limit: lockouts.limiter(
+				"dashboard_login",
+				10,
+				Duration::from_secs(60),
+			),
 			request_limits: RequestLimits {
-				default: RateLimiter::new(REQUESTS_PER_WINDOW, REQUEST_WINDOW),
-				assets: RateLimiter::new(ASSET_REQUESTS_PER_WINDOW, REQUEST_WINDOW),
+				default: lockouts.limiter(
+					"requests",
+					REQUESTS_PER_WINDOW,
+					REQUEST_WINDOW,
+				),
+				assets: lockouts.limiter(
+					"asset_requests",
+					ASSET_REQUESTS_PER_WINDOW,
+					REQUEST_WINDOW,
+				),
 			},
-			api_tokens: ApiTokens::new(database.clone()),
-			chat_limit: RateLimiter::new(CHAT_MESSAGES_PER_WINDOW, CHAT_WINDOW),
-			status_limit: RateLimiter::new(STATUS_CHANGES_PER_WINDOW, STATUS_WINDOW),
+			api_tokens: ApiTokens::new(database.clone(), &lockouts),
+			chat_limit: lockouts.limiter("chat", CHAT_MESSAGES_PER_WINDOW, CHAT_WINDOW),
+			status_limit: lockouts.limiter(
+				"status",
+				STATUS_CHANGES_PER_WINDOW,
+				STATUS_WINDOW,
+			),
 			oidc_issuer: args.oidc_issuer.clone(),
 			oidc_signing_key: Arc::new(oidc_signing_key),
 			oidc_codes: oidc::new_authorization_code_cache(),
@@ -203,35 +233,66 @@ impl ApiState {
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			discord: DiscordOAuth::from_args(args),
 			link_states: links::new_link_state_cache(),
-			oneclient_sync: SyncStorage::connect(args),
+			oneclient_sync: SyncStorage::connect(args, &lockouts),
 			instrumentation,
 			eos: EosClient::from_args(args),
 			party: PartyRuntime::new(),
-			party_invite_limit: RateLimiter::new(
+			packet_limit: lockouts.limiter(
+				"websocket_packets",
+				PACKETS_PER_WINDOW,
+				PACKET_WINDOW,
+			),
+			friend_request_limit: lockouts.limiter(
+				"friend_requests",
+				FRIEND_REQUESTS_PER_WINDOW,
+				FRIEND_REQUEST_WINDOW,
+			),
+			party_invite_limit: lockouts.limiter(
+				"party_invites",
 				PARTY_INVITES_PER_WINDOW,
 				PARTY_INVITE_WINDOW,
 			),
-			party_state_limit: RateLimiter::new(
+			party_state_limit: lockouts.limiter(
+				"party_states",
 				PARTY_STATES_PER_WINDOW,
 				PARTY_STATE_WINDOW,
 			),
-			voice_token_limit: RateLimiter::new(VOICE_REQUESTS_PER_WINDOW, VOICE_WINDOW),
-			voice_pass_limit: RateLimiter::new(VOICE_REQUESTS_PER_WINDOW, VOICE_WINDOW),
-			play_together_limit: RateLimiter::new(
+			voice_token_limit: lockouts.limiter(
+				"voice_tokens",
+				VOICE_REQUESTS_PER_WINDOW,
+				VOICE_WINDOW,
+			),
+			voice_pass_limit: lockouts.limiter(
+				"voice_passes",
+				VOICE_REQUESTS_PER_WINDOW,
+				VOICE_WINDOW,
+			),
+			play_together_limit: lockouts.limiter(
+				"play_togethers",
 				PLAY_TOGETHERS_PER_WINDOW,
 				PLAY_TOGETHER_WINDOW,
 			),
-			play_response_limit: RateLimiter::new(
+			play_response_limit: lockouts.limiter(
+				"play_responses",
 				PLAY_RESPONSES_PER_WINDOW,
 				PLAY_RESPONSE_WINDOW,
 			),
-			hosted_join_limit: RateLimiter::new(
+			hosted_join_limit: lockouts.limiter(
+				"hosted_joins",
 				HOSTED_JOINS_PER_WINDOW,
 				HOSTED_JOIN_WINDOW,
 			),
-			ping_limit: RateLimiter::new(PINGS_PER_WINDOW, PING_WINDOW),
-			ping_clear_limit: RateLimiter::new(PING_CLEARS_PER_WINDOW, PING_WINDOW),
-			ping_reply_limit: RateLimiter::new(PING_REPLIES_PER_WINDOW, PING_WINDOW),
+			ping_limit: lockouts.limiter("pings", PINGS_PER_WINDOW, PING_WINDOW),
+			ping_clear_limit: lockouts.limiter(
+				"ping_clears",
+				PING_CLEARS_PER_WINDOW,
+				PING_WINDOW,
+			),
+			ping_reply_limit: lockouts.limiter(
+				"ping_replies",
+				PING_REPLIES_PER_WINDOW,
+				PING_WINDOW,
+			),
 			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
 			database,

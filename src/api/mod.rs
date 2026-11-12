@@ -2,6 +2,7 @@ mod permissions;
 mod api_tokens;
 mod docs;
 mod eos;
+mod lockouts;
 mod rate_limit;
 mod state;
 mod v0;

@@ -7,21 +7,41 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset};
-use entities::sea_orm_active_enums::{GroupKind, GroupMemberRole};
+use entities::{
+	dm_delegates, group_members, group_message_reads, group_messages, groups,
+	prelude::*,
+	sea_orm_active_enums::{GroupKind, GroupMemberRole},
+	user,
+};
 use schemars::JsonSchema;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+	ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, FromQueryResult, Order,
+	QueryFilter, QueryOrder, QuerySelect, Set,
+	sea_query::{Expr, Func, SelectStatement, SimpleExpr},
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::api::{
-	ApiState,
-	v0::groups::{GroupError, OwnPlayer, find_user_by_uuid, load_group, member_ids, require_membership},
-	v0::social::{are_friends, is_blocked_either_way},
+use crate::{
+	api::{
+		ApiState,
+		v0::{
+			groups::{
+				ChatPlayer, GroupError, MAX_GROUP_MEMBERS, OwnPlayer, find_user_by_uuid,
+				load_group, member_ids, require_membership,
+			},
+			social::{are_friends, is_blocked_either_way},
+		},
+	},
+	utils::pagination::{Cursor, CursorPage, CursorQuery, Page, split_page},
 };
+
+/// Lower than the other v0 caps: each group costs a few queries to summarize.
+const V0_LIST_CAP: u64 = 100;
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GroupSummary {
@@ -33,6 +53,14 @@ pub struct GroupSummary {
 	unread: bool,
 	/// An unclaimed Special Chat group (see GET /special-chat).
 	special: bool,
+	/// A Special Chat group whose last message is from the player, not staff.
+	awaiting_reply: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GroupFilter {
+	/// Only Special Chat groups that are (or aren't) awaiting a staff reply.
+	awaiting_reply: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -68,7 +96,20 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listGroups")
 		.summary("List direct messages and group chats")
-		.description("Lists every DM and group chat the authenticated player belongs to.")
+		.description(
+			"Lists the 100 most recently active DMs and group chats the \
+			 authenticated player belongs to.",
+		)
+		.tag("groups")
+}
+
+fn list_paged_doc(op: TransformOperation) -> TransformOperation {
+	op.id("listGroupsPaged")
+		.summary("List direct messages and group chats")
+		.description(
+			"Most recently active first. Pass the returned `cursor` back for the \
+			 next page.",
+		)
 		.tag("groups")
 }
 
@@ -90,12 +131,21 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		.api_route("/", post_with(self::create_group, self::create_doc))
 		.api_route("/", get_with(self::list, self::list_doc))
 		.api_route("/{id}/claim", post_with(self::claim, self::claim_doc))
-		.api_route("/delegations", get_with(self::delegations, self::delegations_doc))
+		.api_route(
+			"/delegations",
+			get_with(self::delegations, self::delegations_doc),
+		)
+}
+
+pub(crate) fn v1_router() -> ApiRouter<ApiState> {
+	ApiRouter::new().api_route("/", get_with(self::list_paged, self::list_paged_doc))
 }
 
 fn delegations_doc(op: TransformOperation) -> TransformOperation {
 	op.summary("List players whose chats you can act as")
-		.description("Pass one of these as the `x-polyplus-act-as` header on chat routes.")
+		.description(
+			"Pass one of these as the `x-polyplus-act-as` header on chat routes.",
+		)
 		.tag("groups")
 }
 
@@ -104,8 +154,6 @@ async fn delegations(
 	State(state): State<ApiState>,
 	OwnPlayer(player): OwnPlayer,
 ) -> Result<Json<Vec<Uuid>>, GroupError> {
-	use entities::{dm_delegates, prelude::*, user};
-
 	let owner_ids = DmDelegates::find()
 		.filter(dm_delegates::Column::DelegateId.eq(player.id))
 		.all(&state.database)
@@ -129,12 +177,9 @@ const PARTY_GROUP_NAME: &str = "Party";
 
 async fn summarize(
 	state: &ApiState,
-	group: entities::groups::Model,
+	group: groups::Model,
 	viewer_id: i32,
 ) -> Result<GroupSummary, GroupError> {
-	use entities::{group_message_reads, group_messages, prelude::*, user};
-	use sea_orm::QueryOrder;
-
 	let ids = member_ids(state, group.id).await?;
 	let members = User::find()
 		.filter(user::Column::Id.is_in(ids))
@@ -151,7 +196,10 @@ async fn summarize(
 		.one(&state.database)
 		.await?;
 
+	let special =
+		group.kind == GroupKind::Group && group.owner_id.is_none() && group.name.is_none();
 	let mut unread = false;
+	let mut awaiting_reply = false;
 	let last_message = match last_message {
 		Some(message) => {
 			let sender = User::find_by_id(message.sender_id)
@@ -168,6 +216,11 @@ async fn summarize(
 				unread = last_read.is_none_or(|last_read| last_read < message.id);
 			}
 
+			awaiting_reply = special
+				&& sender.as_ref().is_some_and(|sender| {
+					!state.special_chat_targets.contains(&sender.minecraft_uuid)
+				});
+
 			sender.map(|sender| LastMessage {
 				content: message.content,
 				sender: sender.minecraft_uuid,
@@ -179,9 +232,8 @@ async fn summarize(
 
 	Ok(GroupSummary {
 		id: group.id,
-		special: group.kind == GroupKind::Group
-			&& group.owner_id.is_none()
-			&& group.name.is_none(),
+		special,
+		awaiting_reply,
 		name: display_name(&group.kind, group.name),
 		kind: group.kind,
 		members,
@@ -198,9 +250,7 @@ pub(crate) async fn get_or_create_dm_group(
 	state: &ApiState,
 	a: i32,
 	b: i32,
-) -> Result<(bool, entities::groups::Model), GroupError> {
-	use entities::{group_members, groups, prelude::*};
-
+) -> Result<(bool, groups::Model), GroupError> {
 	let a_dm_groups = GroupMembers::find()
 		.filter(group_members::Column::UserId.eq(a))
 		.inner_join(Groups)
@@ -218,7 +268,7 @@ pub(crate) async fn get_or_create_dm_group(
 		.await?;
 
 	if let Some(existing) = existing {
-		return Ok((false, super::load_group(state, existing.group_id).await?));
+		return Ok((false, load_group(state, existing.group_id).await?));
 	}
 
 	let group = Groups::insert(groups::ActiveModel {
@@ -265,7 +315,11 @@ async fn open_dm(
 	let (created, group) = get_or_create_dm_group(&state, player.id, target.id).await?;
 
 	Ok((
-		if created { StatusCode::CREATED } else { StatusCode::OK },
+		if created {
+			StatusCode::CREATED
+		} else {
+			StatusCode::OK
+		},
 		Json(summarize(&state, group, player.id).await?),
 	))
 }
@@ -273,7 +327,7 @@ async fn open_dm(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn claim(
 	State(state): State<ApiState>,
-	super::ChatPlayer { player, .. }: super::ChatPlayer,
+	ChatPlayer { player, .. }: ChatPlayer,
 	Path(id): Path<i32>,
 ) -> Result<Json<GroupSummary>, GroupError> {
 	if !state.special_chat_targets.contains(&player.minecraft_uuid) {
@@ -282,11 +336,12 @@ async fn claim(
 
 	require_membership(&state, id, player.id).await?;
 	let group = load_group(&state, id).await?;
-	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some() {
+	if group.kind != GroupKind::Group || group.owner_id.is_some() || group.name.is_some()
+	{
 		return Err(GroupError::NotSpecialChatGroup);
 	}
 
-	let mut active: entities::groups::ActiveModel = group.into();
+	let mut active: groups::ActiveModel = group.into();
 	active.owner_id = Set(Some(player.id));
 	let group = active.update(&state.database).await?;
 
@@ -299,8 +354,6 @@ async fn create_group(
 	OwnPlayer(player): OwnPlayer,
 	Json(body): Json<CreateGroupRequest>,
 ) -> Result<(StatusCode, Json<GroupSummary>), GroupError> {
-	use entities::{group_members, groups, prelude::*};
-
 	let mut member_ids = vec![player.id];
 	for uuid in body.members {
 		let user = find_user_by_uuid(&state, uuid).await?;
@@ -315,7 +368,7 @@ async fn create_group(
 		}
 	}
 
-	if member_ids.len() > super::MAX_GROUP_MEMBERS {
+	if member_ids.len() > MAX_GROUP_MEMBERS {
 		return Err(GroupError::GroupFull);
 	}
 
@@ -353,27 +406,138 @@ async fn create_group(
 #[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
-	super::ChatPlayer { player, .. }: super::ChatPlayer,
+	ChatPlayer { player, .. }: ChatPlayer,
 ) -> Result<Json<Vec<GroupSummary>>, GroupError> {
-	use entities::{group_members, prelude::*};
+	Ok(Json(
+		load(&state, player.id, Page::first(V0_LIST_CAP), None)
+			.await?
+			.items,
+	))
+}
 
-	let group_ids = GroupMembers::find()
-		.filter(group_members::Column::UserId.eq(player.id))
-		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(|member| member.group_id)
-		.collect::<Vec<_>>();
+#[tracing::instrument(level = "debug", skip(state))]
+async fn list_paged(
+	State(state): State<ApiState>,
+	ChatPlayer { player, .. }: ChatPlayer,
+	Query(query): Query<CursorQuery>,
+	Query(filter): Query<GroupFilter>,
+) -> Result<Json<CursorPage<GroupSummary>>, GroupError> {
+	Ok(Json(
+		load(&state, player.id, query.into(), filter.awaiting_reply).await?,
+	))
+}
 
-	let groups = Groups::find()
-		.filter(entities::groups::Column::Id.is_in(group_ids))
-		.all(&state.database)
-		.await?;
+#[derive(Debug, FromQueryResult)]
+struct RankedGroup {
+	id: i32,
+	kind: GroupKind,
+	name: Option<String>,
+	owner_id: Option<i32>,
+	created_at: DateTime<FixedOffset>,
+	activity: i64,
+}
 
-	let mut summaries = Vec::with_capacity(groups.len());
-	for group in groups {
-		summaries.push(summarize(&state, group, player.id).await?);
+/// Most recently active first, keyed on the newest message's id.
+async fn load(
+	state: &ApiState,
+	player_id: i32,
+	page: Page,
+	awaiting_reply: Option<bool>,
+) -> Result<CursorPage<GroupSummary>, GroupError> {
+	let newest_message = SelectStatement::new()
+		.expr(Func::max(Expr::col((
+			group_messages::Entity,
+			group_messages::Column::Id,
+		))))
+		.from(group_messages::Entity)
+		.and_where(
+			Expr::col((group_messages::Entity, group_messages::Column::GroupId))
+				.equals((groups::Entity, groups::Column::Id)),
+		)
+		.and_where(
+			Expr::col((group_messages::Entity, group_messages::Column::DeletedAt))
+				.is_null(),
+		)
+		.to_owned();
+	let activity = SimpleExpr::from(Func::coalesce([
+		SimpleExpr::SubQuery(None, Box::new(newest_message.into_sub_query_statement())),
+		Expr::val(0_i64).into(),
+	]));
+	let group_id = SimpleExpr::from(Expr::col((groups::Entity, groups::Column::Id)));
+
+	let mut select = Groups::find()
+		.inner_join(GroupMembers)
+		.filter(group_members::Column::UserId.eq(player_id))
+		.expr_as(activity.clone(), "activity")
+		.order_by(activity.clone(), Order::Desc)
+		.order_by(group_id.clone(), Order::Desc)
+		.limit(page.fetch_limit());
+	if let Some(awaiting_reply) = awaiting_reply {
+		let staff_ids = User::find()
+			.filter(user::Column::MinecraftUuid.is_in(state.special_chat_targets.clone()))
+			.all(&state.database)
+			.await?
+			.into_iter()
+			.map(|user| user.id);
+		let newest_sender = SelectStatement::new()
+			.column((group_messages::Entity, group_messages::Column::SenderId))
+			.from(group_messages::Entity)
+			.and_where(
+				Expr::col((group_messages::Entity, group_messages::Column::GroupId))
+					.equals((groups::Entity, groups::Column::Id)),
+			)
+			.and_where(
+				Expr::col((group_messages::Entity, group_messages::Column::DeletedAt))
+					.is_null(),
+			)
+			.order_by(
+				(group_messages::Entity, group_messages::Column::Id),
+				Order::Desc,
+			)
+			.limit(1)
+			.to_owned();
+		let newest_sender = Expr::expr(SimpleExpr::SubQuery(
+			None,
+			Box::new(newest_sender.into_sub_query_statement()),
+		));
+		select = select
+			.filter(groups::Column::Kind.eq(GroupKind::Group))
+			.filter(groups::Column::OwnerId.is_null())
+			.filter(groups::Column::Name.is_null())
+			.filter(newest_sender.clone().is_not_null())
+			.filter(if awaiting_reply {
+				newest_sender.is_not_in(staff_ids)
+			} else {
+				newest_sender.is_in(staff_ids)
+			});
+	}
+	if let Some(cursor) = page.cursor {
+		select = select.filter(Expr::tuple([activity, group_id]).lt(Expr::tuple([
+			Expr::val(cursor.rank).into(),
+			Expr::val(cursor.id).into(),
+		])));
 	}
 
-	Ok(Json(summaries))
+	let rows = select
+		.into_model::<RankedGroup>()
+		.all(&state.database)
+		.await?;
+	let (rows, cursor) = split_page(rows, page, |row| Cursor {
+		rank: row.activity,
+		id: row.id,
+	});
+
+	let mut items = Vec::with_capacity(rows.len());
+	for row in rows {
+		let group = groups::Model {
+			id: row.id,
+			kind: row.kind,
+			name: row.name,
+			owner_id: row.owner_id,
+			created_at: row.created_at,
+		};
+		items.push(summarize(state, group, player_id).await?);
+	}
+
+	Ok(CursorPage { items, cursor })
 }

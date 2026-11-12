@@ -5,7 +5,7 @@ use axum::{
 };
 use chrono::{Days, Utc};
 use entities::{
-	analytics_daily, monthly_active_login, player_owned_cosmetic, prelude::*, user,
+	analytics_daily, monthly_active_login, player_owned_cosmetic, prelude::*,
 };
 use schemars::JsonSchema;
 use sea_orm::{
@@ -20,7 +20,9 @@ use super::{
 	AnalyticsError, AnalyticsPeriod, PrivateAnalyticsAuth, filter_date_period,
 	filter_timestamp_period,
 };
-use crate::{api::ApiState, utils::time::current_utc_month};
+use crate::{
+	api::ApiState, database::count_first_logins, utils::time::current_utc_month,
+};
 
 /// Buckets in the database, so the result is one row however many players.
 async fn owned_items_histogram(
@@ -168,12 +170,14 @@ pub(super) async fn endpoint(
 	};
 
 	let total_users =
-		filter_timestamp_period(User::find(), user::Column::CreatedAt, up_to_end)
-			.count(&state.database)
+		count_first_logins(&state.database, None, period.end_timestamp_exclusive())
 			.await? as i64;
-	let new_users = filter_timestamp_period(User::find(), user::Column::CreatedAt, period)
-		.count(&state.database)
-		.await? as i64;
+	let new_users = count_first_logins(
+		&state.database,
+		period.start_timestamp(),
+		period.end_timestamp_exclusive(),
+	)
+	.await? as i64;
 
 	let monthly_active_users = if period.is_unbounded() {
 		MonthlyActiveLogin::find()
