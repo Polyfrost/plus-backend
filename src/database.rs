@@ -1,14 +1,15 @@
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use entities::{
 	cosmetic_ownership_event, daily_playtime, monthly_active_login, player_client_info,
-	player_geo, prelude::*,
+	player_geo,
+	prelude::*,
 	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
 	transaction, user,
 };
 use sea_orm::{
-	ActiveValue, DbErr, EntityTrait, QueryFilter, Set,
+	ActiveValue, DbErr, EntityTrait, QueryFilter, QuerySelect, Set,
 	prelude::*,
-	sea_query::{Alias, Expr, OnConflict},
+	sea_query::{Alias, Expr, Func, OnConflict},
 };
 use uuid::Uuid;
 
@@ -183,6 +184,29 @@ pub(crate) async fn record_monthly_active_login(
 	.await?;
 
 	Ok(())
+}
+
+/// Players whose first login falls in `[start, end)`. Lookups, gifts and
+/// grants create users too, so `user.created_at` overcounts real players.
+pub(crate) async fn count_first_logins(
+	db: &impl ConnectionTrait,
+	start: Option<DateTimeWithTimeZone>,
+	end: Option<DateTimeWithTimeZone>,
+) -> Result<u64, DbErr> {
+	let first_login = Expr::expr(Func::min(Expr::col(
+		monthly_active_login::Column::FirstLoginAt,
+	)));
+	let mut query = MonthlyActiveLogin::find()
+		.select_only()
+		.column(monthly_active_login::Column::PlayerId)
+		.group_by(monthly_active_login::Column::PlayerId);
+	if let Some(start) = start {
+		query = query.having(first_login.clone().gte(start));
+	}
+	if let Some(end) = end {
+		query = query.having(first_login.lt(end));
+	}
+	query.count(db).await
 }
 
 #[derive(Debug, Default, Clone)]

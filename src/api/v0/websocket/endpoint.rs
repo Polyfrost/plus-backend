@@ -658,10 +658,13 @@ async fn subscribe(
 			.iter()
 			.copied()
 			.filter(|player| {
-				let status_override =
-					player_runtime.get(player).and_then(|runtime| runtime.status_override);
-				effective_status(connections_by_owner.contains_key(player), status_override)
-					!= PlayerStatus::Offline
+				let status_override = player_runtime
+					.get(player)
+					.and_then(|runtime| runtime.status_override);
+				effective_status(
+					connections_by_owner.contains_key(player),
+					status_override,
+				) != PlayerStatus::Offline
 			})
 			.collect::<Vec<_>>()
 	};
@@ -761,7 +764,10 @@ pub(crate) async fn unequip_revoked(state: &ApiState, revoked: &HashMap<Uuid, Ve
 				any.add(
 					Condition::all()
 						.add(player_equipped_cosmetic::Column::PlayerId.eq(user.id))
-						.add(player_equipped_cosmetic::Column::CosmeticId.is_in(owned_by(user))),
+						.add(
+							player_equipped_cosmetic::Column::CosmeticId
+								.is_in(owned_by(user)),
+						),
 				)
 			}))
 			.exec_with_returning(&state.database)
@@ -865,7 +871,11 @@ pub(crate) async fn announce_particle_color_change(
 	}
 }
 
-pub(crate) async fn announce_presence(state: &ApiState, player: Uuid, status: PlayerStatus) {
+pub(crate) async fn announce_presence(
+	state: &ApiState,
+	player: Uuid,
+	status: PlayerStatus,
+) {
 	broadcast_to_watchers(state, player, || ClientBoundPacket::PlayerPresence {
 		player,
 		online: status != PlayerStatus::Offline,
@@ -947,6 +957,14 @@ async fn handle_msg(
 	let parsed = serde_json::from_slice::<ServerBoundPacket>(&msg.into_data())
 		.map_err(WebsocketError::Deserialization)?;
 	let request_id = parsed.request_id();
+
+	// Every packet counts, on top of the tighter per-packet limits.
+	if state.packet_limit.check(player.id).await.is_some() {
+		return Err(RequestError {
+			error: WebsocketError::RateLimited,
+			request_id,
+		});
+	}
 
 	handle_packet(socket, state, player, connection_id, parsed)
 		.await

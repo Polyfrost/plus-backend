@@ -6,7 +6,10 @@ use moka::future::Cache;
 use rand::RngCore as _;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
-use crate::{api::rate_limit::RateLimiter, utils::hash::sha256_hex};
+use crate::{
+	api::{lockouts::LockoutLog, rate_limit::RateLimiter},
+	utils::hash::sha256_hex,
+};
 
 pub(in crate::api) const TOKEN_HEADER: &str = "X-Api-Token";
 pub(in crate::api) const OPENAPI_SECURITY_NAME: &str = "API Token";
@@ -31,7 +34,10 @@ pub(in crate::api) struct GeneratedToken {
 }
 
 impl ApiTokens {
-	pub(in crate::api) fn new(database: DatabaseConnection) -> Self {
+	pub(in crate::api) fn new(
+		database: DatabaseConnection,
+		lockouts: &LockoutLog,
+	) -> Self {
 		ApiTokens {
 			database,
 			resolved: Cache::builder()
@@ -42,7 +48,7 @@ impl ApiTokens {
 				.time_to_live(CACHE_TTL)
 				.max_capacity(CACHE_CAPACITY)
 				.build(),
-			lookups: RateLimiter::new(LOOKUPS_PER_WINDOW, LOOKUP_WINDOW),
+			lookups: lockouts.limiter("token_lookups", LOOKUPS_PER_WINDOW, LOOKUP_WINDOW),
 		}
 	}
 
@@ -120,14 +126,15 @@ mod tests {
 
 	use sea_orm::DatabaseConnection;
 
-	use super::{ApiTokens, generate_token};
+	use super::{ApiTokens, LockoutLog, generate_token};
 	use crate::utils::hash::sha256_hex;
 
 	const IP: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 
 	#[tokio::test]
 	async fn a_cached_token_never_spends_the_lookup_budget() {
-		let tokens = ApiTokens::new(DatabaseConnection::Disconnected);
+		let tokens =
+			ApiTokens::new(DatabaseConnection::Disconnected, &LockoutLog::default());
 		tokens
 			.resolved
 			.insert(sha256_hex(b"busy"), Arc::from(vec!["/asset/".to_owned()]))
