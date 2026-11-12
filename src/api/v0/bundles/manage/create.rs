@@ -16,7 +16,7 @@ use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use uuid::Uuid;
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor, v0::bundles::BundleInfo},
+	api::{ApiState, permissions::{Require, perm}, v0::bundles::BundleInfo},
 	paynow::{PayNowError, catalog},
 	utils::{hash::sha256_hex, money::to_cents},
 };
@@ -65,14 +65,14 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Uploads a bundle's cover image to S3 (optional), registers the bundle \
 			 in the database with its contained cosmetics, then provisions a \
-			 storefront product for it. Admin password required.",
+			 storefront product for it. Requires `MANAGE_COSMETICS`.",
 		)
 		.tag("bundles")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<BundleInfo>, _>(|res| {
 			res.description("The created bundle info")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -149,7 +149,7 @@ impl OperationInput for FileUpload {
 
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	FileUpload(mut multipart): FileUpload,
 ) -> Result<Json<BundleInfo>, CreateError> {
 	let mut file_data = None;

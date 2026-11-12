@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use serde::Deserialize;
 
-use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
+use crate::api::{ApiState, permissions::{Require, perm}};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum DeleteError {
@@ -41,7 +41,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Delete a bundle")
 		.description(
 			"Soft-deletes a bundle by disabling it. Rows, assets, and storefront products \
-			 are left intact so the change is reversible. Admin password required.",
+			 are left intact so the change is reversible. Requires `MANAGE_COSMETICS`.",
 		)
 		.tag("bundles")
 		.response_with::<{ StatusCode::NO_CONTENT.as_u16() }, (), _>(|res| {
@@ -51,7 +51,7 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			res.description("No bundle exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -62,7 +62,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Json(body): Json<DeleteRequest>,
 ) -> Result<StatusCode, DeleteError> {
 	use entities::{bundles, prelude::*};

@@ -122,9 +122,10 @@ pub(crate) struct ServeArgs {
 	/// The public base url assets are served from
 	#[bpaf(long("s3-public-url"), env("S3_PUBLIC_URL"))]
 	pub(crate) s3_public_url: String,
-	/// Password for admin operations
-	#[bpaf(long("admin-password"), env("ADMIN_PASSWORD"))]
-	pub(crate) admin_password: String,
+	/// Secret salt for hashing tracked-link visitors. Falls back to the old
+	/// `ADMIN_PASSWORD` so existing unique-visitor counts carry on.
+	#[bpaf(long("link-hash-salt"), env("LINK_HASH_SALT"), env("ADMIN_PASSWORD"))]
+	pub(crate) link_hash_salt: String,
 	#[bpaf(
 		long("render-service-url"),
 		env("RENDER_SERVICE_URL"),
@@ -141,6 +142,16 @@ pub(crate) struct ServeArgs {
 		fallback_with(default_cors_origins)
 	)]
 	pub(crate) cors_origins: Vec<HeaderValue>,
+	/// Origins of the admin dashboard, the only pages whose requests may
+	/// authenticate with the session cookie. Comma seperated.
+	#[bpaf(
+		long("dashboard-origins"),
+		env("DASHBOARD_ORIGINS"),
+		argument::<String>("ORIGINS"),
+		parse(parse_cors_origins),
+		fallback_with(default_dashboard_origins)
+	)]
+	pub(crate) dashboard_origins: Vec<HeaderValue>,
 	#[bpaf(
 		long("oidc-issuer"),
 		env("OIDC_ISSUER"),
@@ -256,6 +267,12 @@ fn default_cors_origins() -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
 	parse_cors_origins(
 		"https://plus-admin.polyfrost.org,http://localhost:3000".to_owned(),
 	)
+}
+
+fn default_dashboard_origins() -> Result<Vec<HeaderValue>, InvalidHeaderValue> {
+	// Only production: a staging or local dashboard is the same site as its
+	// backend, so trusting it from production would hand it the prod cookie.
+	parse_cors_origins("https://plus-admin.polyfrost.org".to_owned())
 }
 
 fn parse_special_chat_targets(value: String) -> Result<Vec<uuid::Uuid>, uuid::Error> {

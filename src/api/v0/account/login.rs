@@ -12,16 +12,12 @@ use axum::{
 	http::{StatusCode, request::Parts},
 	response::IntoResponse,
 };
-use pasetors::{claims::Claims, local};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-	api::{
-		ApiState,
-		v0::account::{ClientKind, PASETO_IMPLICIT_ASSERT},
-	},
+	api::ApiState,
 	database::{
 		ClientInfo, DatabaseUserExt, record_client_info, record_monthly_active_login,
 		record_player_geo,
@@ -224,19 +220,12 @@ async fn endpoint(
 		record_player_geo(&state.database, player.id, &country).await?;
 	}
 
-	let token = local::encrypt(
-		&state.paseto_key,
-		&{
-			let mut claims = Claims::new()?;
-
-			claims.set_expires_in(&Duration::from_secs(60 * 60 * 2 /* 2h */))?;
-			claims.subject(&parsed.id.as_hyphenated().to_string())?;
-			claims.add_additional(ClientKind::CLAIM, is_game_client)?;
-
-			claims
-		},
-		None,
-		PASETO_IMPLICIT_ASSERT,
+	let token = super::mint_token(
+		&state,
+		parsed.id,
+		is_game_client,
+		Duration::from_secs(60 * 60 * 2 /* 2h */),
+		super::TokenAccess::Player,
 	)?;
 
 	#[cfg(debug_assertions)]

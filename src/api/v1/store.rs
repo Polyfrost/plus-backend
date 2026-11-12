@@ -36,7 +36,7 @@ use uuid::Uuid;
 use crate::{
 	api::{
 		ApiState,
-		admin_auth::AdminAuthenticationExtractor,
+		permissions::{Require, RequireAny, perm},
 		v0::{cosmetics::CachedAssetInfo, players::lookup::resolve_username}
 	},
 	utils::pagination::{MAX_PAGE_SIZE, default_page, default_page_size}
@@ -74,7 +74,7 @@ fn catalog_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Every cosmetic, variant group and bundle, including disabled ones and \
 			 cosmetics that were uploaded but never made into a product (no \
-			 `store_product_id`). Admin password required."
+			 `store_product_id`). Needs any catalogue permission: `MANAGE_STORE`, `MANAGE_COSMETICS`, `GRANT_COSMETICS`, `MANAGE_DISCOUNTS` or `MANAGE_REFERRALS`."
 		)
 		.tag("store")
 }
@@ -85,8 +85,8 @@ fn orders_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Every transaction, newest first, with the player it was for, the player \
 			 who paid when that was someone else, and each line. `player` narrows it to \
-			 one player's orders, as buyer or recipient, by UUID or username. Admin \
-			 password required."
+			 one player's orders, as buyer or recipient, by UUID or username. \
+			 Requires `VIEW_ORDERS`."
 		)
 		.tag("store")
 }
@@ -145,7 +145,7 @@ struct CatalogBundle {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn catalog(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor
+	_auth: RequireAny<{ perm::CATALOG_READERS }>,
 ) -> Result<Json<CatalogResponse>, StoreError> {
 	let db = &state.database;
 	let cosmetics = Cosmetic::find().all(db).await?;
@@ -300,7 +300,7 @@ struct OrderLine {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn orders(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::VIEW_ORDERS }>,
 	Query(query): Query<OrdersQuery>
 ) -> Result<Json<OrdersResponse>, StoreError> {
 	let db = &state.database;

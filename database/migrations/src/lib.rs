@@ -79,6 +79,9 @@ mod m20261028_000000_create_oneclient_sync;
 mod m20261102_000000_player_status_override;
 mod m20261102_000001_add_party_group_kind;
 mod m20261102_000002_create_parties;
+mod m20261111_000000_create_roles;
+mod m20261112_000000_api_token_permissions;
+mod m20261113_000000_split_permissions;
 
 pub struct Migrator;
 
@@ -165,6 +168,9 @@ impl MigratorTrait for Migrator {
 			Box::new(m20261102_000000_player_status_override::Migration),
 			Box::new(m20261102_000001_add_party_group_kind::Migration),
 			Box::new(m20261102_000002_create_parties::Migration),
+			Box::new(m20261111_000000_create_roles::Migration),
+			Box::new(m20261112_000000_api_token_permissions::Migration),
+			Box::new(m20261113_000000_split_permissions::Migration),
 		]
 	}
 }

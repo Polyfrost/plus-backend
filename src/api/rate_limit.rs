@@ -61,6 +61,22 @@ impl<K: Hash + Eq + Send + Sync + 'static> RateLimiter<K> {
 }
 
 /// IPv6 clients usually hold a whole /64, so it is limited as one address.
+/// The caller's address as `ClientIpSource` resolves it, if it can.
+pub(in crate::api) struct ClientAddress(pub(in crate::api) Option<IpAddr>);
+
+impl aide::OperationInput for ClientAddress {}
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ClientAddress {
+	type Rejection = std::convert::Infallible;
+
+	async fn from_request_parts(
+		parts: &mut axum::http::request::Parts,
+		state: &S,
+	) -> Result<Self, Self::Rejection> {
+		Ok(Self(ClientIp::from_request_parts(parts, state).await.ok().map(|ClientIp(ip)| ip)))
+	}
+}
+
 pub(in crate::api) fn address_key(ip: IpAddr) -> IpAddr {
 	match ip.to_canonical() {
 		IpAddr::V6(ip) => {
@@ -170,7 +186,12 @@ mod tests {
 			.resolved
 			.insert(
 				sha256_hex(b"asset-reader"),
-				Arc::from(vec!["/asset/".to_owned()]),
+				Arc::new(crate::api::api_tokens::ResolvedToken {
+					id: 1,
+					label: "asset-reader".to_owned(),
+					exempt_prefixes: vec!["/asset/".to_owned()],
+					permissions: 0,
+				}),
 			)
 			.await;
 		// Cached as unresolvable, so the disconnected database stays untouched.

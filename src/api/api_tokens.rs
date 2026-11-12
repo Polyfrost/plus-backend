@@ -16,10 +16,19 @@ const CACHE_CAPACITY: u64 = 1024;
 const LOOKUPS_PER_WINDOW: u32 = 60;
 const LOOKUP_WINDOW: Duration = Duration::from_secs(60);
 
+/// What a live token grants, as cached after its first lookup.
+#[derive(Debug)]
+pub(in crate::api) struct ResolvedToken {
+	pub(in crate::api) id: i32,
+	pub(in crate::api) label: String,
+	pub(in crate::api) exempt_prefixes: Vec<String>,
+	pub(in crate::api) permissions: u64,
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::api) struct ApiTokens {
 	database: DatabaseConnection,
-	pub(in crate::api) resolved: Cache<String, Arc<[String]>>,
+	pub(in crate::api) resolved: Cache<String, Arc<ResolvedToken>>,
 	/// Hashes that resolved to nothing are kept apart so junk tokens cannot evict valid ones
 	pub(in crate::api) rejected: Cache<String, ()>,
 	lookups: RateLimiter<IpAddr>,
@@ -53,20 +62,27 @@ impl ApiTokens {
 		path: &str,
 		ip: IpAddr,
 	) -> bool {
-		let Some(prefixes) = self.prefixes(token, ip).await else {
+		let Some(resolved) = self.resolve(token, ip).await else {
 			return false;
 		};
 
-		prefixes
+		resolved
+			.exempt_prefixes
 			.iter()
 			.any(|prefix| path.starts_with(prefix.as_str()))
 	}
 
-	async fn prefixes(&self, token: &str, ip: IpAddr) -> Option<Arc<[String]>> {
+	/// The live token behind `token`, if any. Unknown tokens are cached as
+	/// rejected and lookups are rate limited per address, so guessing is slow.
+	pub(in crate::api) async fn resolve(
+		&self,
+		token: &str,
+		ip: IpAddr,
+	) -> Option<Arc<ResolvedToken>> {
 		let hash = sha256_hex(token.as_bytes());
 
-		if let Some(prefixes) = self.resolved.get(&hash).await {
-			return Some(prefixes);
+		if let Some(resolved) = self.resolved.get(&hash).await {
+			return Some(resolved);
 		}
 		if self.rejected.contains_key(&hash) {
 			return None;
@@ -85,9 +101,14 @@ impl ApiTokens {
 
 		match found {
 			Ok(Some(token)) => {
-				let prefixes: Arc<[String]> = Arc::from(token.exempt_prefixes);
-				self.resolved.insert(hash, prefixes.clone()).await;
-				Some(prefixes)
+				let resolved = Arc::new(ResolvedToken {
+					id: token.id,
+					label: token.label,
+					exempt_prefixes: token.exempt_prefixes,
+					permissions: token.permissions as u64,
+				});
+				self.resolved.insert(hash, resolved.clone()).await;
+				Some(resolved)
 			}
 			Ok(None) => {
 				self.rejected.insert(hash, ()).await;
@@ -120,7 +141,7 @@ mod tests {
 
 	use sea_orm::DatabaseConnection;
 
-	use super::{ApiTokens, generate_token};
+	use super::{ApiTokens, ResolvedToken, generate_token};
 	use crate::utils::hash::sha256_hex;
 
 	const IP: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
@@ -130,7 +151,15 @@ mod tests {
 		let tokens = ApiTokens::new(DatabaseConnection::Disconnected);
 		tokens
 			.resolved
-			.insert(sha256_hex(b"busy"), Arc::from(vec!["/asset/".to_owned()]))
+			.insert(
+				sha256_hex(b"busy"),
+				Arc::new(ResolvedToken {
+					id: 1,
+					label: "busy".to_owned(),
+					exempt_prefixes: vec!["/asset/".to_owned()],
+					permissions: 0,
+				}),
+			)
 			.await;
 
 		for _ in 0..(super::LOOKUPS_PER_WINDOW * 10) {

@@ -21,7 +21,7 @@ use sea_orm::{
 use serde::Deserialize;
 
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{Require, perm}},
 	paynow::PayNowError,
 	product_settings::{Key, SettingsInfo, infos, push},
 };
@@ -116,7 +116,7 @@ fn read_doc(op: TransformOperation) -> TransformOperation {
 			"Returns the sale window, stock and purchase limits, gifting, discount, \
 			 requirement and rental settings of a cosmetic or bundle, or null when \
 			 none are set. `kind` is `cosmetics` or `bundles`; a variant id reads \
-			 its group's. Admin password required.",
+			 its group's. Requires `MANAGE_STORE`.",
 		)
 		.tag("listings")
 }
@@ -130,7 +130,7 @@ fn replace_doc(op: TransformOperation) -> TransformOperation {
 			 store and disables it on PayNow. The sale window, gifting and \
 			 coupon settings are also pushed to PayNow; a 502 means they were saved here \
 			 but not there, and `provision-paynow --sync-settings` repairs it. \
-			 Admin password required.",
+			 Requires `MANAGE_STORE`.",
 		)
 		.tag("listings")
 }
@@ -138,7 +138,7 @@ fn replace_doc(op: TransformOperation) -> TransformOperation {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn read(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_STORE }>,
 	Path((kind, id)): Path<(Kind, i32)>,
 ) -> Result<Json<Option<SettingsInfo>>, SettingsError> {
 	let key = key_of(&state, kind, id).await?;
@@ -152,7 +152,7 @@ async fn read(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn replace(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_STORE }>,
 	Path((kind, id)): Path<(Kind, i32)>,
 	Json(body): Json<SettingsBody>,
 ) -> Result<Json<Option<SettingsInfo>>, SettingsError> {

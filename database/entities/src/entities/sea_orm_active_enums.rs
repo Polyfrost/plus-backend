@@ -110,28 +110,6 @@ pub enum CosmeticType {
 	serde :: Serialize,
 	Hash,
 )]
-#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "player_role")]
-#[serde(rename_all = "snake_case")]
-pub enum PlayerRole {
-	#[sea_orm(string_value = "player")]
-	Player,
-	#[sea_orm(string_value = "moderator")]
-	Moderator,
-	#[sea_orm(string_value = "admin")]
-	Admin,
-}
-#[derive(
-	Debug,
-	Clone,
-	PartialEq,
-	Eq,
-	EnumIter,
-	DeriveActiveEnum,
-	schemars :: JsonSchema,
-	serde :: Deserialize,
-	serde :: Serialize,
-	Hash,
-)]
 #[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "relationship_kind")]
 #[serde(rename_all = "snake_case")]
 pub enum RelationshipKind {

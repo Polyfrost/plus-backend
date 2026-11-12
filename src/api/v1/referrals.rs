@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use super::discounts::enabled_by_default;
 use crate::{
-	api::{ApiState, admin_auth::AdminAuthenticationExtractor},
+	api::{ApiState, permissions::{self, Require, perm}},
 	pricing::normalise_code,
 	utils::validation::valid_slug,
 };
@@ -90,7 +90,8 @@ pub struct ReferralView {
 	/// Orders placed with the code, refunded ones included.
 	pub orders: i64,
 	/// Charged minus refunded, chargebacks excluded, in the checkout currency.
-	pub revenue_minor: i64,
+	/// Null without VIEW_REVENUE.
+	pub revenue_minor: Option<i64>,
 	/// Unique visits across the tracked links carrying the code.
 	pub clicks: i64,
 }
@@ -127,7 +128,7 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.summary("List creator codes")
 		.description(
 			"Lists every creator code with the orders, revenue and tracked-link \
-			 clicks attributed to it. Admin password required.",
+			 clicks attributed to it. Requires `MANAGE_REFERRALS`; revenue needs `VIEW_REVENUE` too.",
 		)
 		.tag("referrals")
 }
@@ -140,7 +141,7 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 			 coupon with `discount_id` and checkout applies it on its own; a \
 			 coupon that has ended or run out is skipped rather than failing the \
 			 checkout. Point a tracked link at the code and `/go/{slug}` adds \
-			 `ref=CODE` to its target. Admin password required.",
+			 `ref=CODE` to its target. Requires `MANAGE_REFERRALS`; revenue needs `VIEW_REVENUE` too.",
 		)
 		.tag("referrals")
 }
@@ -150,7 +151,7 @@ fn update_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Replace a creator code")
 		.description(
 			"Replaces a creator code's name, coupon and enabled flag. The code \
-			 itself cannot change. Admin password required.",
+			 itself cannot change. Requires `MANAGE_REFERRALS`; revenue needs `VIEW_REVENUE` too.",
 		)
 		.tag("referrals")
 }
@@ -166,10 +167,10 @@ fn remove_doc(op: TransformOperation) -> TransformOperation {
 		.tag("referrals")
 }
 
-#[tracing::instrument(level = "debug", skip(state, _auth))]
+#[tracing::instrument(level = "debug", skip(state))]
 async fn list(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	Require(_, granted): Require<{ perm::MANAGE_REFERRALS }>,
 ) -> Result<Json<Vec<ReferralView>>, ReferralError> {
 	let rows = Referral::find()
 		.order_by_desc(referral::Column::CreatedAt)
@@ -224,16 +225,16 @@ async fn list(
 			.map(|row| {
 				let stats = stats.remove(&row.code).unwrap_or_default();
 				let clicks = clicks.remove(&row.code).unwrap_or_default();
-				view(row, &stats, clicks)
+				view(row, &stats, clicks, granted)
 			})
 			.collect(),
 	))
 }
 
-#[tracing::instrument(level = "debug", skip(state, _auth))]
+#[tracing::instrument(level = "debug", skip(state))]
 async fn create(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	Require(_, granted): Require<{ perm::MANAGE_REFERRALS }>,
 	Json(body): Json<CreateBody>,
 ) -> Result<Json<ReferralView>, ReferralError> {
 	let code = normalise_code(&body.code);
@@ -256,13 +257,13 @@ async fn create(
 		_ => error.into(),
 	})?;
 
-	Ok(Json(view(model, &Stats::default(), 0)))
+	Ok(Json(view(model, &Stats::default(), 0, granted)))
 }
 
-#[tracing::instrument(level = "debug", skip(state, _auth))]
+#[tracing::instrument(level = "debug", skip(state))]
 async fn update(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	Require(_, granted): Require<{ perm::MANAGE_REFERRALS }>,
 	Path(code): Path<String>,
 	Json(body): Json<UpdateBody>,
 ) -> Result<Json<ReferralView>, ReferralError> {
@@ -278,13 +279,13 @@ async fn update(
 	model.enabled = Set(body.enabled);
 	let model = model.update(&state.database).await?;
 
-	Ok(Json(view(model, &Stats::default(), 0)))
+	Ok(Json(view(model, &Stats::default(), 0, granted)))
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn remove(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_REFERRALS }>,
 	Path(code): Path<String>,
 ) -> Result<StatusCode, ReferralError> {
 	let result = Referral::delete_by_id(normalise_code(&code))
@@ -298,7 +299,7 @@ async fn remove(
 	Ok(StatusCode::NO_CONTENT)
 }
 
-fn view(model: referral::Model, stats: &Stats, clicks: i64) -> ReferralView {
+fn view(model: referral::Model, stats: &Stats, clicks: i64, granted: u64) -> ReferralView {
 	ReferralView {
 		code: model.code,
 		name: model.name,
@@ -306,7 +307,8 @@ fn view(model: referral::Model, stats: &Stats, clicks: i64) -> ReferralView {
 		enabled: model.enabled,
 		created_at: model.created_at.to_rfc3339(),
 		orders: stats.orders,
-		revenue_minor: stats.revenue_minor.unwrap_or_default(),
+		revenue_minor: permissions::has(granted, perm::VIEW_REVENUE)
+			.then(|| stats.revenue_minor.unwrap_or_default()),
 		clicks,
 	}
 }

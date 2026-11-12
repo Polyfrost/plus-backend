@@ -1,6 +1,5 @@
 pub(in crate::api) mod lookup;
 mod resolve;
-mod role;
 
 use aide::{OperationIo, axum::ApiRouter};
 use axum::{http::StatusCode, response::IntoResponse};
@@ -31,7 +30,6 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new().nest(
 		"/players",
 		ApiRouter::new()
-			.merge(role::router())
 			.merge(resolve::router())
 			.merge(lookup::router()),
 	)

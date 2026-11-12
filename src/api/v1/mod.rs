@@ -1,4 +1,5 @@
 mod analytics;
+mod dashboard;
 mod discounts;
 mod grants;
 mod hello;
@@ -7,6 +8,8 @@ mod oneclient;
 pub(super) mod party;
 mod paynow;
 mod referrals;
+mod roles;
+mod special_chat;
 mod store;
 mod tokens;
 
@@ -27,6 +30,9 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(listings::router())
 		.merge(party::router())
 		.merge(referrals::router())
+		.merge(roles::router())
+		.merge(dashboard::router())
+		.merge(special_chat::router())
 		.merge(store::router())
 		.merge(hello::router())
 		.merge(tokens::router())

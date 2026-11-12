@@ -10,7 +10,7 @@ use axum::{
 };
 use sea_orm::{ColumnTrait as _, EntityTrait, QueryFilter as _};
 
-use crate::api::{ApiState, admin_auth::AdminAuthenticationExtractor};
+use crate::api::{ApiState, permissions::{Require, perm}};
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum DeleteError {
@@ -53,7 +53,7 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Path(id): Path<i32>,
 ) -> Result<StatusCode, DeleteError> {
 	use entities::{discount_target, prelude::*};

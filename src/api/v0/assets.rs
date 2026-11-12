@@ -17,7 +17,7 @@ use sea_orm::EntityTrait;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
-	ApiState, admin_auth::AdminAuthenticationExtractor, state::AssetCacheError,
+	ApiState, permissions::{Require, perm}, state::AssetCacheError,
 	v0::cosmetics::CachedAssetInfo,
 };
 
@@ -150,14 +150,14 @@ fn refresh_all_doc(op: TransformOperation) -> TransformOperation {
 			 hashes never expire on their own, so this is how a change made outside \
 			 the API - an object replaced in storage, a hash edited in the database \
 			 - is picked up without a restart. Runs synchronously and reports what \
-			 it did. Admin password required.",
+			 it did. Requires `MANAGE_COSMETICS`.",
 		)
 		.tag("assets")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<RefreshAllResponse>, _>(|res| {
 			res.description("The cache was rebuilt")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
@@ -179,14 +179,14 @@ fn refresh_one_doc(op: TransformOperation) -> TransformOperation {
 			res.description("No asset exists with the given id")
 		})
 		.response_with::<{ StatusCode::UNAUTHORIZED.as_u16() }, String, _>(|res| {
-			res.description("Invalid or missing admin password")
+			res.description("Missing or invalid credentials, or lacking the permission")
 		})
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn refresh_all_endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 ) -> Result<Json<RefreshAllResponse>, AssetError> {
 	let refresh = state.refresh_asset_cache().await?;
 
@@ -207,7 +207,7 @@ async fn refresh_all_endpoint(
 #[tracing::instrument(level = "debug", skip(state, _auth))]
 async fn refresh_one_endpoint(
 	State(state): State<ApiState>,
-	_auth: AdminAuthenticationExtractor,
+	_auth: Require<{ perm::MANAGE_COSMETICS }>,
 	Path(AssetPath { id }): Path<AssetPath>,
 ) -> Result<Json<CachedAssetInfo>, AssetError> {
 	state

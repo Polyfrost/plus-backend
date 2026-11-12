@@ -1,4 +1,4 @@
-pub(crate) mod admin_auth;
+mod permissions;
 mod api_tokens;
 mod docs;
 mod eos;
@@ -117,19 +117,11 @@ fn init_openapi_spec<'a>(
 				location: ApiKeyLocation::Header,
 				name: api_tokens::TOKEN_HEADER.to_string(),
 				description: Some(
-					"A token that lifts the rate limit on the paths it is \
-					 scoped to. Grants no access of its own."
+					"An external service's token. It lifts the rate limit on the \
+					 paths it is scoped to, and authenticates the service on \
+					 endpoints guarded by the permissions it was issued with."
 						.to_string(),
 				),
-				extensions: Default::default(),
-			},
-		)
-		.security_scheme(
-			"Admin Password",
-			SecurityScheme::ApiKey {
-				location: ApiKeyLocation::Header,
-				name: "Authorization".to_string(),
-				description: Some("Admin password".to_string()),
 				extensions: Default::default(),
 			},
 		)
@@ -203,7 +195,9 @@ pub(crate) async fn start(args: ServeArgs) {
 			CorsLayer::new()
 				.allow_origin(args.cors_origins)
 				.allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-				.allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+				.allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+				// The dashboard's session cookie.
+				.allow_credentials(true),
 		);
 
 	let mut listeners = Vec::new();

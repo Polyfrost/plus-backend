@@ -12,7 +12,11 @@ use serde::Serialize;
 use super::{
 	AnalyticsError, AnalyticsPeriod, PrivateAnalyticsAuth, resolve_series_bounds,
 };
-use crate::api::{ApiState, state::ANALYTICS_DAILY_JOB};
+use crate::api::{
+	ApiState,
+	permissions::{self, Require, perm},
+	state::ANALYTICS_DAILY_JOB,
+};
 
 pub(super) fn daily_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAnalyticsDaily")
@@ -39,6 +43,8 @@ pub(super) struct DailyResponse {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct DailyPoint {
+	// The `transactions_*` and `gift_transactions` counts are sales figures:
+	// null without VIEW_REVENUE.
 	day: NaiveDate,
 	dau: i32,
 	wau: i32,
@@ -52,11 +58,11 @@ pub(super) struct DailyPoint {
 	cosmetics_acquired_paid: i32,
 	cosmetics_acquired_free: i32,
 	cosmetics_acquired_granted: i32,
-	transactions_completed: i32,
-	transactions_refunded: i32,
-	transactions_partially_refunded: i32,
-	transactions_charged_back: i32,
-	gift_transactions: i32,
+	transactions_completed: Option<i32>,
+	transactions_refunded: Option<i32>,
+	transactions_partially_refunded: Option<i32>,
+	transactions_charged_back: Option<i32>,
+	gift_transactions: Option<i32>,
 	friend_requests_sent: i32,
 	friend_requests_accepted: i32,
 	friendships_created: i32,
@@ -66,6 +72,16 @@ pub(super) struct DailyPoint {
 	session_invites_sent: i32,
 	session_invites_accepted: i32,
 	tracked_link_hits: i32,
+}
+
+impl DailyPoint {
+	fn hide_sales(&mut self) {
+		self.transactions_completed = None;
+		self.transactions_refunded = None;
+		self.transactions_partially_refunded = None;
+		self.transactions_charged_back = None;
+		self.gift_transactions = None;
+	}
 }
 
 impl From<analytics_daily::Model> for DailyPoint {
@@ -84,11 +100,11 @@ impl From<analytics_daily::Model> for DailyPoint {
 			cosmetics_acquired_paid: row.cosmetics_acquired_paid,
 			cosmetics_acquired_free: row.cosmetics_acquired_free,
 			cosmetics_acquired_granted: row.cosmetics_acquired_granted,
-			transactions_completed: row.transactions_completed,
-			transactions_refunded: row.transactions_refunded,
-			transactions_partially_refunded: row.transactions_partially_refunded,
-			transactions_charged_back: row.transactions_charged_back,
-			gift_transactions: row.gift_transactions,
+			transactions_completed: Some(row.transactions_completed),
+			transactions_refunded: Some(row.transactions_refunded),
+			transactions_partially_refunded: Some(row.transactions_partially_refunded),
+			transactions_charged_back: Some(row.transactions_charged_back),
+			gift_transactions: Some(row.gift_transactions),
 			friend_requests_sent: row.friend_requests_sent,
 			friend_requests_accepted: row.friend_requests_accepted,
 			friendships_created: row.friendships_created,
@@ -105,7 +121,7 @@ impl From<analytics_daily::Model> for DailyPoint {
 #[tracing::instrument(level = "debug", skip(state))]
 pub(super) async fn daily_endpoint(
 	State(state): State<ApiState>,
-	_auth: PrivateAnalyticsAuth,
+	Require(_, granted): PrivateAnalyticsAuth,
 	Query(period): Query<AnalyticsPeriod>,
 ) -> Result<Json<DailyResponse>, AnalyticsError> {
 	let (start, end) =
@@ -119,6 +135,12 @@ pub(super) async fn daily_endpoint(
 		.await?
 		.into_iter()
 		.map(DailyPoint::from)
+		.map(|mut point| {
+			if !permissions::has(granted, perm::VIEW_REVENUE) {
+				point.hide_sales();
+			}
+			point
+		})
 		.collect();
 
 	let computed_through = AnalyticsJobState::find_by_id(ANALYTICS_DAILY_JOB)

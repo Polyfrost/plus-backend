@@ -10,9 +10,12 @@ use sea_orm::{ColumnTrait as _, EntityTrait, QueryFilter as _, QueryOrder as _};
 use serde::Serialize;
 
 use super::{
-	AnalyticsError, AnalyticsPeriod, PrivateAnalyticsAuth, resolve_series_bounds,
+	AnalyticsError, AnalyticsPeriod, resolve_series_bounds,
 };
-use crate::api::ApiState;
+use crate::api::{
+	ApiState,
+	permissions::{Require, perm},
+};
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct MonetizationResponse {
@@ -74,7 +77,7 @@ pub(super) fn monetization_doc(op: TransformOperation) -> TransformOperation {
 #[tracing::instrument(level = "debug", skip(state))]
 pub(super) async fn monetization_endpoint(
 	State(state): State<ApiState>,
-	_auth: PrivateAnalyticsAuth,
+	_auth: Require<{ perm::VIEW_ANALYTICS | perm::VIEW_REVENUE }>,
 	Query(period): Query<AnalyticsPeriod>,
 ) -> Result<Json<MonetizationResponse>, AnalyticsError> {
 	let (start, end) =
