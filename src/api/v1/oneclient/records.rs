@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use aide::{
 	OperationOutput,
 	axum::{
@@ -28,15 +30,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-	DOWNLOAD_TTL, LIST_PAGE_SIZE, MAX_ACCOUNT_BYTES, MAX_DEVICE_CHARS, MAX_FORMAT,
-	MAX_LIVE_RECORDS, MAX_NAME_CHARS, MAX_PAYLOAD_BYTES, MAX_PUBLIC_SHARES,
-	MAX_TOMBSTONES, MAX_VERSION_CHARS, PUBLIC_SHARE_TTL, SyncError, UPLOAD_GRACE,
-	UPLOAD_TTL,
+	DOWNLOAD_TTL, LIST_PAGE_SIZE, MAX_DEVICE_CHARS, MAX_FORMAT, MAX_NAME_CHARS,
+	MAX_VERSION_CHARS, SyncError, UPLOAD_GRACE, UPLOAD_TTL,
 	payload::{self, Contents, Declared, PayloadError},
 	storage::{SyncStorage, TempFile},
 };
 use crate::api::{
 	ApiState,
+	settings::ClusterSharing,
 	v0::account::{AuthenticatedPlayer, OptionalAuthenticationExtractor},
 };
 
@@ -206,7 +207,7 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Lists the authenticated player's OneClient instances of one `visibility` \
 			 (`private` for synced, `public` for shared), including deleted markers \
-			 kept for 90 days. Requires `mine=1`. Paged by `cursor` past 200 records; \
+			 kept for a while. Requires `mine=1`. Paged by `cursor` past 200 records; \
 			 `since` limits the list to records updated after that time.",
 		)
 		.tag("oneclient")
@@ -238,8 +239,8 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 			"Reserves revision 1 of a new `private` (synced) or `public` (shared by \
 			 code) record and returns a signed upload target. The upload must carry \
 			 exactly the declared `size`. The record stays hidden until \
-			 `POST /shares/{id}/commit` succeeds. Public shares expire 90 days after \
-			 they were last updated or read.",
+			 `POST /shares/{id}/commit` succeeds. Public shares expire some time after \
+			 they were last updated or read; `GET /limits` says when.",
 		)
 		.tag("oneclient")
 }
@@ -360,7 +361,10 @@ fn is_plain_text(value: &str, max: usize) -> bool {
 	count > 0 && count <= max && !value.chars().any(char::is_control)
 }
 
-fn validate(body: &UploadRequest) -> Result<(Declared, bool, String), SyncError> {
+fn validate(
+	body: &UploadRequest,
+	limits: &ClusterSharing,
+) -> Result<(Declared, bool, String), SyncError> {
 	let invalid = |message: &str| Err(SyncError::InvalidRequest(message.to_string()));
 
 	if !(1..=MAX_FORMAT).contains(&body.format) {
@@ -387,10 +391,10 @@ fn validate(body: &UploadRequest) -> Result<(Declared, bool, String), SyncError>
 	if body.size <= 0 {
 		return invalid("The size must be positive");
 	}
-	if body.size as u64 > MAX_PAYLOAD_BYTES {
+	if body.size as u64 > limits.max_payload_bytes {
 		return Err(SyncError::TooLarge {
 			size: body.size,
-			limit: MAX_PAYLOAD_BYTES,
+			limit: limits.max_payload_bytes,
 		});
 	}
 	let sha512 = body.sha512.trim().to_ascii_lowercase();
@@ -544,7 +548,8 @@ async fn keep_alive(
 	let Some(expires_at) = record.expires_at else {
 		return Ok(());
 	};
-	let renewed = Utc::now() + PUBLIC_SHARE_TTL;
+	let ttl = state.settings.get().cluster_sharing.public_share_ttl_secs;
+	let renewed = Utc::now() + Duration::from_secs(ttl);
 	if record.deleted || renewed - expires_at.with_timezone(&Utc) < EXPIRY_REFRESH {
 		return Ok(());
 	}
@@ -712,11 +717,11 @@ async fn usage(
 	Ok((records, committed + pending))
 }
 
-fn check_quota(used: i64, size: i64) -> Result<(), SyncError> {
-	if used.saturating_add(size) > MAX_ACCOUNT_BYTES {
+fn check_quota(used: i64, size: i64, max: i64) -> Result<(), SyncError> {
+	if used.saturating_add(size) > max {
 		return Err(SyncError::LimitReached(format!(
 			"Synced and shared instances can use at most {:.1} GiB in total",
-			MAX_ACCOUNT_BYTES as f64 / (1024. * 1024. * 1024.)
+			max as f64 / (1024. * 1024. * 1024.)
 		)));
 	}
 	Ok(())
@@ -725,6 +730,7 @@ fn check_quota(used: i64, size: i64) -> Result<(), SyncError> {
 async fn prune_tombstones(
 	txn: &DatabaseTransaction,
 	player_id: i32,
+	keep: u64,
 ) -> Result<(), SyncError> {
 	let stale: Vec<i32> = OneclientSyncRecord::find()
 		.select_only()
@@ -732,7 +738,7 @@ async fn prune_tombstones(
 		.filter(oneclient_sync_record::Column::PlayerId.eq(player_id))
 		.filter(oneclient_sync_record::Column::Deleted.eq(true))
 		.order_by_desc(oneclient_sync_record::Column::UpdatedAt)
-		.offset(MAX_TOMBSTONES)
+		.offset(keep)
 		.into_tuple()
 		.all(txn)
 		.await?;
@@ -912,9 +918,11 @@ async fn create(
 			));
 		}
 	};
-	let (declared, provisioned, device) = validate(&body)?;
+	let settings = state.settings.get();
+	let limits = &settings.cluster_sharing;
+	let (declared, provisioned, device) = validate(&body, limits)?;
 	let provisioned = provisioned && visibility == PRIVATE;
-	storage.check_write(player.id, declared.size).await?;
+	storage.check_write(player.id, declared.size, limits).await?;
 
 	let txn = state.database.begin().await?;
 	lock_player(&txn, &player).await?;
@@ -924,18 +932,20 @@ async fn create(
 		.iter()
 		.filter(|record| record.visibility == visibility)
 		.count() as u64;
-	if visibility == PRIVATE && same_kind >= MAX_LIVE_RECORDS {
+	if visibility == PRIVATE && same_kind >= limits.max_synced_instances {
 		return Err(SyncError::LimitReached(format!(
-			"You can sync at most {MAX_LIVE_RECORDS} instances"
+			"You can sync at most {} instances",
+			limits.max_synced_instances
 		)));
 	}
-	if visibility == PUBLIC && same_kind >= MAX_PUBLIC_SHARES {
+	if visibility == PUBLIC && same_kind >= limits.max_public_shares {
 		return Err(SyncError::LimitReached(format!(
-			"You can share at most {MAX_PUBLIC_SHARES} instances at once"
+			"You can share at most {} instances at once",
+			limits.max_public_shares
 		)));
 	}
-	check_quota(used, declared.size)?;
-	prune_tombstones(&txn, player.id).await?;
+	check_quota(used, declared.size, limits.max_account_bytes)?;
+	prune_tombstones(&txn, player.id, limits.max_tombstones).await?;
 
 	let mut code = None;
 	for _ in 0..CODE_ATTEMPTS {
@@ -998,8 +1008,10 @@ async fn update(
 	let storage = storage(&state)?;
 	let code = parse_code(&path.id)?;
 	let if_match = parse_if_match(&headers)?;
-	let (declared, provisioned, device) = validate(&body)?;
-	storage.check_write(player.id, declared.size).await?;
+	let settings = state.settings.get();
+	let limits = &settings.cluster_sharing;
+	let (declared, provisioned, device) = validate(&body, limits)?;
+	storage.check_write(player.id, declared.size, limits).await?;
 
 	let owner_id = find_code(&state.database, &code)
 		.await?
@@ -1061,7 +1073,7 @@ async fn update(
 	} else {
 		0
 	};
-	check_quota(used - current, declared.size)?;
+	check_quota(used - current, declared.size, limits.max_account_bytes)?;
 
 	let upload = new_upload(
 		record.id,
@@ -1141,7 +1153,9 @@ async fn apply_commit(
 		});
 	};
 
-	storage.check_write(player_id, upload.size).await?;
+	let settings = state.settings.get();
+	let limits = &settings.cluster_sharing;
+	storage.check_write(player_id, upload.size, limits).await?;
 
 	match storage.uploaded_size(&upload.staging_key).await? {
 		None => return Err(SyncError::UploadMissing),
@@ -1169,8 +1183,9 @@ async fn apply_commit(
 	};
 	let (input_path, output_path) =
 		(input.path().to_path_buf(), output.path().to_path_buf());
+	let max_size = limits.max_payload_bytes;
 	let sanitized = tokio::task::spawn_blocking(move || {
-		payload::sanitize(&input_path, &output_path, &declared)
+		payload::sanitize(&input_path, &output_path, &declared, max_size)
 	})
 	.await
 	.map_err(|error| SyncError::Io(std::io::Error::other(error)))?;
@@ -1242,7 +1257,8 @@ async fn apply_commit(
 	active.provisioned = Set(upload.provisioned);
 	active.updated_by = Set(upload.device.clone());
 	if record_is_public {
-		active.expires_at = Set(Some((Utc::now() + PUBLIC_SHARE_TTL).fixed_offset()));
+		let ttl = Duration::from_secs(limits.public_share_ttl_secs);
+		active.expires_at = Set(Some((Utc::now() + ttl).fixed_offset()));
 	}
 	active.object_key = Set(Some(key));
 	active.contents = Set(serde_json::to_value(&sanitized.contents).ok());

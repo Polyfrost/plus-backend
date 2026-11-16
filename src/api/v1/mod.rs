@@ -9,11 +9,12 @@ pub(super) mod party;
 mod paynow;
 mod referrals;
 mod roles;
+mod settings;
 mod special_chat;
 mod store;
 mod tokens;
 
-pub(super) use oneclient::{SyncStorage, spawn_sync_sweeper};
+pub(super) use oneclient::{MAX_UNCOMPRESSED_BYTES, SyncStorage, spawn_sync_sweeper};
 pub(super) use paynow::spawn_expiry_sweeper;
 
 use aide::axum::ApiRouter;
@@ -36,6 +37,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(party::router())
 		.merge(referrals::router())
 		.merge(roles::router())
+		.merge(settings::router())
 		.merge(dashboard::router())
 		.merge(special_chat::router())
 		.merge(store::router())

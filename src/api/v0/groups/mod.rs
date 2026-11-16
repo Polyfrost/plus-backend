@@ -4,6 +4,8 @@ mod messages;
 
 pub(crate) use create::get_or_create_dm_group;
 
+use std::time::Duration;
+
 use aide::{OperationInput, OperationIo, axum::ApiRouter};
 use axum::{
 	extract::FromRequestParts,
@@ -153,8 +155,8 @@ pub enum GroupError {
 	MessageMissing,
 	#[error("Group names must be between 1 and 64 characters")]
 	InvalidName,
-	#[error("Message content must be between 1 and 4000 characters")]
-	InvalidContent,
+	#[error("Message content must be between 1 and {0} characters")]
+	InvalidContent(usize),
 	#[error("You may only edit or delete your own messages")]
 	MessageForbidden,
 	#[error(
@@ -189,7 +191,7 @@ impl IntoResponse for GroupError {
 				| Self::AlreadyMember
 				| Self::NotSpecialChatGroup
 				| Self::NotSpecialChatAccount => StatusCode::CONFLICT,
-				Self::InvalidContent | Self::InvalidName => StatusCode::BAD_REQUEST,
+				Self::InvalidContent(_) | Self::InvalidName => StatusCode::BAD_REQUEST,
 				Self::NotAMember | Self::NotOwner | Self::MessageForbidden => {
 					StatusCode::FORBIDDEN
 				}
@@ -283,8 +285,6 @@ pub(super) fn member_cap(kind: &GroupKind) -> usize {
 	}
 }
 
-pub(super) const SPECIAL_CHAT_COOLDOWN_SECS: i64 = 72 * 60 * 60;
-
 pub(super) async fn try_consume_special_chat_cooldown(
 	state: &ApiState,
 	sender_id: i32,
@@ -307,7 +307,7 @@ pub(super) async fn try_consume_special_chat_cooldown(
 			[
 				sender_id.into(),
 				target_id.into(),
-				(SPECIAL_CHAT_COOLDOWN_SECS as f64).into(),
+				(state.settings.get().chat.special_chat_cooldown_secs as f64).into(),
 			],
 		))
 		.await?;
@@ -381,9 +381,8 @@ pub(super) async fn special_chat_cooldown_until(
 		.one(&state.database)
 		.await?;
 
-	Ok(row.map(|row| {
-		row.last_sent_at + chrono::Duration::seconds(SPECIAL_CHAT_COOLDOWN_SECS)
-	}))
+	let cooldown = state.settings.get().chat.special_chat_cooldown_secs;
+	Ok(row.map(|row| row.last_sent_at + Duration::from_secs(cooldown)))
 }
 
 pub(crate) fn v1_router() -> ApiRouter<ApiState> {

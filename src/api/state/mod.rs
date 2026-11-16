@@ -36,6 +36,7 @@ use crate::{
 		eos::EosClient,
 		lockouts::LockoutLog,
 		rate_limit::{RateLimiter, RequestLimits},
+		settings::SharedSettings,
 		v0::{
 			account::links::{self, DiscordOAuth},
 			cosmetics::CachedAssetInfo,
@@ -124,6 +125,7 @@ pub(super) struct ApiState {
 	pub(super) discord: Option<DiscordOAuth>,
 	pub(super) link_states: Cache<String, i32>,
 	pub(super) oneclient_sync: Option<SyncStorage>,
+	pub(super) settings: SharedSettings,
 	pub(super) instrumentation: Instrumentation,
 	pub(super) eos: Option<EosClient>,
 	pub(super) party: PartyRuntime,
@@ -177,6 +179,8 @@ impl ApiState {
 
 		let oidc_signing_key = oidc::load_or_generate_signing_key(&database).await;
 		let lockouts = LockoutLog::spawn(database.clone());
+		let settings = SharedSettings::load(&args.settings_path)
+			.expect("Unable to load the settings file");
 
 		ApiState {
 			paynow: PayNowApiState::new(args),
@@ -233,7 +237,12 @@ impl ApiState {
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			discord: DiscordOAuth::from_args(args),
 			link_states: links::new_link_state_cache(),
-			oneclient_sync: SyncStorage::connect(args, &lockouts),
+			oneclient_sync: SyncStorage::connect(
+				args,
+				&lockouts,
+				&settings.get().cluster_sharing,
+			),
+			settings,
 			instrumentation,
 			eos: EosClient::from_args(args),
 			party: PartyRuntime::new(),

@@ -43,6 +43,7 @@ MUST_BE_GUARDED = {
 	("delete", "/v1/players/{player}/roles/{id}"), ("get", "/v1/tokens"),
 	("post", "/v1/tokens"), ("get", "/v1/analytics/health"),
 	("post", "/v1/admin/special-chat/token"), ("get", "/v1/admin/special-chat/targets"),
+	("get", "/v1/admin/settings"), ("patch", "/v1/admin/settings"),
 	("post", "/cosmetics/grant"), ("get", "/links"), ("post", "/links"),
 	("get", "/players/by-link/{provider}/{provider_user_id}"),
 }

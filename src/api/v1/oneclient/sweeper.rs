@@ -11,7 +11,7 @@ use sea_orm::{
 use tracing::warn;
 
 use super::{
-	SyncError, TOMBSTONE_RETENTION, UPLOAD_GRACE,
+	SyncError, UPLOAD_GRACE,
 	records::{discard, discard_staging},
 	storage::SyncStorage,
 };
@@ -119,11 +119,12 @@ async fn expire_public_shares(state: &ApiState) -> Result<(), SyncError> {
 }
 
 async fn purge_tombstones(state: &ApiState) -> Result<(), SyncError> {
+	let retention = state.settings.get().cluster_sharing.tombstone_retention_secs;
 	OneclientSyncRecord::delete_many()
 		.filter(oneclient_sync_record::Column::Deleted.eq(true))
 		.filter(
 			oneclient_sync_record::Column::UpdatedAt
-				.lt((Utc::now() - TOMBSTONE_RETENTION).fixed_offset()),
+				.lt((Utc::now() - Duration::from_secs(retention)).fixed_offset()),
 		)
 		.exec(&state.database)
 		.await?;

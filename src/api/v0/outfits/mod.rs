@@ -16,8 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::ApiState;
 
-pub(super) const OUTFIT_LIMIT: u64 = 128;
-pub(super) const SKIN_LIMIT: u64 = 128;
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_CAPE_ID_LENGTH: usize = 64;
 const MIN_TEXTURE_HASH_LENGTH: usize = 32;
@@ -38,10 +36,10 @@ pub enum OutfitError {
 	SkinMissing,
 	#[error("The given skin is not in your skin library")]
 	InvalidSkin,
-	#[error("You can have at most {} outfits", OUTFIT_LIMIT)]
-	OutfitLimit,
-	#[error("You can have at most {} skins", SKIN_LIMIT)]
-	SkinLimit,
+	#[error("You can have at most {0} outfits")]
+	OutfitLimit(u64),
+	#[error("You can have at most {0} skins")]
+	SkinLimit(u64),
 	#[error(
 		"Names must be between 1 and {} characters long, without control characters",
 		MAX_NAME_LENGTH
@@ -74,7 +72,7 @@ impl IntoResponse for OutfitError {
 				| Self::InvalidCapeId
 				| Self::InvalidTextureHash
 				| Self::InvalidBlank => StatusCode::BAD_REQUEST,
-				Self::OutfitLimit | Self::SkinLimit => StatusCode::CONFLICT,
+				Self::OutfitLimit(_) | Self::SkinLimit(_) => StatusCode::CONFLICT,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			},
 			self,

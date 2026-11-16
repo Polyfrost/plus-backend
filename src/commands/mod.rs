@@ -1,6 +1,6 @@
 pub(crate) mod provision;
 
-use std::{net::SocketAddr, str::FromStr};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 
 use axum_client_ip::ClientIpSource;
 use bpaf::Bpaf;
@@ -196,6 +196,13 @@ pub(crate) struct ServeArgs {
 		optional
 	)]
 	pub(crate) oneclient_sync_bucket: Option<String>,
+	/// The settings staff change from the dashboard, created when first changed
+	#[bpaf(
+		long("settings-path"),
+		env("SETTINGS_PATH"),
+		fallback(PathBuf::from("settings.json"))
+	)]
+	pub(crate) settings_path: PathBuf,
 	#[bpaf(
 		long("eos-trusted-client-id"),
 		env("EOS_TRUSTED_CLIENT_ID"),

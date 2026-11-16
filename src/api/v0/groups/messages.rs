@@ -76,7 +76,6 @@ async fn require_not_blocked_by_members(
 	Ok(())
 }
 
-const MAX_MESSAGE_LENGTH: usize = 4000;
 const DEFAULT_PAGE_SIZE: u64 = 50;
 const MAX_PAGE_SIZE: u64 = 200;
 
@@ -272,8 +271,9 @@ async fn send(
 	require_not_blocked_by_members(&state, id, player.id).await?;
 
 	let content = body.content.trim();
-	if content.is_empty() || content.chars().count() > MAX_MESSAGE_LENGTH {
-		return Err(GroupError::InvalidContent);
+	let max = state.settings.get().chat.max_message_length;
+	if content.is_empty() || content.chars().count() > max {
+		return Err(GroupError::InvalidContent(max));
 	}
 
 	if let Some(key) = body.idempotency_key
@@ -372,8 +372,9 @@ async fn edit(
 	require_not_blocked_by_members(&state, id, player.id).await?;
 
 	let content = body.content.trim();
-	if content.is_empty() || content.chars().count() > MAX_MESSAGE_LENGTH {
-		return Err(GroupError::InvalidContent);
+	let max = state.settings.get().chat.max_message_length;
+	if content.is_empty() || content.chars().count() > max {
+		return Err(GroupError::InvalidContent(max));
 	}
 
 	let session_invite_id = message.session_invite_id;

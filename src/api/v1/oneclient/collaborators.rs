@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-	MAX_COLLABORATORS, SyncError,
+	SyncError,
 	records::{PUBLIC, RecordPath, find_code, is_collaborator, parse_code, storage},
 };
 use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
@@ -71,7 +71,7 @@ fn add_doc(op: TransformOperation) -> TransformOperation {
 			"Adds a collaborator by Minecraft username. Collaborators can upload new \
 			 revisions of the share, always with `If-Match`, but can't delete it or \
 			 change who collaborates. The player must have signed in to OneClient \
-			 before. A share can have up to 10 collaborators.",
+			 before. `GET /limits` says how many a share can have.",
 		)
 		.tag("oneclient")
 }
@@ -228,7 +228,10 @@ async fn add(
 	Json(body): Json<AddRequest>,
 ) -> Result<(StatusCode, Json<CollaboratorView>), SyncError> {
 	let record = owned_share(&state, player.id, &path.id).await?;
-	storage(&state)?.check_write(player.id, 0).await?;
+	let settings = state.settings.get();
+	storage(&state)?
+		.check_write(player.id, 0, &settings.cluster_sharing)
+		.await?;
 	let added = resolve_player(&state, &body.username).await?;
 	if added.id == player.id {
 		return Err(SyncError::InvalidRequest(
@@ -241,9 +244,10 @@ async fn add(
 			.filter(oneclient_share_collaborator::Column::RecordId.eq(record.id))
 			.count(&state.database)
 			.await?;
-		if count >= MAX_COLLABORATORS {
+		let max = settings.cluster_sharing.max_collaborators;
+		if count >= max {
 			return Err(SyncError::LimitReached(format!(
-				"A share can have at most {MAX_COLLABORATORS} collaborators"
+				"A share can have at most {max} collaborators"
 			)));
 		}
 		oneclient_share_collaborator::ActiveModel {

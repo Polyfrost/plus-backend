@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-	OUTFIT_LIMIT, OutfitError, OutfitInfo, SkinInfo, lock_player, next_numbered_name,
+	OutfitError, OutfitInfo, SkinInfo, lock_player, next_numbered_name,
 	normalize_cape_id, validate_name,
 };
 use crate::api::{
@@ -38,7 +38,7 @@ use crate::api::{
 	},
 };
 
-const STARTER_OUTFITS: u32 = 8;
+const STARTER_OUTFITS: u64 = 8;
 const OUTFIT_NAME_PREFIX: &str = "Outfit #";
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -221,8 +221,9 @@ async fn seed_starter_outfits(
 	let player = lock_player(&txn, player).await?;
 	let (equipped, particle_color) = current_look(state, &txn, &player).await?;
 
+	let starters = STARTER_OUTFITS.min(state.settings.get().outfits.max_outfits);
 	let mut first = None;
-	for number in 1..=STARTER_OUTFITS {
+	for number in 1..=starters {
 		let outfit = player_outfit::ActiveModel {
 			player_id: Set(player.id),
 			name: Set(format!("{OUTFIT_NAME_PREFIX}{number}")),
@@ -446,7 +447,7 @@ async fn list(
 			})
 			.collect(),
 		active_outfit_id,
-		limit: OUTFIT_LIMIT,
+		limit: state.settings.get().outfits.max_outfits,
 	}))
 }
 
@@ -466,8 +467,9 @@ async fn create(
 		.filter(player_outfit::Column::PlayerId.eq(player.id))
 		.all(&txn)
 		.await?;
-	if existing.len() as u64 >= OUTFIT_LIMIT {
-		return Err(OutfitError::OutfitLimit);
+	let max = state.settings.get().outfits.max_outfits;
+	if existing.len() as u64 >= max {
+		return Err(OutfitError::OutfitLimit(max));
 	}
 
 	if let Some(skin_id) = body.skin_id {

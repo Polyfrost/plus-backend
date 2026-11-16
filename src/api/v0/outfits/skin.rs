@@ -19,7 +19,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-	OutfitError, SKIN_LIMIT, SkinInfo, SkinModel, lock_player, next_numbered_name,
+	OutfitError, SkinInfo, SkinModel, lock_player, next_numbered_name,
 	normalize_texture_hash, validate_name,
 };
 use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
@@ -144,7 +144,7 @@ async fn list(
 
 	Ok(Json(SkinListResponse {
 		skins: skins.into_iter().map(SkinInfo::from_model).collect(),
-		limit: SKIN_LIMIT,
+		limit: state.settings.get().outfits.max_skins,
 	}))
 }
 
@@ -173,8 +173,9 @@ async fn add(
 	if let Some(skin) = existing.iter().find(|skin| skin.hash == hash) {
 		return Ok((StatusCode::OK, Json(SkinInfo::from_model(skin.clone()))));
 	}
-	if existing.len() as u64 >= SKIN_LIMIT {
-		return Err(OutfitError::SkinLimit);
+	let max = state.settings.get().outfits.max_skins;
+	if existing.len() as u64 >= max {
+		return Err(OutfitError::SkinLimit(max));
 	}
 
 	let skin = player_skin::ActiveModel {

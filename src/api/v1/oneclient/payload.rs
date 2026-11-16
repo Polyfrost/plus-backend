@@ -13,7 +13,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha512};
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use super::MAX_PAYLOAD_BYTES;
 
 const INDEX_ENTRY: &str = "modrinth.index.json";
 const SHARE_ENTRY: &str = "oneclient.cluster.json";
@@ -23,7 +22,7 @@ const ICON_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
 
 const MAX_ENTRIES: usize = 20_000;
 const MAX_ENTRY_NAME: usize = 512;
-const MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+pub(in crate::api) const MAX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SHARE_BYTES: u64 = 1024 * 1024;
 const MAX_ICON_BYTES: u64 = 8 * 1024 * 1024;
@@ -355,9 +354,10 @@ pub(super) fn sanitize(
 	input: &Path,
 	output: &Path,
 	declared: &Declared,
+	max_size: u64,
 ) -> Result<Sanitized, PayloadError> {
 	let (size, sha512) = sha512_file(input)?;
-	if size > MAX_PAYLOAD_BYTES {
+	if size > max_size {
 		return Err(invalid("The payload is over the size limit"));
 	}
 	if size as i64 != declared.size || sha512 != declared.sha512 {
@@ -496,7 +496,7 @@ pub(super) fn sanitize(
 
 	write_archive(&mut archive, &plan, &index, &share, output)?;
 	let (size, sha512) = sha512_file(output)?;
-	if size > MAX_PAYLOAD_BYTES {
+	if size > max_size {
 		return Err(invalid("The payload is over the size limit"));
 	}
 
@@ -817,6 +817,8 @@ mod tests {
 
 	use super::*;
 
+	const MAX_SIZE: u64 = 50 * 1024 * 1024;
+
 	fn declared(path: &Path) -> Declared {
 		let (size, sha512) = sha512_file(path).expect("test setup");
 		Declared {
@@ -954,7 +956,8 @@ mod tests {
 			],
 		);
 
-		let result = sanitize(&input, &output, &declared(&input)).expect("test setup");
+		let result =
+			sanitize(&input, &output, &declared(&input), MAX_SIZE).expect("test setup");
 		assert!(!result.rewritten);
 		assert!(result.removed.is_empty());
 
@@ -1001,7 +1004,8 @@ mod tests {
 			],
 		);
 
-		let result = sanitize(&input, &output, &declared(&input)).expect("test setup");
+		let result =
+			sanitize(&input, &output, &declared(&input), MAX_SIZE).expect("test setup");
 		assert!(result.rewritten);
 		assert_eq!(
 			result.removed,
@@ -1044,7 +1048,7 @@ mod tests {
 			],
 		);
 		assert!(matches!(
-			sanitize(&input, &output, &declared(&input)),
+			sanitize(&input, &output, &declared(&input), MAX_SIZE),
 			Err(PayloadError::Invalid(_))
 		));
 
@@ -1055,14 +1059,14 @@ mod tests {
 		let mut wrong = declared(&input);
 		wrong.mc_version = "1.20.1".into();
 		assert!(matches!(
-			sanitize(&input, &output, &wrong),
+			sanitize(&input, &output, &wrong, MAX_SIZE),
 			Err(PayloadError::Invalid(_))
 		));
 
 		let mut tampered = declared(&input);
 		tampered.sha512 = "0".repeat(128);
 		assert!(matches!(
-			sanitize(&input, &output, &tampered),
+			sanitize(&input, &output, &tampered, MAX_SIZE),
 			Err(PayloadError::Invalid(_))
 		));
 

@@ -98,6 +98,14 @@ impl<K: LimitKey> RateLimiter<K> {
 		}
 	}
 
+	pub(in crate::api) fn limit(&self) -> u32 {
+		self.limit
+	}
+
+	pub(in crate::api) fn window(&self) -> Duration {
+		self.window
+	}
+
 	/// Records a hit, returning how long to wait once the key is over its
 	/// limit. Each lockout lasts at least the rest of the window, and twice the
 	/// previous one if the key offends again before behaving for that long.

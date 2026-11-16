@@ -6,9 +6,13 @@ mod sweeper;
 
 use std::time::Duration;
 
-use aide::{OperationIo, axum::ApiRouter};
+use aide::{
+	OperationIo,
+	axum::{ApiRouter, routing::get_with},
+};
 use axum::{
 	Json,
+	extract::State,
 	http::{HeaderValue, StatusCode, header},
 	response::{IntoResponse, Response},
 };
@@ -16,38 +20,44 @@ use chrono::{DateTime, Utc};
 use sea_orm::DbErr;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-pub(in crate::api) use self::{storage::SyncStorage, sweeper::spawn_sync_sweeper};
-use crate::api::ApiState;
+pub(in crate::api) use self::{
+	payload::MAX_UNCOMPRESSED_BYTES, storage::SyncStorage, sweeper::spawn_sync_sweeper,
+};
+use crate::api::{ApiState, settings::ClusterSharing, v0::account::AuthenticatedPlayer};
 
-const MAX_PAYLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_NAME_CHARS: usize = 64;
 const MAX_DEVICE_CHARS: usize = 64;
 const MAX_VERSION_CHARS: usize = 32;
 const MAX_FORMAT: i32 = 1000;
-const MAX_LIVE_RECORDS: u64 = 2;
-const MAX_ACCOUNT_BYTES: i64 = 12 * 1024 * 1024 * 1024 / 10;
-const MAX_PUBLIC_SHARES: u64 = 10;
-const MAX_COLLABORATORS: u64 = 10;
-const PUBLIC_SHARE_TTL: Duration = Duration::from_secs(90 * 24 * 60 * 60);
-const MAX_TOMBSTONES: u64 = 500;
 const LIST_PAGE_SIZE: u64 = 200;
 const UPLOAD_TTL: Duration = Duration::from_secs(60 * 60);
 const UPLOAD_GRACE: Duration = Duration::from_secs(5 * 60);
 const DOWNLOAD_TTL: Duration = Duration::from_secs(10 * 60);
-const TOMBSTONE_RETENTION: Duration = Duration::from_secs(90 * 24 * 60 * 60);
-const WRITE_WINDOW: Duration = Duration::from_secs(60 * 60);
-const WRITES_PER_WINDOW: u32 = 240;
-const LARGE_WRITE_BYTES: i64 = 16 * 1024 * 1024;
-const LARGE_WRITES_PER_WINDOW: u32 = 24;
 const CONCURRENT_VALIDATIONS: usize = 4;
 
 pub(super) fn router() -> ApiRouter<ApiState> {
-	records::router().merge(collaborators::router()).layer(
-		SetResponseHeaderLayer::overriding(
+	records::router()
+		.merge(collaborators::router())
+		.api_route(
+			"/limits",
+			get_with(self::limits, |op| {
+				op.id("getSyncLimits")
+					.summary("Get the current sync and share limits")
+					.description("Staff can change these at any time.")
+					.tag("oneclient")
+			}),
+		)
+		.layer(SetResponseHeaderLayer::overriding(
 			header::CACHE_CONTROL,
 			HeaderValue::from_static("no-store"),
-		),
-	)
+		))
+}
+
+async fn limits(
+	State(state): State<ApiState>,
+	_player: AuthenticatedPlayer,
+) -> Json<ClusterSharing> {
+	Json(state.settings.get().cluster_sharing.clone())
 }
 
 #[derive(thiserror::Error, Debug, OperationIo)]

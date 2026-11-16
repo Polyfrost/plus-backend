@@ -11,12 +11,9 @@ use s3::{Bucket, creds::Credentials, error::S3Error};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use uuid::Uuid;
 
-use super::{
-	CONCURRENT_VALIDATIONS, DOWNLOAD_TTL, LARGE_WRITE_BYTES, LARGE_WRITES_PER_WINDOW,
-	SyncError, WRITE_WINDOW, WRITES_PER_WINDOW,
-};
+use super::{CONCURRENT_VALIDATIONS, DOWNLOAD_TTL, SyncError};
 use crate::{
-	api::{lockouts::LockoutLog, rate_limit::RateLimiter},
+	api::{lockouts::LockoutLog, rate_limit::RateLimiter, settings::ClusterSharing},
 	commands::ServeArgs,
 };
 
@@ -26,10 +23,36 @@ const SLOT_WAIT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub(in crate::api) struct SyncStorage {
 	bucket: Arc<Bucket>,
-	writes: RateLimiter<i32>,
-	large_writes: RateLimiter<i32>,
+	lockouts: LockoutLog,
+	write_limiters: Arc<Mutex<WriteLimiters>>,
 	validations: Arc<Semaphore>,
 	validating: Arc<Mutex<HashSet<i32>>>,
+}
+
+#[derive(Debug, Clone)]
+struct WriteLimiters {
+	writes: RateLimiter<i32>,
+	large_writes: RateLimiter<i32>,
+}
+
+impl WriteLimiters {
+	fn new(lockouts: &LockoutLog, limits: &ClusterSharing) -> Self {
+		let window = Duration::from_secs(limits.write_window_secs);
+		Self {
+			writes: lockouts.limiter("oneclient_writes", limits.writes_per_window, window),
+			large_writes: lockouts.limiter(
+				"oneclient_large_writes",
+				limits.large_writes_per_window,
+				window,
+			),
+		}
+	}
+
+	fn matches(&self, limits: &ClusterSharing) -> bool {
+		self.writes.limit() == limits.writes_per_window
+			&& self.large_writes.limit() == limits.large_writes_per_window
+			&& self.writes.window() == Duration::from_secs(limits.write_window_secs)
+	}
 }
 
 pub(super) struct ValidationSlot<'a> {
@@ -76,6 +99,7 @@ impl SyncStorage {
 	pub(in crate::api) fn connect(
 		args: &ServeArgs,
 		lockouts: &LockoutLog,
+		limits: &ClusterSharing,
 	) -> Option<Self> {
 		let name = args.oneclient_sync_bucket.as_deref()?.trim();
 		if name.is_empty() {
@@ -101,12 +125,8 @@ impl SyncStorage {
 
 		Some(Self {
 			bucket: bucket.into(),
-			writes: lockouts.limiter("oneclient_writes", WRITES_PER_WINDOW, WRITE_WINDOW),
-			large_writes: lockouts.limiter(
-				"oneclient_large_writes",
-				LARGE_WRITES_PER_WINDOW,
-				WRITE_WINDOW,
-			),
+			lockouts: lockouts.clone(),
+			write_limiters: Arc::new(Mutex::new(WriteLimiters::new(lockouts, limits))),
 			validations: Arc::new(Semaphore::new(CONCURRENT_VALIDATIONS)),
 			validating: Arc::default(),
 		})
@@ -116,12 +136,25 @@ impl SyncStorage {
 		&self,
 		player_id: i32,
 		size: i64,
+		limits: &ClusterSharing,
 	) -> Result<(), SyncError> {
-		if let Some(wait) = self.writes.check(player_id).await {
+		// Rebuilt when staff change the limits, which forgets the counts so far.
+		let limiters = {
+			let mut current = self
+				.write_limiters
+				.lock()
+				.unwrap_or_else(PoisonError::into_inner);
+			if !current.matches(limits) {
+				*current = WriteLimiters::new(&self.lockouts, limits);
+			}
+			current.clone()
+		};
+
+		if let Some(wait) = limiters.writes.check(player_id).await {
 			return Err(SyncError::RateLimited(wait));
 		}
-		if size > LARGE_WRITE_BYTES
-			&& let Some(wait) = self.large_writes.check(player_id).await
+		if size > limits.large_write_bytes
+			&& let Some(wait) = limiters.large_writes.check(player_id).await
 		{
 			return Err(SyncError::RateLimited(wait));
 		}

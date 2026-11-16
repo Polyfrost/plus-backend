@@ -4,6 +4,7 @@ mod docs;
 mod eos;
 mod lockouts;
 mod rate_limit;
+mod settings;
 mod state;
 mod v0;
 mod v1;
