@@ -42,8 +42,6 @@ impl FromRequestParts<ApiState> for ChatPlayer {
 		parts: &mut Parts,
 		state: &ApiState,
 	) -> Result<Self, Self::Rejection> {
-		use entities::prelude::*;
-
 		let caller = AuthenticatedPlayer::from_request_parts(parts, state)
 			.await?
 			.0;
@@ -55,35 +53,46 @@ impl FromRequestParts<ApiState> for ChatPlayer {
 			});
 		};
 
-		let forbidden =
-			|| (StatusCode::FORBIDDEN, "Not a delegate of that player").into_response();
 		let uuid = header
 			.to_str()
 			.ok()
 			.and_then(|value| Uuid::parse_str(value).ok())
-			.ok_or_else(forbidden)?;
-		let internal = |e: sea_orm::DbErr| GroupError::Database(e).into_response();
-
-		let owner = User::find()
-			.filter(user::Column::MinecraftUuid.eq(uuid))
-			.one(&state.database)
-			.await
-			.map_err(internal)?
-			.ok_or_else(forbidden)?;
-		if owner.blacklisted {
-			return Err(forbidden());
-		}
-		DmDelegates::find_by_id((owner.id, actual_id))
-			.one(&state.database)
-			.await
-			.map_err(internal)?
-			.ok_or_else(forbidden)?;
+			.ok_or_else(not_a_delegate)?;
+		let owner = delegated_owner(state, actual_id, uuid).await?;
 
 		Ok(Self {
 			player: owner,
 			actual_id,
 		})
 	}
+}
+
+fn not_a_delegate() -> Response {
+	(StatusCode::FORBIDDEN, "Not a delegate of that player").into_response()
+}
+
+/// The player `uuid`, if they delegated their chats to `actual_id`.
+pub(crate) async fn delegated_owner(
+	state: &ApiState,
+	actual_id: i32,
+	uuid: Uuid,
+) -> Result<user::Model, Response> {
+	use entities::prelude::*;
+
+	let internal = |e: sea_orm::DbErr| GroupError::Database(e).into_response();
+	let owner = User::find()
+		.filter(user::Column::MinecraftUuid.eq(uuid))
+		.one(&state.database)
+		.await
+		.map_err(internal)?
+		.filter(|owner| !owner.blacklisted)
+		.ok_or_else(not_a_delegate)?;
+	DmDelegates::find_by_id((owner.id, actual_id))
+		.one(&state.database)
+		.await
+		.map_err(internal)?
+		.ok_or_else(not_a_delegate)?;
+	Ok(owner)
 }
 
 #[derive(Debug)]

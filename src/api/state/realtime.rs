@@ -21,6 +21,11 @@ pub struct RealtimeState {
 	pub connections_by_owner: Arc<RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
 	pub player_runtime: Arc<RwLock<HashMap<Uuid, PlayerRuntimeState>>>,
 	pub watchers: Arc<RwLock<HashMap<Uuid, HashSet<ConnectionId>>>>,
+	/// Delegates' sockets, keyed by the player they act as. They get that
+	/// player's packets but are not their connection: no presence, no session.
+	pub delegate_listeners: Arc<
+		RwLock<HashMap<Uuid, HashMap<ConnectionId, mpsc::UnboundedSender<ClientBoundPacket>>>>,
+	>,
 	pub playtime: PlaytimeSessions,
 }
 

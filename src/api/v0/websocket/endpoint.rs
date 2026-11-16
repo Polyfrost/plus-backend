@@ -8,9 +8,10 @@ use aide::{
 use axum::{
 	body::Body,
 	extract::{
-		State, WebSocketUpgrade,
+		Query, State, WebSocketUpgrade,
 		ws::{Message, WebSocket},
 	},
+	response::IntoResponse,
 	routing::get,
 };
 use chrono::{DateTime, Utc};
@@ -150,7 +151,9 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 						"Establishes a websocket connection to the server. Websocket \
 						 packets can examined from the ClientBoundPacket and \
 						 ServerBoundPacket OpenAPI schemas. This largely follows a \
-						 request-response model, but that may not always be true.",
+						 request-response model, but that may not always be true. \
+						 Pass `?act_as=<uuid>` to receive the packets of a player who \
+						 delegated their chats to you, without appearing as them.",
 					)
 					.tag("misc")
 					.response_with::<{ StatusCode::SWITCHING_PROTOCOLS.as_u16() }, (), _>(
@@ -740,6 +743,13 @@ pub(crate) async fn send_to_owner(
 			let _ = connection.tx.send(make_packet());
 		}
 	}
+	drop(connections);
+
+	if let Some(listeners) = state.realtime.delegate_listeners.read().await.get(&owner) {
+		for tx in listeners.values() {
+			let _ = tx.send(make_packet());
+		}
+	}
 }
 
 /// Takes revoked cosmetics off whoever has them equipped, both in the live
@@ -1118,14 +1128,29 @@ async fn handle_packet(
 	Ok(())
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct EndpointQuery {
+	/// Listen as a player who delegated their chats to the caller. Browsers
+	/// can't set `x-polyplus-act-as` on a websocket, so it goes here instead.
+	act_as: Option<Uuid>,
+}
+
 #[tracing::instrument(level = "debug", skip(state))]
 async fn endpoint(
 	State(state): State<ApiState>,
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	kind: ClientKind,
 	access: TokenAccess,
+	Query(query): Query<EndpointQuery>,
 	ws: WebSocketUpgrade,
 ) -> Response<Body> {
+	if let Some(uuid) = query.act_as {
+		return match crate::api::v0::groups::delegated_owner(&state, player.id, uuid).await {
+			Ok(owner) => listen_as_delegate(state, owner.minecraft_uuid, ws),
+			Err(response) => response,
+		};
+	}
+
 	// Special Chat staff only watch for new messages; they send over HTTP.
 	let listen_only = access == TokenAccess::SpecialChat;
 	// Browsers send their token as the `bearer` subprotocol, and drop the
@@ -1188,6 +1213,38 @@ async fn endpoint(
 
 		unregister_connection(&state, connection_id).await;
 	})
+}
+
+/// Forwards `owner`'s packets and ignores anything sent; the delegate acts over HTTP.
+fn listen_as_delegate(state: ApiState, owner: Uuid, ws: WebSocketUpgrade) -> Response<Body> {
+	ws.protocols(["bearer"])
+		.on_upgrade(async move |mut socket| {
+			let (tx, mut rx) = mpsc::unbounded_channel();
+			let id = Uuid::new_v4();
+			let listeners = &state.realtime.delegate_listeners;
+			listeners.write().await.entry(owner).or_default().insert(id, tx);
+
+			loop {
+				tokio::select! {
+					msg = socket.recv() => if msg.is_none_or(|msg| msg.is_err()) { break },
+					packet = rx.recv() => {
+						let Some(packet) = packet else { break };
+						if send_packet(&mut socket, packet).await.is_err() {
+							break;
+						}
+					}
+				}
+			}
+
+			let mut listeners = listeners.write().await;
+			if let Some(set) = listeners.get_mut(&owner) {
+				set.remove(&id);
+				if set.is_empty() {
+					listeners.remove(&owner);
+				}
+			}
+		})
+		.into_response()
 }
 
 #[cfg(test)]
