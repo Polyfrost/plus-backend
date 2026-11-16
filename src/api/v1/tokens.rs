@@ -8,19 +8,23 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::StatusCode,
 	response::IntoResponse,
 };
 use chrono::{DateTime, FixedOffset, Utc};
+use entities::{api_token, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, Set};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{
-	ApiState,
-	api_tokens::generate_token,
-	permissions::{self, Require, RequirePlayer, perm},
+use crate::{
+	api::{
+		ApiState,
+		api_tokens::generate_token,
+		permissions::{self, Require, RequirePlayer, perm},
+	},
+	utils::pagination::{NumberedPage, PageQuery, fetch_page},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -93,8 +97,8 @@ pub struct CreatedToken {
 	token: String,
 }
 
-impl From<entities::api_token::Model> for TokenInfo {
-	fn from(value: entities::api_token::Model) -> Self {
+impl From<api_token::Model> for TokenInfo {
+	fn from(value: api_token::Model) -> Self {
 		TokenInfo {
 			id: value.id,
 			label: value.label,
@@ -124,8 +128,9 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listApiTokens")
 		.summary("List API tokens")
 		.description(
-			"Lists every token, revoked ones included, without their secrets. \
-			 Requires `MANAGE_API_TOKENS`.",
+			"Lists tokens oldest first, revoked ones included, without their \
+			 secrets, paged by `nb` per 1-indexed `page`. Requires \
+			 `MANAGE_API_TOKENS`.",
 		)
 		.tag("tokens")
 }
@@ -174,8 +179,6 @@ async fn create(
 	RequirePlayer(creator): RequirePlayer<{ perm::MANAGE_API_TOKENS }>,
 	Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<CreatedToken>), TokenError> {
-	use entities::{api_token, prelude::*};
-
 	let label = body.label.trim();
 	if label.is_empty() {
 		return Err(TokenError::InvalidLabel);
@@ -225,17 +228,13 @@ async fn create(
 async fn list(
 	State(state): State<ApiState>,
 	_auth: Require<{ perm::MANAGE_API_TOKENS }>,
-) -> Result<Json<Vec<TokenInfo>>, TokenError> {
-	use entities::{api_token, prelude::*};
-
+	Query(page): Query<PageQuery>,
+) -> Result<Json<NumberedPage<TokenInfo>>, TokenError> {
+	let select = ApiToken::find().order_by_asc(api_token::Column::Id);
 	Ok(Json(
-		ApiToken::find()
-			.order_by_asc(api_token::Column::Id)
-			.all(&state.database)
+		fetch_page(select, &state.database, page)
 			.await?
-			.into_iter()
-			.map(TokenInfo::from)
-			.collect(),
+			.map(TokenInfo::from),
 	))
 }
 
@@ -245,8 +244,6 @@ async fn revoke(
 	_auth: Require<{ perm::MANAGE_API_TOKENS }>,
 	Path(id): Path<i32>,
 ) -> Result<Json<TokenInfo>, TokenError> {
-	use entities::prelude::*;
-
 	let token = ApiToken::find_by_id(id)
 		.one(&state.database)
 		.await?
@@ -255,7 +252,7 @@ async fn revoke(
 		return Ok(Json(token.into()));
 	}
 
-	let mut active: entities::api_token::ActiveModel = token.into();
+	let mut active: api_token::ActiveModel = token.into();
 	active.revoked_at = Set(Some(Utc::now().into()));
 	let revoked = active.update(&state.database).await?;
 

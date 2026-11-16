@@ -10,7 +10,7 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::StatusCode,
 	response::IntoResponse,
 };
@@ -27,7 +27,10 @@ use super::discounts::enabled_by_default;
 use crate::{
 	api::{ApiState, permissions::{self, Require, perm}},
 	pricing::normalise_code,
-	utils::validation::valid_slug,
+	utils::{
+		pagination::{NumberedPage, PageQuery, fetch_page},
+		validation::valid_slug,
+	},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -127,8 +130,9 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listReferrals")
 		.summary("List creator codes")
 		.description(
-			"Lists every creator code with the orders, revenue and tracked-link \
-			 clicks attributed to it. Requires `MANAGE_REFERRALS`; revenue needs `VIEW_REVENUE` too.",
+			"Lists creator codes newest first, paged by `nb` per 1-indexed \
+			 `page`, with the orders, revenue and tracked-link clicks \
+			 attributed to each. Requires `MANAGE_REFERRALS`; revenue needs `VIEW_REVENUE` too.",
 		)
 		.tag("referrals")
 }
@@ -171,11 +175,13 @@ fn remove_doc(op: TransformOperation) -> TransformOperation {
 async fn list(
 	State(state): State<ApiState>,
 	Require(_, granted): Require<{ perm::MANAGE_REFERRALS }>,
-) -> Result<Json<Vec<ReferralView>>, ReferralError> {
-	let rows = Referral::find()
+	Query(page): Query<PageQuery>,
+) -> Result<Json<NumberedPage<ReferralView>>, ReferralError> {
+	let select = Referral::find()
 		.order_by_desc(referral::Column::CreatedAt)
-		.all(&state.database)
-		.await?;
+		.order_by_asc(referral::Column::Code);
+	let rows = fetch_page(select, &state.database, page).await?;
+	let codes: Vec<String> = rows.items.iter().map(|row| row.code.clone()).collect();
 
 	let mut stats: HashMap<String, Stats> = Transaction::find()
 		.select_only()
@@ -193,7 +199,7 @@ async fn list(
 			.cast_as(Alias::new("bigint")),
 			"revenue_minor",
 		)
-		.filter(transaction::Column::ReferralCode.is_not_null())
+		.filter(transaction::Column::ReferralCode.is_in(codes.clone()))
 		.group_by(transaction::Column::ReferralCode)
 		.into_model::<Stats>()
 		.all(&state.database)
@@ -211,7 +217,7 @@ async fn list(
 				.cast_as(Alias::new("bigint")),
 			"clicks",
 		)
-		.filter(tracked_links::Column::ReferralCode.is_not_null())
+		.filter(tracked_links::Column::ReferralCode.is_in(codes))
 		.group_by(tracked_links::Column::ReferralCode)
 		.into_model::<Clicks>()
 		.all(&state.database)
@@ -220,15 +226,11 @@ async fn list(
 		.map(|row| (row.referral_code, row.clicks.unwrap_or_default()))
 		.collect();
 
-	Ok(Json(
-		rows.into_iter()
-			.map(|row| {
-				let stats = stats.remove(&row.code).unwrap_or_default();
-				let clicks = clicks.remove(&row.code).unwrap_or_default();
-				view(row, &stats, clicks, granted)
-			})
-			.collect(),
-	))
+	Ok(Json(rows.map(|row| {
+		let stats = stats.remove(&row.code).unwrap_or_default();
+		let clicks = clicks.remove(&row.code).unwrap_or_default();
+		view(row, &stats, clicks, granted)
+	})))
 }
 
 #[tracing::instrument(level = "debug", skip(state))]

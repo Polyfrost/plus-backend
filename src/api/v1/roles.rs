@@ -8,7 +8,7 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{Path, State},
+	extract::{Path, Query, State},
 	http::StatusCode,
 	response::IntoResponse,
 };
@@ -28,6 +28,7 @@ use crate::{
 		v0::account::AuthenticatedPlayer,
 	},
 	database::DatabaseUserExt,
+	utils::pagination::{NumberedPage, PageQuery, fetch_page},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -317,20 +318,20 @@ async fn members(
 	State(state): State<ApiState>,
 	_auth: Require<{ perm::MANAGE_ROLES }>,
 	Path(id): Path<i32>,
-) -> Result<Json<Vec<Member>>, RoleError> {
+	Query(page): Query<PageQuery>,
+) -> Result<Json<NumberedPage<Member>>, RoleError> {
+	let select = User::find()
+		.inner_join(UserRole)
+		.filter(user_role::Column::RoleId.eq(id))
+		.order_by_asc(user::Column::Username)
+		.order_by_asc(user::Column::Id);
 	Ok(Json(
-		User::find()
-			.inner_join(UserRole)
-			.filter(user_role::Column::RoleId.eq(id))
-			.order_by_asc(user::Column::Username)
-			.all(&state.database)
+		fetch_page(select, &state.database, page)
 			.await?
-			.into_iter()
 			.map(|player| Member {
 				id: player.minecraft_uuid,
 				username: player.username,
-			})
-			.collect(),
+			}),
 	))
 }
 

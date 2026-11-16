@@ -8,12 +8,13 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::{FromRequestParts, Path, State},
+	extract::{FromRequestParts, Path, Query, State},
 	http::{StatusCode, header, request::Parts},
 	response::{IntoResponse, Redirect, Response},
 };
 use axum_client_ip::ClientIp;
 use chrono::{DateTime, FixedOffset};
+use entities::{prelude::*, tracked_link_hits, tracked_links};
 use schemars::JsonSchema;
 use sea_orm::{
 	ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
@@ -26,6 +27,7 @@ use crate::{
 	pricing::normalise_code,
 	utils::{
 		hash::sha256_hex_parts,
+		pagination::{NumberedPage, PageQuery, fetch_page},
 		user_agent::is_bot,
 		validation::{valid_http_url, valid_slug},
 	},
@@ -130,7 +132,7 @@ pub struct LinkInfo {
 }
 
 impl LinkInfo {
-	fn from_model(link: entities::tracked_links::Model) -> Self {
+	fn from_model(link: tracked_links::Model) -> Self {
 		Self {
 			slug: link.slug,
 			target_url: link.target_url,
@@ -149,11 +151,6 @@ struct CreateRequest {
 	/// target so the store can pass it to checkout.
 	#[serde(default)]
 	referral: Option<String>,
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ListResponse {
-	links: Vec<LinkInfo>,
 }
 
 fn redirect_doc(op: TransformOperation) -> TransformOperation {
@@ -183,8 +180,8 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listTrackedLinks")
 		.summary("List tracked links")
 		.description(
-			"Lists every tracked link with its unique-visit count. Requires \
-			 `MANAGE_LINKS`.",
+			"Lists tracked links by unique-visit count, most visited first, \
+			 paged by `nb` per 1-indexed `page`. Requires `MANAGE_LINKS`.",
 		)
 		.tag("links")
 }
@@ -204,8 +201,6 @@ async fn follow(
 	Path(slug): Path<String>,
 	visitor: VisitorId,
 ) -> Result<Redirect, LinksError> {
-	use entities::{prelude::*, tracked_link_hits, tracked_links};
-
 	let slug = slug.to_ascii_lowercase();
 
 	let link = TrackedLinks::find_by_id(&slug)
@@ -249,8 +244,6 @@ async fn create(
 	_auth: Require<{ perm::MANAGE_LINKS }>,
 	Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<LinkInfo>), LinksError> {
-	use entities::{prelude::*, tracked_links};
-
 	if !valid_slug(&body.slug) {
 		return Err(LinksError::InvalidSlug);
 	}
@@ -293,18 +286,16 @@ async fn create(
 async fn list(
 	State(state): State<ApiState>,
 	_auth: Require<{ perm::MANAGE_LINKS }>,
-) -> Result<Json<ListResponse>, LinksError> {
-	use entities::{prelude::*, tracked_links};
-
-	let links = TrackedLinks::find()
+	Query(page): Query<PageQuery>,
+) -> Result<Json<NumberedPage<LinkInfo>>, LinksError> {
+	let select = TrackedLinks::find()
 		.order_by_desc(tracked_links::Column::Clicks)
-		.all(&state.database)
-		.await?
-		.into_iter()
-		.map(LinkInfo::from_model)
-		.collect();
-
-	Ok(Json(ListResponse { links }))
+		.order_by_asc(tracked_links::Column::Slug);
+	Ok(Json(
+		fetch_page(select, &state.database, page)
+			.await?
+			.map(LinkInfo::from_model),
+	))
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
@@ -313,8 +304,6 @@ async fn delete(
 	_auth: Require<{ perm::MANAGE_LINKS }>,
 	Path(slug): Path<String>,
 ) -> Result<StatusCode, LinksError> {
-	use entities::prelude::*;
-
 	let result = TrackedLinks::delete_by_id(slug.to_ascii_lowercase())
 		.exec(&state.database)
 		.await?;
@@ -326,7 +315,7 @@ async fn delete(
 	Ok(StatusCode::NO_CONTENT)
 }
 
-fn target(link: &entities::tracked_links::Model) -> String {
+fn target(link: &tracked_links::Model) -> String {
 	let Some(code) = &link.referral_code else {
 		return link.target_url.clone();
 	};
@@ -344,11 +333,13 @@ fn target(link: &entities::tracked_links::Model) -> String {
 mod tests {
 	use std::net::IpAddr;
 
+	use entities::tracked_links;
+
 	use super::VisitorId;
 
 	#[test]
 	fn referral_rides_along_as_ref() {
-		let link = |target: &str, code: Option<&str>| entities::tracked_links::Model {
+		let link = |target: &str, code: Option<&str>| tracked_links::Model {
 			slug: "x".into(),
 			target_url: target.into(),
 			clicks: 0,

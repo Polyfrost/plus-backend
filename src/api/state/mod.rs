@@ -50,6 +50,9 @@ use crate::{
 
 /// How long to wait for a free database connection before giving up.
 const DATABASE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Upper bound on pooled database connections. sqlx defaults to 10, which
+/// runs dry at peak traffic; postgres allows 100 across all services.
+const DATABASE_MAX_CONNECTIONS: u32 = 30;
 /// How long a player must wait between global chat messages.
 const GLOBAL_CHAT_COOLDOWN: Duration = Duration::from_secs(2);
 /// The window one address's checkout attempts are counted over.
@@ -346,6 +349,7 @@ async fn connect_database(database_url: &str) -> DatabaseConnection {
 		let mut opts = ConnectOptions::new(database_url);
 
 		opts.acquire_timeout(DATABASE_ACQUIRE_TIMEOUT);
+		opts.max_connections(DATABASE_MAX_CONNECTIONS);
 		opts.sqlx_logging(false);
 
 		opts

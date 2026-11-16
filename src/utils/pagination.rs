@@ -4,7 +4,10 @@ use std::{
 };
 
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select};
+use sea_orm::{
+	ColumnTrait, ConnectionTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+	QuerySelect, Select, SelectorTrait,
+};
 use serde::{Deserialize, Serialize};
 use serde_with::DeserializeFromStr;
 
@@ -119,6 +122,53 @@ pub(crate) fn split_page<R>(
 	rows.truncate(limit);
 	let cursor = rows.last().map(|row| cursor_of(row).to_string());
 	(rows, cursor)
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+pub(crate) struct PageQuery {
+	/// 1-indexed, defaults to 1.
+	page: Option<u64>,
+	/// Defaults to 50, at most 100.
+	nb: Option<u64>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub(crate) struct NumberedPage<T> {
+	pub(crate) items: Vec<T>,
+	pub(crate) total_items: u64,
+	pub(crate) total_pages: u64,
+}
+
+impl<T> NumberedPage<T> {
+	pub(crate) fn map<U>(self, f: impl FnMut(T) -> U) -> NumberedPage<U> {
+		NumberedPage {
+			items: self.items.into_iter().map(f).collect(),
+			total_items: self.total_items,
+			total_pages: self.total_pages,
+		}
+	}
+}
+
+pub(crate) async fn fetch_page<'db, C, S>(
+	select: S,
+	db: &'db C,
+	query: PageQuery,
+) -> Result<NumberedPage<<S::Selector as SelectorTrait>::Item>, DbErr>
+where
+	C: ConnectionTrait,
+	S: PaginatorTrait<'db, C>,
+{
+	let size = query.nb.unwrap_or(default_page_size()).clamp(1, MAX_PAGE_SIZE);
+	let paginator = select.paginate(db, size);
+	let totals = paginator.num_items_and_pages().await?;
+	let items = paginator
+		.fetch_page(query.page.unwrap_or(default_page()).max(1) - 1)
+		.await?;
+	Ok(NumberedPage {
+		items,
+		total_items: totals.number_of_items,
+		total_pages: totals.number_of_pages,
+	})
 }
 
 /// Newest first by `id`, resuming after the cursor.

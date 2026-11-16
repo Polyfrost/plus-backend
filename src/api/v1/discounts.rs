@@ -3,6 +3,8 @@
 //! One table, told apart by `code`: a row without one runs by itself (a sale),
 //! a row with one has to be typed in (a coupon).
 
+use std::collections::HashMap;
+
 use aide::{
 	OperationIo,
 	axum::{
@@ -30,6 +32,7 @@ use crate::{
 	api::{ApiState, permissions::{Require, perm}},
 	pricing::{Targets, normalise_code},
 	storefront,
+	utils::pagination::{NumberedPage, PageQuery, fetch_page},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -238,9 +241,10 @@ fn list_doc(op: TransformOperation) -> TransformOperation {
 	op.id("listDiscounts")
 		.summary("List sales and coupons")
 		.description(
-			"Lists the discounts the backend prices with, newest first. These \
-			 drive the sale price the client mod shows and the coupon codes \
-			 checkout accepts. Requires `MANAGE_DISCOUNTS`.",
+			"Lists the discounts the backend prices with, newest first, paged \
+			 by `nb` per 1-indexed `page`. These drive the sale price the \
+			 client mod shows and the coupon codes checkout accepts. Requires \
+			 `MANAGE_DISCOUNTS`.",
 		)
 		.tag("discounts")
 }
@@ -290,7 +294,8 @@ async fn list(
 	State(state): State<ApiState>,
 	_auth: Require<{ perm::MANAGE_DISCOUNTS }>,
 	Query(filter): Query<ListFilter>,
-) -> Result<Json<Vec<DiscountView>>, DiscountError> {
+	Query(page): Query<PageQuery>,
+) -> Result<Json<NumberedPage<DiscountView>>, DiscountError> {
 	let mut query = Discount::find().order_by_desc(discount::Column::Id);
 	query = match filter.kind {
 		Some(Kind::Sale) => query.filter(discount::Column::Code.is_null()),
@@ -298,17 +303,13 @@ async fn list(
 		None => query,
 	};
 
-	let rows = query.all(&state.database).await?;
-	let mut targets = targets_for(&state, rows.iter().map(|row| row.id)).await?;
+	let rows = fetch_page(query, &state.database, page).await?;
+	let mut targets = targets_for(&state, rows.items.iter().map(|row| row.id)).await?;
 
-	Ok(Json(
-		rows.into_iter()
-			.map(|row| {
-				let own = targets.remove(&row.id).unwrap_or_default();
-				view(row, own)
-			})
-			.collect(),
-	))
+	Ok(Json(rows.map(|row| {
+		let own = targets.remove(&row.id).unwrap_or_default();
+		view(row, own)
+	})))
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
@@ -492,14 +493,13 @@ async fn reject_duplicate_code(
 async fn targets_for(
 	state: &ApiState,
 	ids: impl Iterator<Item = i32>,
-) -> Result<std::collections::HashMap<i32, Targets>, DiscountError> {
+) -> Result<HashMap<i32, Targets>, DiscountError> {
 	let ids: Vec<i32> = ids.collect();
 	if ids.is_empty() {
-		return Ok(std::collections::HashMap::new());
+		return Ok(HashMap::new());
 	}
 
-	let mut targets: std::collections::HashMap<i32, Targets> =
-		std::collections::HashMap::new();
+	let mut targets: HashMap<i32, Targets> = HashMap::new();
 	for row in DiscountTarget::find()
 		.filter(discount_target::Column::DiscountId.is_in(ids))
 		.all(&state.database)
