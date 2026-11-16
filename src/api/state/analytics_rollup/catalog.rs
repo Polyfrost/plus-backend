@@ -15,8 +15,11 @@ use sea_orm::{
 
 use super::day_bounds;
 
-const PURCHASE_PROVIDERS: [TransactionProvider; 2] =
-	[TransactionProvider::Stripe, TransactionProvider::Paynow];
+const PURCHASE_PROVIDERS: [TransactionProvider; 3] = [
+	TransactionProvider::Stripe,
+	TransactionProvider::Paynow,
+	TransactionProvider::Polyfrost,
+];
 
 #[derive(Debug, FromQueryResult)]
 struct CosmeticAcquisitions {

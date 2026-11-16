@@ -116,6 +116,8 @@ struct CatalogCosmetic {
 	purchase_count: i32,
 	url: Option<String>,
 	cover_url: Option<String>,
+	/// Looping animation for cosmetics that move.
+	preview_url: Option<String>,
 	tag_ids: Vec<i32>,
 	created_at: String
 }
@@ -154,7 +156,7 @@ async fn catalog(
 
 	let asset_ids = cosmetics
 		.iter()
-		.flat_map(|c| [c.asset_id, c.cover_asset_id])
+		.flat_map(|c| [c.asset_id, c.cover_asset_id, c.preview_asset_id])
 		.chain(bundles.iter().map(|b| b.asset_id))
 		.flatten()
 		.collect::<HashSet<_>>();
@@ -193,6 +195,7 @@ async fn catalog(
 			.map(|c| CatalogCosmetic {
 				url: url(c.asset_id),
 				cover_url: url(c.cover_asset_id),
+				preview_url: url(c.preview_asset_id),
 				tag_ids: tags.remove(&c.id).unwrap_or_default(),
 				id: c.id,
 				name: c.name,

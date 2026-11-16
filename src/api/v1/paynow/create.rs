@@ -12,18 +12,30 @@ use axum::{
 };
 use axum_client_ip::ClientIp;
 use chrono::Utc;
-use entities::{player_owned_cosmetic, prelude::*, referral, tags_cosmetic, user};
+use entities::{
+	player_owned_cosmetic, prelude::*, referral, sea_orm_active_enums::TransactionProvider,
+	tags_cosmetic, user,
+};
 use schemars::JsonSchema;
 use sea_orm::{DbErr, prelude::*};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
 
-use super::resolve::{Product, dedupe};
+use super::{
+	grant::{GrantContext, grant_lines},
+	resolve::{Product, dedupe},
+	webhook::{broadcast, run},
+};
 use crate::{
 	api::{ApiState, rate_limit::address_key},
-	paynow::{PayNowError, checkouts::NewCheckout, models::CreateCheckoutLine},
-	pricing::{Rule, Sellable, live_rules, normalise_code, quote},
+	database::{DatabaseTransactionExt, DatabaseUserExt, OrderCharge},
+	paynow::{
+		PayNowError,
+		checkouts::NewCheckout,
+		models::{CreateCheckoutLine, OrderLine},
+	},
+	pricing::{Quote, Rule, Sellable, live_rules, normalise_code, quote, redeem},
 	product_settings::{self, Key, Settings},
 };
 
@@ -151,8 +163,12 @@ pub(super) struct CreateRequest {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub(super) struct CreateResponse {
-	/// The hosted checkout page url to redirect the buyer to
+	/// The hosted checkout page url to redirect the buyer to, or the return
+	/// url when the basket was free and granted straight away
 	url: String,
+	/// True when the basket was free and already granted, so there is nothing
+	/// to open
+	completed: bool,
 }
 
 pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -166,7 +182,9 @@ pub fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			"buyer's limit, and 400 if a product id does not resolve to an ",
 			"enabled cosmetic or bundle, is outside its sale window, cannot be ",
 			"gifted, needs a cosmetic the player lacks, or a promo code or ",
-			"creator code is rejected."
+			"creator code is rejected. A basket that totals nothing after ",
+			"discounts is granted immediately without a hosted checkout, and ",
+			"the return url is sent back instead with `completed` set."
 		))
 		.tag("checkout")
 }
@@ -243,6 +261,24 @@ pub(super) async fn endpoint(
 	)
 	.await?;
 
+	let referral = referral.map(|(code, _)| code);
+	let mut metadata = HashMap::from([
+		("player".to_string(), player.to_string()),
+		("buyer".to_string(), buyer.to_string()),
+		("products".to_string(), products.join(",")),
+		(
+			"quoted_discount".to_string(),
+			applied.quote.discount_minor.to_string(),
+		),
+	]);
+	if let Some(code) = &referral {
+		metadata.insert("referral".to_string(), code.clone());
+	}
+
+	if applied.quote.total_minor == 0 {
+		return grant_free(&state, player, buyer, applied.quote, metadata, referral).await;
+	}
+
 	let buyer_customer = customer_id(&state, buyer).await?;
 	let player_customer = if buyer == player {
 		buyer_customer.clone()
@@ -259,19 +295,6 @@ pub(super) async fn endpoint(
 			gift_to_customer_id: (buyer != player).then(|| player_customer.clone()),
 		})
 		.collect();
-
-	let mut metadata = HashMap::from([
-		("player".to_string(), player.to_string()),
-		("buyer".to_string(), buyer.to_string()),
-		("products".to_string(), products.join(",")),
-		(
-			"quoted_discount".to_string(),
-			applied.quoted_discount_minor.to_string(),
-		),
-	]);
-	if let Some((code, _)) = referral {
-		metadata.insert("referral".to_string(), code);
-	}
 
 	let session = state
 		.paynow
@@ -298,8 +321,103 @@ pub(super) async fn endpoint(
 
 	session
 		.url
-		.map(|url| Json(CreateResponse { url }))
+		.map(|url| {
+			Json(CreateResponse {
+				url,
+				completed: false,
+			})
+		})
 		.ok_or(CreateError::MissingUrl)
+}
+
+/// Granted here the way the webhook grants a paid order, as a Polyfrost
+/// checkout so limits, stock and analytics still count it.
+async fn grant_free(
+	state: &ApiState,
+	player: Uuid,
+	buyer: Uuid,
+	quote: Quote,
+	metadata: HashMap<String, String>,
+	referral: Option<String>,
+) -> Result<Json<CreateResponse>, CreateError> {
+	let order_id = Uuid::now_v7().to_string();
+	let lines: Vec<OrderLine> = quote
+		.lines
+		.iter()
+		.enumerate()
+		.map(|(index, line)| OrderLine {
+			id: format!("{order_id}-{index}"),
+			product_id: line.product_id.clone(),
+			quantity: 1,
+			price: line.list_minor,
+			discount_amount: line.discount_minor,
+			..Default::default()
+		})
+		.collect();
+	let discount_ids: HashSet<i32> = quote
+		.lines
+		.iter()
+		.flat_map(|line| &line.applied)
+		.map(|applied| applied.discount_id)
+		.collect();
+
+	let grants = run(state, move |txn| {
+		Box::pin(async move {
+			let user = User::get_or_create(txn, player).await?;
+			let buyer_id = if buyer == player {
+				None
+			} else {
+				Some(User::get_or_create(txn, buyer).await?.id)
+			};
+
+			let transaction = Transaction::get_or_create_order(
+				txn,
+				TransactionProvider::Polyfrost,
+				user.id,
+				buyer_id,
+				&order_id,
+				serde_json::json!({
+					"order_id": order_id,
+					"checkout_metadata": metadata,
+				}),
+				OrderCharge {
+					amount_minor: Some(0),
+					currency: Some(quote.currency.clone()),
+					discount_minor: Some(quote.discount_minor),
+				},
+				referral,
+			)
+			.await?;
+
+			let grants = grant_lines(
+				txn,
+				GrantContext {
+					player,
+					transaction: &transaction,
+					currency: quote.currency,
+				},
+				&lines,
+			)
+			.await?;
+
+			for discount_id in discount_ids {
+				redeem(txn, discount_id, buyer_id.unwrap_or(user.id), Some(transaction.id))
+					.await?;
+			}
+
+			Ok(Some(grants))
+		})
+	})
+	.await?;
+
+	if let Some(grants) = grants {
+		broadcast(state, grants, false).await;
+	}
+
+	Ok(Json(CreateResponse {
+		url: state.paynow.return_url.clone(),
+		completed: true,
+	}))
 }
 
 /// The endpoint is unauthenticated and creates a storefront customer as a
@@ -488,8 +606,8 @@ async fn customer_id(state: &ApiState, player: Uuid) -> Result<String, CreateErr
 struct AppliedDiscounts {
 	/// As PayNow knows them.
 	codes: Vec<String>,
-	/// What PayNow should take off, checked against the order it reports.
-	quoted_discount_minor: i64,
+	/// What PayNow should charge, checked against the order it reports.
+	quote: Quote,
 }
 
 /// Quotes the basket against our own sales and coupons.
@@ -570,11 +688,9 @@ async fn apply_discounts(
 		.collect();
 
 	let rules: Vec<Rule> = live.iter().map(|discount| discount.rule.clone()).collect();
-	let quoted = quote(&lines, &rules, CHECKOUT_CURRENCY);
-
 	Ok(AppliedDiscounts {
 		codes: paynow_codes,
-		quoted_discount_minor: quoted.discount_minor,
+		quote: quote(&lines, &rules, CHECKOUT_CURRENCY),
 	})
 }
 

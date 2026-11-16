@@ -96,7 +96,7 @@ async fn fetch_mojang_profile(state: &ApiState, username: &str) -> Option<Mojang
 	let response = state
 		.client
 		.get(format!(
-			"https://api.mojang.com/users/profiles/minecraft/{username}"
+			"https://mowojang.matdoes.dev/users/profiles/minecraft/{username}"
 		))
 		.send()
 		.await

@@ -95,7 +95,6 @@ pub(super) struct ApiState {
 	pub(super) paynow: PayNowApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
-	pub(super) render_client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
 	pub(super) s3_public_url: Arc<str>,
@@ -108,7 +107,6 @@ pub(super) struct ApiState {
 	pub(super) particle_color_persist: PersistQueue<ParticleColorPersistence>,
 	pub(super) link_hash_salt: String,
 	pub(super) dashboard_origins: Vec<http::HeaderValue>,
-	pub(super) render_service_url: String,
 	pub(super) global_chat_cooldown: Cache<i32, ()>,
 	pub(super) checkout_limit: RateLimiter<IpAddr>,
 	pub(super) dashboard_login_limit: RateLimiter<IpAddr>,
@@ -180,8 +178,7 @@ impl ApiState {
 
 		ApiState {
 			paynow: PayNowApiState::new(args),
-			client: build_http_client(true),
-			render_client: build_http_client(false),
+			client: build_http_client(),
 			paseto_key: SymmetricKey::generate()
 				.expect("Unable to generate paseto signing key"),
 			asset_cache,
@@ -192,7 +189,6 @@ impl ApiState {
 			),
 			link_hash_salt: args.link_hash_salt.clone(),
 			dashboard_origins: args.dashboard_origins.clone(),
-			render_service_url: args.render_service_url.clone(),
 			global_chat_cooldown: Cache::builder()
 				.time_to_live(GLOBAL_CHAT_COOLDOWN)
 				.build(),
@@ -408,9 +404,9 @@ fn connect_s3_bucket(args: &ServeArgs) -> Arc<Bucket> {
 	.into()
 }
 
-fn build_http_client(https_only: bool) -> Client {
+fn build_http_client() -> Client {
 	ClientBuilder::new()
-		.https_only(https_only)
+		.https_only(true)
 		.user_agent(USER_AGENT)
 		.build()
 		.expect("Unable to build reqwest client")

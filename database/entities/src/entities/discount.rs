@@ -21,6 +21,7 @@ pub struct Model {
 	pub ends_at: Option<DateTimeWithTimeZone>,
 	pub enabled: bool,
 	pub applies_to_all: bool,
+	pub apply_individually: bool,
 	pub min_subtotal_minor: Option<i64>,
 	pub max_redemptions: Option<i32>,
 	pub max_per_player: Option<i32>,

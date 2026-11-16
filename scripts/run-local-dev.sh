@@ -64,25 +64,4 @@ set -a
 source "$root/.env"
 set +a
 
-# Start the skinview3d render sidecar that generates cosmetic cover images.
-render_dir="$root/render-service"
-if command -v node >/dev/null 2>&1; then
-	if [ ! -d "$render_dir/node_modules" ]; then
-		echo "Installing render-service dependencies..."
-		(cd "$render_dir" && npm install)
-	fi
-	if [ ! -f "$render_dir/assets/default-skin.png" ]; then
-		(cd "$render_dir" && node scripts/fetch-default-skin.mjs)
-	fi
-	if ! curl -sf -o /dev/null "http://127.0.0.1:8090/" 2>/dev/null; then
-		echo "Starting render-service on :8090..."
-		(cd "$render_dir" && PORT=8090 node src/server.js) &
-		echo $! >"$root/.local/render-service.pid"
-	fi
-	export RENDER_SERVICE_URL="http://127.0.0.1:8090"
-else
-	echo "warning: node not found; cosmetic cover generation disabled" >&2
-	export RENDER_SERVICE_URL=""
-fi
-
 exec cargo run -- serve

@@ -5,7 +5,7 @@ use entities::{
 	cosmetic, ownership_grant,
 	prelude::*,
 	sea_orm_active_enums::{
-		CosmeticType, OwnershipEventKind, TransactionProvider, TransactionStatus,
+		CosmeticType, OwnershipEventKind, TransactionStatus,
 	},
 	transaction, transaction_line, user,
 };
@@ -106,7 +106,7 @@ pub(super) async fn grant_lines(
 			txn,
 			recipient.id,
 			&cosmetic_ids,
-			TransactionProvider::Paynow,
+			context.transaction.provider.clone(),
 			Some(context.transaction.id),
 			Some(stored.id),
 			rental_days,
@@ -135,7 +135,7 @@ pub(super) async fn grant_lines(
 				recipient.id,
 				&cosmetic_ids,
 				OwnershipEventKind::Granted,
-				TransactionProvider::Paynow,
+				context.transaction.provider.clone(),
 				Some(context.transaction.id),
 				Some(stored.id),
 				expires_at,

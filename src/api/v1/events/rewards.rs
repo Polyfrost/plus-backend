@@ -17,8 +17,10 @@ use super::EventError;
 use crate::{
 	api::{
 		ApiState,
-		v0::cosmetics::grant::{grant_in, notify_granted},
-		v1::discounts::{DiscountBody, insert, mirror, validate as validate_discount},
+		v0::cosmetics::grant::{grant_in, notify},
+		v1::discounts::{
+			DiscountBody, enabled_by_default, insert, mirror, validate as validate_discount,
+		},
 	},
 	pricing::{Targets, normalise_code},
 	utils::validation::valid_http_url,
@@ -66,6 +68,9 @@ pub(super) struct CouponReward {
 	currency: Option<String>,
 	#[serde(default)]
 	applies_to_all: bool,
+	/// Takes a fixed amount off each covered line rather than once off the order.
+	#[serde(default = "enabled_by_default")]
+	apply_individually: bool,
 	#[serde(default)]
 	targets: Targets,
 	#[serde(default)]
@@ -79,9 +84,10 @@ pub(super) struct CouponReward {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum Granted {
+	/// The whole group when the cosmetic belongs to one, emotes listed apart.
 	Cosmetic {
-		/// The whole group when the cosmetic belongs to one.
 		cosmetic_ids: Vec<i32>,
+		emote_ids: Vec<i32>,
 	},
 	Coupon {
 		code: String,
@@ -112,6 +118,7 @@ impl CouponReward {
 			ends_at,
 			enabled: true,
 			applies_to_all: self.applies_to_all,
+			apply_individually: self.apply_individually,
 			targets: self.targets.clone(),
 			min_subtotal_minor: self.min_subtotal_minor,
 			max_redemptions: Some(1),
@@ -173,9 +180,13 @@ pub(super) async fn grant(
 	metadata: Value,
 ) -> Result<Granted, EventError> {
 	match reward {
-		Reward::Cosmetic { cosmetic_id } => Ok(Granted::Cosmetic {
-			cosmetic_ids: grant_in(txn, player.id, *cosmetic_id, metadata).await?,
-		}),
+		Reward::Cosmetic { cosmetic_id } => {
+			let (cosmetic_ids, emote_ids) = grant_in(txn, player.id, *cosmetic_id, metadata).await?;
+			Ok(Granted::Cosmetic {
+				cosmetic_ids,
+				emote_ids,
+			})
+		}
 		Reward::Coupon(coupon) => {
 			let expires_at = coupon
 				.valid_days
@@ -215,8 +226,14 @@ pub(super) async fn deliver(
 	granted: &Granted,
 ) {
 	match (reward, granted) {
-		(_, Granted::Cosmetic { cosmetic_ids }) => {
-			notify_granted(state, player_uuid, cosmetic_ids).await;
+		(
+			_,
+			Granted::Cosmetic {
+				cosmetic_ids,
+				emote_ids,
+			},
+		) => {
+			notify(state, player_uuid, cosmetic_ids, emote_ids, false).await;
 		}
 		(Reward::Coupon(coupon), Granted::Coupon { discount_id, .. }) => {
 			let mirrored = match Discount::find_by_id(*discount_id).one(&state.database).await {

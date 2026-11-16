@@ -173,7 +173,7 @@ pub(crate) struct CheckoutSummary {
 	pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct OrderLine {
 	pub id: String,
 	pub product_id: String,

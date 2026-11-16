@@ -77,6 +77,9 @@ pub(crate) struct Rule {
 	pub code: Option<String>,
 	pub amount: Amount,
 	pub applies_to_all: bool,
+	/// Coupons only: `false` takes the amount once off every covered line
+	/// together, split between them.
+	pub apply_individually: bool,
 	pub targets: Targets,
 	pub min_subtotal_minor: Option<i64>,
 }
@@ -168,56 +171,69 @@ pub(crate) fn quote(lines: &[Sellable], rules: &[Rule], currency: &str) -> Quote
 		})
 		.collect();
 
+	let mut remaining: Vec<i64> = lines.iter().map(|line| line.list_minor).collect();
+	let mut applied: Vec<Vec<&Rule>> = vec![Vec::new(); lines.len()];
+
+	for (index, line) in lines.iter().enumerate() {
+		let sale = eligible
+			.iter()
+			.copied()
+			.filter(|rule| rule.code.is_none() && rule.covers(line))
+			.map(|rule| (rule.amount.applied_to(line.list_minor, currency), rule))
+			.filter(|(off, _)| *off > 0)
+			// Ties break on the lower id, so a quote is stable rather than
+			// depending on what order the rows came back in.
+			.max_by(|(a, left), (b, right)| a.cmp(b).then(right.id.cmp(&left.id)));
+
+		if let Some((off, rule)) = sale {
+			remaining[index] -= off;
+			applied[index].push(rule);
+		}
+	}
+
+	let mut coupons: Vec<&Rule> = eligible
+		.iter()
+		.copied()
+		.filter(|rule| rule.code.is_some())
+		.collect();
+	coupons.sort_by_key(|rule| rule.id);
+	for rule in coupons {
+		let covered: Vec<usize> = (0..lines.len())
+			.filter(|index| rule.covers(&lines[*index]))
+			.collect();
+		let left: Vec<i64> = covered.iter().map(|index| remaining[*index]).collect();
+		let offs = if rule.apply_individually {
+			left.iter()
+				.map(|left| rule.amount.applied_to(*left, currency))
+				.collect()
+		} else {
+			spread(&rule.amount, &left, currency)
+		};
+
+		for (index, off) in covered.into_iter().zip(offs) {
+			if off > 0 {
+				remaining[index] -= off;
+				applied[index].push(rule);
+			}
+		}
+	}
+
 	let lines: Vec<QuotedLine> = lines
 		.iter()
-		.map(|line| {
-			let covering = eligible.iter().copied().filter(|rule| rule.covers(line));
-
-			let sale = covering
-				.clone()
-				.filter(|rule| rule.code.is_none())
-				.map(|rule| (rule.amount.applied_to(line.list_minor, currency), rule))
-				.filter(|(off, _)| *off > 0)
-				// Ties break on the lower id, so a quote is stable rather than
-				// depending on what order the rows came back in.
-				.max_by(|(a, left), (b, right)| {
-					a.cmp(b).then(right.id.cmp(&left.id))
-				});
-
-			let mut remaining = line.list_minor;
-			let mut applied_rules = Vec::new();
-			if let Some((off, rule)) = sale {
-				remaining -= off;
-				applied_rules.push(rule);
-			}
-
-			let mut coupons: Vec<&Rule> =
-				covering.filter(|rule| rule.code.is_some()).collect();
-			coupons.sort_by_key(|rule| rule.id);
-			for rule in coupons {
-				let off = rule.amount.applied_to(remaining, currency);
-				if off > 0 {
-					remaining -= off;
-					applied_rules.push(rule);
-				}
-			}
-
-			let discount_minor = line.list_minor - remaining;
-			let applied = applied_rules
+		.zip(remaining)
+		.zip(applied)
+		.map(|((line, remaining), applied)| QuotedLine {
+			product_id: line.product_id.clone(),
+			list_minor: line.list_minor,
+			discount_minor: line.list_minor - remaining,
+			total_minor: remaining,
+			applied: applied
 				.into_iter()
 				.map(|rule| Applied {
 					discount_id: rule.id,
 					name: rule.name.clone(),
 				})
-				.collect();
-
-			QuotedLine {
-				product_id: line.product_id.clone(),
-				list_minor: line.list_minor,
-				discount_minor,
-				total_minor: line.list_minor - discount_minor,
-				applied,
-			}
+				.collect(),
 		})
 		.collect();
 
@@ -230,6 +246,28 @@ pub(crate) fn quote(lines: &[Sellable], rules: &[Rule], currency: &str) -> Quote
 		total_minor: subtotal - discount_minor,
 		lines,
 	}
+}
+
+/// Takes `amount` once off the lines together, split in proportion to what
+/// each has left. Cumulative rounding keeps the shares summing exactly.
+fn spread(amount: &Amount, left: &[i64], currency: &str) -> Vec<i64> {
+	let total: i64 = left.iter().sum();
+	let off = amount.applied_to(total, currency);
+	if off == 0 {
+		return vec![0; left.len()];
+	}
+
+	let mut covered = 0;
+	let mut given = 0;
+	left.iter()
+		.map(|left| {
+			covered += left;
+			let upto = off * covered / total;
+			let share = upto - given;
+			given = upto;
+			share
+		})
+		.collect()
 }
 
 /// The amount a row takes off, or `None` when the row is malformed. The
@@ -256,6 +294,7 @@ mod tests {
 			code: None,
 			amount,
 			applies_to_all: true,
+			apply_individually: true,
 			targets: Targets::default(),
 			min_subtotal_minor: None,
 		}
@@ -401,5 +440,26 @@ mod tests {
 		assert_eq!(quoted.discount_minor, 380);
 		let ids: Vec<i32> = quoted.lines[0].applied.iter().map(|a| a.discount_id).collect();
 		assert_eq!(ids, [1, 3, 4]);
+	}
+
+	#[test]
+	fn an_order_wide_coupon_comes_off_once() {
+		let mut each = sale(1, Amount::Fixed {
+			minor: 300,
+			currency: "usd".to_owned(),
+		});
+		each.code = Some("EACH".to_owned());
+		let mut once = each.clone();
+		once.apply_individually = false;
+		once.code = Some("ONCE".to_owned());
+		let lines = [line("a", 1000), line("b", 500), line("c", 100)];
+
+		assert_eq!(quote(&lines, &[each], "usd").discount_minor, 700);
+
+		// 300 split 1000:500:100 of 1600, rounding carried along.
+		let quoted = quote(&lines, &[once], "usd");
+		let offs: Vec<i64> = quoted.lines.iter().map(|line| line.discount_minor).collect();
+		assert_eq!(offs, [187, 94, 19]);
+		assert_eq!(quoted.discount_minor, 300);
 	}
 }

@@ -30,6 +30,7 @@ pub struct Model {
 	pub description: Option<String>,
 	pub purchase_count: i32,
 	pub cover_asset_id: Option<i32>,
+	pub preview_asset_id: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

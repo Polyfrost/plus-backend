@@ -93,6 +93,7 @@ pub(crate) async fn live_rules(
 				code: model.code.clone(),
 				amount,
 				applies_to_all: model.applies_to_all,
+				apply_individually: model.apply_individually,
 				targets: targets.remove(&model.id).unwrap_or_default(),
 				min_subtotal_minor: model.min_subtotal_minor,
 			};
