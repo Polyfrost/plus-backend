@@ -351,21 +351,26 @@ async fn register_connection(
 		was_empty
 	};
 
-	if is_first_connection {
-		let started_at = Utc::now();
-		match open_play_session(state, player_id, started_at).await {
-			Ok(session_row_id) => {
-				state.realtime.playtime.write().await.insert(
-					owner,
-					PlaytimeSession {
-						player_id,
-						session_row_id,
-						last_accounted_at: started_at,
-					},
-				);
+	// Playtime is in-game time only. The lock is held across the insert so a
+	// game connection closing at the same moment cannot miss this one.
+	if kind == ClientKind::Game {
+		let mut playtime = state.realtime.playtime.write().await;
+		if !playtime.contains_key(&owner) {
+			let started_at = Utc::now();
+			match open_play_session(state, player_id, started_at).await {
+				Ok(session_row_id) => {
+					playtime.insert(
+						owner,
+						PlaytimeSession {
+							player_id,
+							session_row_id,
+							last_accounted_at: started_at,
+						},
+					);
+				}
+				// Analytics, not a reason to refuse the connection.
+				Err(error) => warn!("Unable to open play session: {error}"),
 			}
-			// Analytics, not a reason to refuse the connection.
-			Err(error) => warn!("Unable to open play session: {error}"),
 		}
 	}
 
@@ -472,6 +477,44 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		return;
 	};
 
+	if connection.kind == ClientKind::Game {
+		let session = {
+			let mut playtime = state.realtime.playtime.write().await;
+			let game_still_connected = state
+				.realtime
+				.connections
+				.read()
+				.await
+				.values()
+				.any(|other| other.owner == connection.owner && other.kind == ClientKind::Game);
+			if game_still_connected {
+				None
+			} else {
+				playtime.remove(&connection.owner)
+			}
+		};
+		if let Some(session) = session {
+			let now = Utc::now();
+			if let Err(error) = crate::database::accrue_playtime(
+				&state.database,
+				session.player_id,
+				session.last_accounted_at,
+				now,
+				true,
+			)
+			.await
+			{
+				warn!("Unable to record playtime on disconnect: {error}");
+			}
+
+			if let Err(error) =
+				close_play_session(state, session.session_row_id, now).await
+			{
+				warn!("Unable to close play session: {error}");
+			}
+		}
+	}
+
 	let owner_still_connected = {
 		let mut connections_by_owner = state.realtime.connections_by_owner.write().await;
 		if let Some(owner_connections) = connections_by_owner.get_mut(&connection.owner) {
@@ -497,33 +540,6 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 				runtime.active_emote = None;
 				runtime.status_override
 			});
-
-		let session = state
-			.realtime
-			.playtime
-			.write()
-			.await
-			.remove(&connection.owner);
-		if let Some(session) = session {
-			let now = Utc::now();
-			if let Err(error) = crate::database::accrue_playtime(
-				&state.database,
-				session.player_id,
-				session.last_accounted_at,
-				now,
-				true,
-			)
-			.await
-			{
-				warn!("Unable to record playtime on disconnect: {error}");
-			}
-
-			if let Err(error) =
-				close_play_session(state, session.session_row_id, now).await
-			{
-				warn!("Unable to close play session: {error}");
-			}
-		}
 
 		crate::api::v0::sessions::expire_sessions_after_grace(state, connection.owner);
 		crate::api::v1::party::on_player_offline(state, connection.owner).await;

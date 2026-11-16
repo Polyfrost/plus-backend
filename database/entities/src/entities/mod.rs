@@ -27,6 +27,8 @@ pub mod daily_playtime;
 pub mod discount;
 pub mod discount_redemption;
 pub mod discount_target;
+pub mod event;
+pub mod event_claim;
 pub mod dm_delegates;
 pub mod game_sessions;
 pub mod global_chat_messages;

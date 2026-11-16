@@ -11,16 +11,17 @@ use axum::{
 	http::StatusCode,
 };
 use chrono::{DateTime, FixedOffset, Utc};
-use entities::sea_orm_active_enums::GameLoader;
+use entities::{game_sessions, prelude::*, sea_orm_active_enums::GameLoader};
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, Set};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::{SessionError, invites::expire_invites_for_sessions, load_session, session_ttl};
 use crate::api::{
 	ApiState,
 	v0::account::{AuthenticatedPlayer, mods::valid_version},
-	v0::sessions::SessionError,
+	v1::party::cancel_hosted_joins_for_session,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -83,9 +84,7 @@ async fn create(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Json(body): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<SessionResponse>), SessionError> {
-	use entities::{game_sessions, prelude::*};
-
-	let expires_at = Utc::now() + super::session_ttl();
+	let expires_at = Utc::now() + session_ttl();
 
 	let session = GameSessions::insert(game_sessions::ActiveModel {
 		id: Set(Uuid::now_v7()),
@@ -116,12 +115,12 @@ async fn update(
 	Path(id): Path<Uuid>,
 	Json(body): Json<UpdateSessionRequest>,
 ) -> Result<Json<SessionResponse>, SessionError> {
-	let session = super::load_session(&state, id).await?;
+	let session = load_session(&state, id).await?;
 	if session.host_id != player.id {
 		return Err(SessionError::NotHost);
 	}
 
-	let mut active: entities::game_sessions::ActiveModel = session.into();
+	let mut active: game_sessions::ActiveModel = session.into();
 	active.eos_session_id = Set(Some(body.eos_session_id));
 	let session = active.update(&state.database).await?;
 
@@ -138,15 +137,17 @@ async fn close(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<Uuid>,
 ) -> Result<StatusCode, SessionError> {
-	use entities::prelude::*;
-
-	let session = super::load_session(&state, id).await?;
+	let session = load_session(&state, id).await?;
 	if session.host_id != player.id {
 		return Err(SessionError::NotHost);
 	}
 
-	GameSessions::delete_by_id(id).exec(&state.database).await?;
-	crate::api::v1::party::cancel_hosted_joins_for_session(&state, id).await;
+	// Ended in place rather than deleted: event requirements count hosted time.
+	let mut active: game_sessions::ActiveModel = session.into();
+	active.expires_at = Set(Utc::now().into());
+	active.update(&state.database).await?;
+	cancel_hosted_joins_for_session(&state, id).await;
+	expire_invites_for_sessions(&state, vec![id]).await?;
 
 	Ok(StatusCode::NO_CONTENT)
 }

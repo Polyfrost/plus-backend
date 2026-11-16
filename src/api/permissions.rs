@@ -43,6 +43,7 @@ pub(crate) mod perm {
 	pub(crate) const MANAGE_DISCOUNTS: u64 = 1 << 12;
 	/// Creator codes.
 	pub(crate) const MANAGE_REFERRALS: u64 = 1 << 13;
+	pub(crate) const MANAGE_EVENTS: u64 = 1 << 14;
 
 	/// Everything that works from the catalogue, which may therefore read it.
 	pub(crate) const CATALOG_READERS: u64 = MANAGE_STORE

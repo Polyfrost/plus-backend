@@ -26,6 +26,8 @@ pub use super::discount::Entity as Discount;
 pub use super::discount_redemption::Entity as DiscountRedemption;
 pub use super::discount_target::Entity as DiscountTarget;
 pub use super::dm_delegates::Entity as DmDelegates;
+pub use super::event::Entity as Event;
+pub use super::event_claim::Entity as EventClaim;
 pub use super::game_sessions::Entity as GameSessions;
 pub use super::global_chat_messages::Entity as GlobalChatMessages;
 pub use super::group_members::Entity as GroupMembers;

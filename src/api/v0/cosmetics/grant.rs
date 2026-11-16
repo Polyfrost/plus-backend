@@ -4,23 +4,29 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use entities::sea_orm_active_enums::{
-	OwnershipEventKind, TransactionProvider, TransactionStatus,
+use entities::{
+	cosmetic,
+	prelude::*,
+	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
+	transaction,
 };
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, TransactionTrait,
+	ActiveModelTrait, ColumnTrait, DatabaseTransaction, EntityTrait, QueryFilter, Set,
+	TransactionTrait,
 };
 use serde::Deserialize;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::{
 	api::{
-		ApiState,
+		ApiState, error_response,
 		permissions::{Require, perm},
 		v0::websocket::structs::ClientBoundPacket,
 	},
-	database::DatabaseUserExt,
+	database::{DatabaseUserExt, record_ownership_events},
+	ownership,
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -33,7 +39,7 @@ pub enum GrantError {
 
 impl IntoResponse for GrantError {
 	fn into_response(self) -> axum::response::Response {
-		crate::api::error_response(
+		error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
 				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -77,10 +83,26 @@ pub(in crate::api) async fn grant_cosmetic(
 	player_uuid: Uuid,
 	cosmetic_id: i32,
 ) -> Result<Vec<i32>, GrantError> {
-	use entities::{cosmetic, prelude::*, transaction};
-
 	let txn = state.database.begin().await?;
-	let Some(cosmetic) = Cosmetic::find_by_id(cosmetic_id).one(&txn).await? else {
+	let player = User::get_or_create(&txn, player_uuid).await?;
+	let cosmetic_ids =
+		grant_in(&txn, player.id, cosmetic_id, json!({ "reason": "admin_grant" })).await?;
+	txn.commit().await?;
+
+	notify_granted(state, player_uuid, &cosmetic_ids).await;
+
+	Ok(cosmetic_ids)
+}
+
+/// Grants a cosmetic, and the rest of its group, inside `txn`. Call
+/// [`notify_granted`] once it commits.
+pub(in crate::api) async fn grant_in(
+	txn: &DatabaseTransaction,
+	player_id: i32,
+	cosmetic_id: i32,
+	metadata: Value,
+) -> Result<Vec<i32>, GrantError> {
+	let Some(cosmetic) = Cosmetic::find_by_id(cosmetic_id).one(txn).await? else {
 		return Err(GrantError::MissingCosmetic);
 	};
 
@@ -90,7 +112,7 @@ pub(in crate::api) async fn grant_cosmetic(
 	let cosmetic_ids: Vec<i32> = match cosmetic.group_id {
 		Some(group_id) => Cosmetic::find()
 			.filter(cosmetic::Column::GroupId.eq(group_id))
-			.all(&txn)
+			.all(txn)
 			.await?
 			.into_iter()
 			.map(|c| c.id)
@@ -98,22 +120,21 @@ pub(in crate::api) async fn grant_cosmetic(
 		None => vec![cosmetic.id],
 	};
 
-	let player = User::get_or_create(&txn, player_uuid).await?;
 	let transaction = transaction::ActiveModel {
-		player_id: Set(player.id),
+		player_id: Set(player_id),
 		provider: Set(TransactionProvider::AdminGrant),
 		provider_transaction_id: Set(None),
 		status: Set(TransactionStatus::Completed),
-		raw_metadata: Set(serde_json::json!({ "reason": "admin_grant" })),
+		raw_metadata: Set(metadata),
 		..Default::default()
 	}
-	.insert(&txn)
+	.insert(txn)
 	.await?;
 
 	// Owned for good, including over a rental the player already holds.
-	crate::ownership::record(
-		&txn,
-		player.id,
+	ownership::record(
+		txn,
+		player_id,
 		&cosmetic_ids,
 		TransactionProvider::AdminGrant,
 		Some(transaction.id),
@@ -121,11 +142,11 @@ pub(in crate::api) async fn grant_cosmetic(
 		None,
 	)
 	.await?;
-	crate::ownership::settle(&txn, player.id, &cosmetic_ids).await?;
+	ownership::settle(txn, player_id, &cosmetic_ids).await?;
 
-	crate::database::record_ownership_events(
-		&txn,
-		player.id,
+	record_ownership_events(
+		txn,
+		player_id,
 		&cosmetic_ids,
 		OwnershipEventKind::Granted,
 		TransactionProvider::AdminGrant,
@@ -135,8 +156,14 @@ pub(in crate::api) async fn grant_cosmetic(
 	)
 	.await?;
 
-	txn.commit().await?;
+	Ok(cosmetic_ids)
+}
 
+pub(in crate::api) async fn notify_granted(
+	state: &ApiState,
+	player_uuid: Uuid,
+	cosmetic_ids: &[i32],
+) {
 	let connection_ids = state
 		.realtime
 		.connections_by_owner
@@ -145,20 +172,20 @@ pub(in crate::api) async fn grant_cosmetic(
 		.get(&player_uuid)
 		.cloned()
 		.unwrap_or_default();
-	if !connection_ids.is_empty() {
-		let connections = state.realtime.connections.read().await;
-		for connection_id in connection_ids {
-			let Some(connection) = connections.get(&connection_id) else {
-				continue;
-			};
-			let _ = connection.tx.send(ClientBoundPacket::OwnershipUpdated {
-				player: player_uuid,
-				cosmetic_ids: cosmetic_ids.clone(),
-				emote_ids: Vec::new(),
-				revoked: false,
-			});
-		}
+	if connection_ids.is_empty() {
+		return;
 	}
 
-	Ok(cosmetic_ids)
+	let connections = state.realtime.connections.read().await;
+	for connection_id in connection_ids {
+		let Some(connection) = connections.get(&connection_id) else {
+			continue;
+		};
+		let _ = connection.tx.send(ClientBoundPacket::OwnershipUpdated {
+			player: player_uuid,
+			cosmetic_ids: cosmetic_ids.to_vec(),
+			emote_ids: Vec::new(),
+			revoked: false,
+		});
+	}
 }

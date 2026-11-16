@@ -1,6 +1,7 @@
 mod analytics;
 mod dashboard;
 mod discounts;
+mod events;
 mod grants;
 mod hello;
 mod listings;
@@ -31,6 +32,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.nest("/social", social::v1_router())
 		.nest("/groups", groups::v1_router())
 		.merge(discounts::router())
+		.merge(events::router())
 		.merge(grants::router())
 		.merge(listings::router())
 		.merge(party::router())

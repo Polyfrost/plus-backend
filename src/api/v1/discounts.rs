@@ -21,8 +21,8 @@ use chrono::{DateTime, FixedOffset};
 use entities::{discount, discount_target, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{
-	ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
-	TransactionTrait,
+	ActiveValue, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder,
+	Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
@@ -322,18 +322,7 @@ async fn create(
 	reject_duplicate_code(&state, code.as_deref(), None).await?;
 
 	let txn = state.database.begin().await?;
-
-	let model = Discount::insert(active(&body, code, ActiveValue::NotSet))
-		.exec_with_returning(&txn)
-		.await?;
-
-	let rows = body.targets.rows(model.id);
-	if !rows.is_empty() {
-		DiscountTarget::insert_many(rows)
-			.exec_without_returning(&txn)
-			.await?;
-	}
-
+	let model = insert(&txn, &body, code).await?;
 	txn.commit().await?;
 
 	let model = mirror(&state, None, model, &body.targets).await?;
@@ -402,7 +391,7 @@ async fn remove(
 
 /// Saved first, then pushed: a PayNow failure leaves the row for
 /// `provision-paynow --sync-discounts` to finish.
-async fn mirror(
+pub(super) async fn mirror(
 	state: &ApiState,
 	previous: Option<&discount::Model>,
 	model: discount::Model,
@@ -416,6 +405,25 @@ async fn mirror(
 		targets,
 	)
 	.await?)
+}
+
+pub(super) async fn insert(
+	db: &impl ConnectionTrait,
+	body: &DiscountBody,
+	code: Option<String>,
+) -> Result<discount::Model, DbErr> {
+	let model = Discount::insert(active(body, code, ActiveValue::NotSet))
+		.exec_with_returning(db)
+		.await?;
+
+	let rows = body.targets.rows(model.id);
+	if !rows.is_empty() {
+		DiscountTarget::insert_many(rows)
+			.exec_without_returning(db)
+			.await?;
+	}
+
+	Ok(model)
 }
 
 fn active(
@@ -446,7 +454,7 @@ fn active(
 
 /// The same rules the database check constraint enforces, reported as a
 /// readable error rather than a constraint violation.
-fn validate(body: &DiscountBody) -> Result<(), DiscountError> {
+pub(super) fn validate(body: &DiscountBody) -> Result<(), DiscountError> {
 	match (body.percent_off, body.amount_off_minor) {
 		(Some(percent), None) => {
 			if !(1..=100).contains(&percent) {
