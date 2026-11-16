@@ -39,8 +39,10 @@ pub(crate) struct OrderCharge {
 }
 
 pub(crate) trait DatabaseTransactionExt {
-	async fn get_or_create_paynow(
+	#[expect(clippy::too_many_arguments, reason = "one column each")]
+	async fn get_or_create_order(
 		db: &impl ConnectionTrait,
+		provider: TransactionProvider,
 		player_id: i32,
 		buyer_id: Option<i32>,
 		order_id: &str,
@@ -93,8 +95,9 @@ impl DatabaseUserExt for User {
 }
 
 impl DatabaseTransactionExt for Transaction {
-	async fn get_or_create_paynow(
+	async fn get_or_create_order(
 		db: &impl ConnectionTrait,
+		provider: TransactionProvider,
 		player_id: i32,
 		buyer_id: Option<i32>,
 		order_id: &str,
@@ -106,7 +109,7 @@ impl DatabaseTransactionExt for Transaction {
 		// same order can both miss the find.
 		Transaction::insert(transaction::ActiveModel {
 			player_id: ActiveValue::Set(player_id),
-			provider: ActiveValue::Set(TransactionProvider::Paynow),
+			provider: ActiveValue::Set(provider.clone()),
 			provider_transaction_id: ActiveValue::Set(Some(order_id.to_string())),
 			status: ActiveValue::Set(TransactionStatus::Completed),
 			buyer: ActiveValue::Set(buyer_id),
@@ -127,7 +130,7 @@ impl DatabaseTransactionExt for Transaction {
 		.await?;
 
 		let existing = Transaction::find()
-			.filter(transaction::Column::Provider.eq(TransactionProvider::Paynow))
+			.filter(transaction::Column::Provider.eq(provider))
 			.filter(transaction::Column::ProviderTransactionId.eq(order_id))
 			.one(db)
 			.await?

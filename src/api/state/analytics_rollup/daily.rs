@@ -31,8 +31,11 @@ const SALE_STATUSES: [TransactionStatus; 4] = [
 	TransactionStatus::Chargeback,
 ];
 
-const PURCHASE_PROVIDERS: [TransactionProvider; 2] =
-	[TransactionProvider::Stripe, TransactionProvider::Paynow];
+const PURCHASE_PROVIDERS: [TransactionProvider; 3] = [
+	TransactionProvider::Stripe,
+	TransactionProvider::Paynow,
+	TransactionProvider::Polyfrost,
+];
 
 #[derive(Debug, Default, FromQueryResult)]
 struct PlaytimeTotals {

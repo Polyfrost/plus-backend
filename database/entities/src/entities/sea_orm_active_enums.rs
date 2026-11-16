@@ -265,6 +265,8 @@ pub enum TransactionProvider {
 	AdminGrant,
 	#[sea_orm(string_value = "paynow")]
 	Paynow,
+	#[sea_orm(string_value = "polyfrost")]
+	Polyfrost,
 }
 #[derive(
 	Debug,

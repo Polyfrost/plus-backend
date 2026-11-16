@@ -5,7 +5,8 @@ use axum::{
 };
 use chrono::Utc;
 use entities::{
-	paynow_webhook_event, prelude::*, sea_orm_active_enums::TransactionStatus,
+	paynow_webhook_event, prelude::*,
+	sea_orm_active_enums::{TransactionProvider, TransactionStatus},
 	transaction, transaction_line, user,
 };
 use sea_orm::{
@@ -185,8 +186,9 @@ async fn handle_order(state: &ApiState, event_id: &str, order: Order) -> Handled
 				Some(User::get_or_create(txn, buyer).await?.id)
 			};
 
-			let transaction = Transaction::get_or_create_paynow(
+			let transaction = Transaction::get_or_create_order(
 				txn,
+				TransactionProvider::Paynow,
 				user.id,
 				buyer_id,
 				&order_id,
@@ -550,7 +552,7 @@ async fn bump_counter(
 }
 
 /// Runs `body` in one database transaction, flattening the nested error.
-async fn run<F, T>(state: &ApiState, body: F) -> Result<Option<T>, DbErr>
+pub(super) async fn run<F, T>(state: &ApiState, body: F) -> Result<Option<T>, DbErr>
 where
 	F: for<'c> FnOnce(
 			&'c sea_orm::DatabaseTransaction,
