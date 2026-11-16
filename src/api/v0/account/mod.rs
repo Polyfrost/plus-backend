@@ -143,7 +143,7 @@ fn special_chat_allows(method: &http::Method, path: &str) -> bool {
 		(method.as_str(), segments.as_slice()),
 		("GET", ["groups"] | ["v1", "groups"])
 			| ("GET" | "POST", ["groups", _, "messages"])
-			| ("POST", ["groups", _, "read", _])
+			| ("POST", ["groups", _, "read", _] | ["groups", _, "claim"])
 			| ("POST", ["players", "resolve"])
 			| ("GET", ["websocket"])
 	)
@@ -401,6 +401,7 @@ mod tests {
 			(Method::GET, "/groups/7/messages"),
 			(Method::POST, "/groups/7/messages"),
 			(Method::POST, "/groups/7/read/12"),
+			(Method::POST, "/groups/7/claim"),
 			(Method::POST, "/players/resolve"),
 			(Method::GET, "/websocket"),
 		] {
@@ -409,7 +410,6 @@ mod tests {
 		for (method, path) in [
 			(Method::POST, "/groups"),
 			(Method::POST, "/groups/dm/abc"),
-			(Method::POST, "/groups/7/claim"),
 			(Method::POST, "/groups/7/members/abc"),
 			(Method::DELETE, "/groups/7/messages/3"),
 			(Method::PUT, "/groups/7/messages/3"),
