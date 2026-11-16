@@ -9,17 +9,19 @@ use axum::{
 	Json,
 	extract::{Path, State},
 };
+use std::collections::HashMap;
+
+use entities::{prelude::*, user};
 use schemars::JsonSchema;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
 	permissions::{Require, perm},
 	v0::{
-		cosmetics::grant::{GrantError, grant_cosmetic},
+		cosmetics::grant::{GrantError, grant_cosmetics, revoke_cosmetics},
 		players::{PlayerError, lookup::resolve_username},
 	},
 };
@@ -27,6 +29,12 @@ use crate::api::{
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.api_route("/admin/grants", post_with(self::create, self::create_doc))
+		.api_route("/admin/grants/bulk", post_with(self::create_bulk, self::create_bulk_doc))
+		.api_route("/admin/grants/revoke", post_with(self::revoke, self::revoke_doc))
+		.api_route(
+			"/admin/grants/revoke/bulk",
+			post_with(self::revoke_bulk, self::revoke_bulk_doc),
+		)
 		.api_route(
 			"/admin/grants/player/{query}",
 			get_with(self::player, self::player_doc),
@@ -42,6 +50,41 @@ fn create_doc(op: TransformOperation) -> TransformOperation {
 			 in that group, so the response usually lists more ids than were \
 			 asked for. Granting something the player already owns is a no-op \
 			 rather than an error. Requires `GRANT_COSMETICS`.",
+		)
+		.tag("grants")
+}
+
+fn create_bulk_doc(op: TransformOperation) -> TransformOperation {
+	op.id("createAdminGrantBulk")
+		.summary("Grant cosmetics to many players")
+		.description(
+			"Grants every listed cosmetic to every listed player in one \
+			 transaction, with the same group expansion as a single grant. An \
+			 unknown cosmetic fails the whole request. At most 500 players and \
+			 100 cosmetics. Requires `GRANT_COSMETICS`.",
+		)
+		.tag("grants")
+}
+
+fn revoke_doc(op: TransformOperation) -> TransformOperation {
+	op.id("revokeAdminGrant")
+		.summary("Remove a cosmetic from a player")
+		.description(
+			"Takes a cosmetic away from a player whatever granted it, paid \
+			 purchases included, and unequips it. A grouped cosmetic removes \
+			 the whole group. Removing something the player does not own is a \
+			 no-op. Requires `GRANT_COSMETICS`.",
+		)
+		.tag("grants")
+}
+
+fn revoke_bulk_doc(op: TransformOperation) -> TransformOperation {
+	op.id("revokeAdminGrantBulk")
+		.summary("Remove cosmetics from many players")
+		.description(
+			"Removes every listed cosmetic from every listed player in one \
+			 transaction, as a single removal does. At most 500 players and \
+			 100 cosmetics. Requires `GRANT_COSMETICS`.",
 		)
 		.tag("grants")
 }
@@ -67,6 +110,27 @@ struct GrantRequest {
 	cosmetic_id: i32,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BulkRequest {
+	/// The Minecraft UUIDs of the players.
+	players: Vec<Uuid>,
+	/// The cosmetics. Any variant id stands for its whole group.
+	cosmetic_ids: Vec<i32>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct RevokeResponse {
+	/// Every cosmetic id the player no longer owns.
+	removed: Vec<i32>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct BulkRevokeResponse {
+	/// What each player lost, keyed by UUID. Players who owned none of it
+	/// are left out.
+	removed: HashMap<Uuid, Vec<i32>>,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 struct GrantResponse {
 	/// Every cosmetic id the player now owns as a result of this grant.
@@ -88,9 +152,45 @@ async fn create(
 	_auth: Require<{ perm::GRANT_COSMETICS }>,
 	Json(body): Json<GrantRequest>,
 ) -> Result<Json<GrantResponse>, GrantError> {
-	let granted = grant_cosmetic(&state, body.player, body.cosmetic_id).await?;
+	let granted = grant_cosmetics(&state, &[body.player], &[body.cosmetic_id]).await?;
 
 	Ok(Json(GrantResponse { granted }))
+}
+
+#[tracing::instrument(level = "debug", skip(state, _auth))]
+async fn create_bulk(
+	State(state): State<ApiState>,
+	_auth: Require<{ perm::GRANT_COSMETICS }>,
+	Json(body): Json<BulkRequest>,
+) -> Result<Json<GrantResponse>, GrantError> {
+	let granted = grant_cosmetics(&state, &body.players, &body.cosmetic_ids).await?;
+
+	Ok(Json(GrantResponse { granted }))
+}
+
+#[tracing::instrument(level = "debug", skip(state, _auth))]
+async fn revoke(
+	State(state): State<ApiState>,
+	_auth: Require<{ perm::GRANT_COSMETICS }>,
+	Json(body): Json<GrantRequest>,
+) -> Result<Json<RevokeResponse>, GrantError> {
+	let removed = revoke_cosmetics(&state, &[body.player], &[body.cosmetic_id])
+		.await?
+		.remove(&body.player)
+		.unwrap_or_default();
+
+	Ok(Json(RevokeResponse { removed }))
+}
+
+#[tracing::instrument(level = "debug", skip(state, _auth))]
+async fn revoke_bulk(
+	State(state): State<ApiState>,
+	_auth: Require<{ perm::GRANT_COSMETICS }>,
+	Json(body): Json<BulkRequest>,
+) -> Result<Json<BulkRevokeResponse>, GrantError> {
+	let removed = revoke_cosmetics(&state, &body.players, &body.cosmetic_ids).await?;
+
+	Ok(Json(BulkRevokeResponse { removed }))
 }
 
 #[tracing::instrument(level = "debug", skip(state, _auth))]
@@ -99,8 +199,6 @@ async fn player(
 	_auth: Require<{ perm::GRANT_COSMETICS }>,
 	Path(query): Path<String>,
 ) -> Result<Json<PlayerResponse>, PlayerError> {
-	use entities::{prelude::*, user};
-
 	let query = query.trim();
 
 	if let Ok(uuid) = Uuid::parse_str(query) {
