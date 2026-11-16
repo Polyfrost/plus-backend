@@ -141,7 +141,7 @@ fn special_chat_allows(method: &http::Method, path: &str) -> bool {
 
 	matches!(
 		(method.as_str(), segments.as_slice()),
-		("GET", ["groups"])
+		("GET", ["groups"] | ["v1", "groups"])
 			| ("GET" | "POST", ["groups", _, "messages"])
 			| ("POST", ["groups", _, "read", _])
 			| ("POST", ["players", "resolve"])
@@ -397,6 +397,7 @@ mod tests {
 		for (method, path) in [
 			(Method::GET, "/groups"),
 			(Method::GET, "/groups/"),
+			(Method::GET, "/v1/groups"),
 			(Method::GET, "/groups/7/messages"),
 			(Method::POST, "/groups/7/messages"),
 			(Method::POST, "/groups/7/read/12"),
@@ -414,6 +415,7 @@ mod tests {
 			(Method::PUT, "/groups/7/messages/3"),
 			(Method::DELETE, "/groups/7/messages"),
 			(Method::GET, "/groupsx"),
+			(Method::PATCH, "/v1/groups/7"),
 			(Method::GET, "/v1/roles"),
 			(Method::GET, "/v1/me"),
 			(Method::POST, "/oidc/authorize"),
