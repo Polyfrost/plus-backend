@@ -26,6 +26,7 @@ use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait,
 	EntityTrait,
+	sea_query::NullOrdering,
 	PaginatorTrait,
 	QueryFilter,
 	QueryOrder
@@ -83,10 +84,12 @@ fn orders_doc(op: TransformOperation) -> TransformOperation {
 	op.id("adminOrders")
 		.summary("List orders")
 		.description(
-			"Every transaction, newest first, with the player it was for, the player \
-			 who paid when that was someone else, and each line. `player` narrows it to \
-			 one player's orders, as buyer or recipient, by UUID or username. \
-			 Requires `VIEW_ORDERS`."
+			"Every transaction, newest first unless `sort` says otherwise, with the \
+			 player it was for, the player who paid when that was someone else, and \
+			 each line. `player` narrows it to one player's orders, as buyer or \
+			 recipient, by UUID or username; `provider`, `status`, `min_amount` / \
+			 `max_amount` (minor units, orders without an amount drop out) and \
+			 `from` / `to` (RFC 3339) narrow it further. Requires `VIEW_ORDERS`."
 		)
 		.tag("store")
 }
@@ -248,7 +251,35 @@ struct OrdersQuery {
 	nb: u64,
 	/// A UUID or username.
 	#[serde(default)]
-	player: Option<String>
+	player: Option<String>,
+	#[serde(default)]
+	provider: Option<TransactionProvider>,
+	#[serde(default)]
+	status: Option<TransactionStatus>,
+	/// Charged at least this much, in minor units.
+	#[serde(default)]
+	min_amount: Option<i64>,
+	/// Charged at most this much, in minor units.
+	#[serde(default)]
+	max_amount: Option<i64>,
+	/// Placed at or after this instant.
+	#[serde(default)]
+	from: Option<chrono::DateTime<chrono::Utc>>,
+	/// Placed before this instant.
+	#[serde(default)]
+	to: Option<chrono::DateTime<chrono::Utc>>,
+	#[serde(default)]
+	sort: OrderSort
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum OrderSort {
+	#[default]
+	Newest,
+	Oldest,
+	AmountDesc,
+	AmountAsc
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -307,7 +338,42 @@ async fn orders(
 	Query(query): Query<OrdersQuery>
 ) -> Result<Json<OrdersResponse>, StoreError> {
 	let db = &state.database;
-	let mut select = Transaction::find().order_by_desc(transaction::Column::Id);
+	let mut select = match query.sort {
+		OrderSort::Newest => Transaction::find().order_by_desc(transaction::Column::Id),
+		OrderSort::Oldest => Transaction::find().order_by_asc(transaction::Column::Id),
+		OrderSort::AmountDesc => Transaction::find()
+			.order_by_with_nulls(
+				transaction::Column::AmountMinor,
+				sea_orm::Order::Desc,
+				NullOrdering::Last
+			)
+			.order_by_desc(transaction::Column::Id),
+		OrderSort::AmountAsc => Transaction::find()
+			.order_by_with_nulls(
+				transaction::Column::AmountMinor,
+				sea_orm::Order::Asc,
+				NullOrdering::Last
+			)
+			.order_by_desc(transaction::Column::Id)
+	};
+	if let Some(provider) = query.provider {
+		select = select.filter(transaction::Column::Provider.eq(provider));
+	}
+	if let Some(status) = query.status {
+		select = select.filter(transaction::Column::Status.eq(status));
+	}
+	if let Some(min) = query.min_amount {
+		select = select.filter(transaction::Column::AmountMinor.gte(min));
+	}
+	if let Some(max) = query.max_amount {
+		select = select.filter(transaction::Column::AmountMinor.lte(max));
+	}
+	if let Some(from) = query.from {
+		select = select.filter(transaction::Column::CreatedAt.gte(from));
+	}
+	if let Some(to) = query.to {
+		select = select.filter(transaction::Column::CreatedAt.lt(to));
+	}
 
 	if let Some(player) = query
 		.player
