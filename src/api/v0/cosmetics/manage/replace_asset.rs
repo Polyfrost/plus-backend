@@ -51,6 +51,7 @@ struct ReplaceAssetResponse {
 	cosmetic_id: i32,
 	asset_id: i32,
 	cover_asset_id: Option<i32>,
+	preview_asset_id: Option<i32>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -178,27 +179,33 @@ async fn endpoint(
 	};
 
 	let slots = super::render_cover::cosmetic_slots(&state.database, &cosmetic).await?;
-	let (asset, cover_asset_id) = store_cosmetic_file(
+	let (asset, renders) = store_cosmetic_file(
 		&state,
 		&cosmetic.r#type,
 		&slots,
 		cosmetic.model_variant.as_deref(),
+		None,
 		&data,
 		extension,
 		content_type,
 	)
 	.await?;
 
-	// A failed render keeps the old cover rather than none.
-	let cover_asset_id = cover_asset_id.or(cosmetic.cover_asset_id);
+	// A failed render keeps the old cover and preview rather than none.
+	let (cover_asset_id, preview_asset_id) = match renders {
+		Some((cover, preview)) => (Some(cover), preview),
+		None => (cosmetic.cover_asset_id, cosmetic.preview_asset_id),
+	};
 	let mut active: cosmetic::ActiveModel = cosmetic.into();
 	active.asset_id = Set(Some(asset.id));
 	active.cover_asset_id = Set(cover_asset_id);
+	active.preview_asset_id = Set(preview_asset_id);
 	let updated = active.update(&state.database).await?;
 
 	Ok(Json(ReplaceAssetResponse {
 		cosmetic_id: updated.id,
 		asset_id: asset.id,
 		cover_asset_id,
+		preview_asset_id,
 	}))
 }

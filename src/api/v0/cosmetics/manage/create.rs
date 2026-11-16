@@ -20,7 +20,14 @@ use crate::{
 	api::{
 		ApiState,
 		permissions::{Require, perm},
-		v0::cosmetics::{CosmeticInfo, group_cosmetics},
+		v0::{
+			collections::{StoreAssetError, store_asset},
+			cosmetics::{
+				CosmeticInfo,
+				cover::{PREVIEW_CONTENT_TYPE, PREVIEW_EXTENSION, Renders},
+				group_cosmetics,
+			},
+		},
 	},
 	paynow::{PayNowError, catalog},
 	utils::{
@@ -215,6 +222,9 @@ struct CosmeticUploadRequest {
 	model_variant: Option<String>,
 	/// Optional ordering of this variant within its group (default 0).
 	variant_order: Option<i32>,
+	/// Optional time in seconds into the emote or cosmetic animation the cover
+	/// is captured at (default 1).
+	cover_seconds: Option<f32>,
 }
 
 impl OperationInput for FileUpload {
@@ -265,6 +275,7 @@ async fn endpoint(
 	let mut variant_name = None;
 	let mut model_variant = None;
 	let mut variant_order = 0;
+	let mut cover_seconds = None;
 
 	while let Some(field) = multipart.next_field().await? {
 		match field.name() {
@@ -342,6 +353,9 @@ async fn endpoint(
 					variant_order = parsed;
 				}
 			}
+			Some("cover_seconds") => {
+				cover_seconds = field.text().await?.trim().parse::<f32>().ok();
+			}
 			_ => {}
 		}
 	}
@@ -356,11 +370,12 @@ async fn endpoint(
 		return Err(UploadError::MissingSlots);
 	}
 
-	let (asset, cover_asset_id) = store_cosmetic_file(
+	let (asset, renders) = store_cosmetic_file(
 		&state,
 		&cosmetic_type,
 		&slots,
 		model_variant.as_deref(),
+		cover_seconds,
 		&data,
 		extension,
 		content_type,
@@ -430,7 +445,8 @@ async fn endpoint(
 
 	let model = cosmetic::ActiveModel {
 		asset_id: Set(Some(asset.id)),
-		cover_asset_id: Set(cover_asset_id),
+		cover_asset_id: Set(renders.map(|(cover, _)| cover)),
+		preview_asset_id: Set(renders.and_then(|(_, preview)| preview)),
 		name: Set(Some(resolved_name)),
 		r#type: Set(cosmetic_type),
 		enabled: Set(true),
@@ -503,7 +519,7 @@ async fn endpoint(
 		None => HashMap::new(),
 	};
 
-	let cover_asset = match cover_asset_id {
+	let cover_asset = match model.cover_asset_id {
 		Some(cover_asset_id) => {
 			Asset::find_by_id(cover_asset_id)
 				.one(&state.database)
@@ -525,17 +541,18 @@ async fn endpoint(
 	Ok(Json(infos.remove(0)))
 }
 
-/// Uploads a cosmetic's source file, renders its cover when the render service
-/// is configured, and returns the new asset with the cover's id.
+/// Uploads a cosmetic's source file, renders its cover and preview, and
+/// returns the new asset with their ids, or none when rendering failed.
 pub(super) async fn store_cosmetic_file(
 	state: &ApiState,
 	cosmetic_type: &CosmeticType,
 	slots: &[BodySlot],
 	model_variant: Option<&str>,
+	cover_seconds: Option<f32>,
 	data: &[u8],
 	mut extension: String,
 	mut content_type: Option<String>,
-) -> Result<(entities::asset::Model, Option<i32>), UploadError> {
+) -> Result<(entities::asset::Model, Option<(i32, Option<i32>)>), UploadError> {
 	use entities::asset;
 
 	let is_emote = matches!(cosmetic_type, CosmeticType::Emote);
@@ -587,39 +604,26 @@ pub(super) async fn store_cosmetic_file(
 	.insert(&state.database)
 	.await?;
 
-	let cover_asset_id = if state.render_service_url.is_empty() {
-		None
-	} else {
-		match crate::api::v0::cosmetics::cover::render_cover(
-			&state.render_client,
-			&state.render_service_url,
-			cosmetic_type,
-			slots,
-			model_variant,
-			is_bundle,
-			&data,
-		)
-		.await
-		{
-			Ok(png) => match crate::api::v0::collections::store_asset(
-				state,
-				&png,
-				Some("image/png".to_string()),
-				"png",
-				"covers",
-			)
-			.await
-			{
-				Ok(id) => Some(id),
-				Err(error) => {
-					tracing::warn!("Unable to store cosmetic cover asset: {error}");
-					None
-				}
-			},
+	let renders = match crate::api::v0::cosmetics::cover::render_cosmetic(
+		&state.client,
+		cosmetic_type.clone(),
+		slots,
+		model_variant,
+		cover_seconds,
+		data,
+	)
+	.await
+	{
+		Ok(renders) => match store_renders(state, &renders).await {
+			Ok(ids) => Some(ids),
 			Err(error) => {
-				tracing::warn!("Unable to render cosmetic cover: {error}");
+				tracing::warn!("Unable to store cosmetic cover asset: {error}");
 				None
 			}
+		},
+		Err(error) => {
+			tracing::warn!("Unable to render cosmetic cover: {error}");
+			None
 		}
 	};
 
@@ -630,5 +634,29 @@ pub(super) async fn store_cosmetic_file(
 	.await?;
 	state.asset_cache.insert(asset.id, info).await;
 
-	Ok((asset, cover_asset_id))
+	Ok((asset, renders))
+}
+
+/// Stores a render's cover and, when it has one, its preview.
+pub(super) async fn store_renders(
+	state: &ApiState,
+	renders: &Renders,
+) -> Result<(i32, Option<i32>), StoreAssetError> {
+	let cover =
+		store_asset(state, &renders.cover, Some("image/png".to_string()), "png", "covers")
+			.await?;
+	let preview = match &renders.preview {
+		Some(preview) => Some(
+			store_asset(
+				state,
+				preview,
+				Some(PREVIEW_CONTENT_TYPE.to_string()),
+				PREVIEW_EXTENSION,
+				"previews",
+			)
+			.await?,
+		),
+		None => None,
+	};
+	Ok((cover, preview))
 }

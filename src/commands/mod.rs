@@ -126,12 +126,6 @@ pub(crate) struct ServeArgs {
 	/// `ADMIN_PASSWORD` so existing unique-visitor counts carry on.
 	#[bpaf(long("link-hash-salt"), env("LINK_HASH_SALT"), env("ADMIN_PASSWORD"))]
 	pub(crate) link_hash_salt: String,
-	#[bpaf(
-		long("render-service-url"),
-		env("RENDER_SERVICE_URL"),
-		fallback(String::new())
-	)]
-	pub(crate) render_service_url: String,
 	/// The origins allowed to make cross-origin requests to the API, comma
 	/// seperated.
 	#[bpaf(

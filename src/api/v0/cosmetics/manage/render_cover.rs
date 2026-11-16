@@ -4,7 +4,7 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use entities::sea_orm_active_enums::{AssetKind, BodySlot};
+use entities::sea_orm_active_enums::BodySlot;
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
@@ -17,8 +17,6 @@ pub enum RenderCoverError {
 	MissingCosmetic,
 	#[error("The cosmetic has no source asset to render")]
 	MissingAsset,
-	#[error("Cover rendering is not configured (render_service_url is unset)")]
-	RenderDisabled,
 	#[error("The cosmetic already has a cover; pass force=true to regenerate")]
 	CoverExists,
 	#[error("Failed to render cover: {0}")]
@@ -37,12 +35,6 @@ impl IntoResponse for RenderCoverError {
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
 				Self::MissingAsset | Self::CoverExists => StatusCode::BAD_REQUEST,
-				// Carries no internal detail beyond the configuration state
-				// itself, so it is surfaced rather than withheld
-				Self::RenderDisabled => {
-					return (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
-						.into_response();
-				}
 				Self::Render(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) | Self::S3(_) | Self::Store(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
@@ -58,22 +50,27 @@ struct RenderCoverRequest {
 	cosmetic_id: i32,
 	#[serde(default)]
 	force: bool,
+	/// Time in seconds into the emote or cosmetic animation the cover is
+	/// captured at (default 1).
+	cover_seconds: Option<f32>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 struct RenderCoverResponse {
 	cosmetic_id: i32,
 	cover_asset_id: i32,
+	/// Set when the cosmetic moves.
+	preview_asset_id: Option<i32>,
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("renderCosmeticCover")
 		.summary("Render a cosmetic cover")
 		.description(
-			"Generates a cover image for an existing cosmetic by re-rendering its \
-			 source asset through the render service, stores it, and points the \
-			 cosmetic at the new cover. Skips cosmetics that already have a cover \
-			 unless `force` is set. Requires `MANAGE_COSMETICS`.",
+			"Re-renders an existing cosmetic's cover image, plus a looping preview \
+			 when it moves, and points the cosmetic at them. Skips cosmetics that \
+			 already have a cover unless `force` is set. Requires \
+			 `MANAGE_COSMETICS`.",
 		)
 		.tag("cosmetics")
 		.response_with::<{ StatusCode::OK.as_u16() }, Json<RenderCoverResponse>, _>(
@@ -102,10 +99,6 @@ async fn endpoint(
 ) -> Result<Json<RenderCoverResponse>, RenderCoverError> {
 	use entities::{cosmetic, prelude::*};
 
-	if state.render_service_url.is_empty() {
-		return Err(RenderCoverError::RenderDisabled);
-	}
-
 	let Some(cosmetic) = Cosmetic::find_by_id(body.cosmetic_id)
 		.one(&state.database)
 		.await?
@@ -130,37 +123,30 @@ async fn endpoint(
 
 	let slots = cosmetic_slots(&state.database, &cosmetic).await?;
 
-	let is_bundle = asset.asset_kind == AssetKind::Bundle;
-
-	let png = crate::api::v0::cosmetics::cover::render_cover(
-		&state.render_client,
-		&state.render_service_url,
-		&cosmetic.r#type,
+	let renders = crate::api::v0::cosmetics::cover::render_cosmetic(
+		&state.client,
+		cosmetic.r#type.clone(),
 		&slots,
 		cosmetic.model_variant.as_deref(),
-		is_bundle,
-		&data,
+		body.cover_seconds,
+		data,
 	)
 	.await
 	.map_err(|error| RenderCoverError::Render(error.to_string()))?;
 
-	let cover_asset_id = crate::api::v0::collections::store_asset(
-		&state,
-		&png,
-		Some("image/png".to_string()),
-		"png",
-		"covers",
-	)
-	.await
-	.map_err(|error| RenderCoverError::Store(error.to_string()))?;
+	let (cover_asset_id, preview_asset_id) = super::create::store_renders(&state, &renders)
+		.await
+		.map_err(|error| RenderCoverError::Store(error.to_string()))?;
 
 	let mut active: cosmetic::ActiveModel = cosmetic.into();
 	active.cover_asset_id = Set(Some(cover_asset_id));
+	active.preview_asset_id = Set(preview_asset_id);
 	let updated = active.update(&state.database).await?;
 
 	Ok(Json(RenderCoverResponse {
 		cosmetic_id: updated.id,
 		cover_asset_id,
+		preview_asset_id,
 	}))
 }
 

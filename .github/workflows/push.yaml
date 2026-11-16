@@ -41,4 +41,4 @@ jobs:
                   skipPush: ${{ github.event.pull_request.head.repo.fork == true }}
 
             - name: Build with nix
-              run: nix build --print-out-paths .#plus-backend .#render-service
+              run: nix build --print-out-paths .#plus-backend
