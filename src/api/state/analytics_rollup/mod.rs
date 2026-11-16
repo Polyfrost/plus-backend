@@ -84,10 +84,12 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 	let txn = database.begin().await?;
 
 	// SET LOCAL reverts on commit; a plain SET would leak the timeout onto
-	// the pooled connection.
+	// the pooled connection. No parallel workers: a background job must not
+	// take every database core away from requests.
 	txn.execute_unprepared(&format!(
 		"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'; \
-		 SET LOCAL lock_timeout = '5s'"
+		 SET LOCAL lock_timeout = '5s'; \
+		 SET LOCAL max_parallel_workers_per_gather = 0"
 	))
 	.await?;
 
@@ -199,7 +201,12 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 	)
 	.await?;
 
-	let cells = retention::collect_retention_cells(&txn, from, to).await?;
+	let retention_from = AnalyticsCohortRetention::find()
+		.one(&txn)
+		.await?
+		.is_some()
+		.then_some(from);
+	let cells = retention::collect_retention_cells(&txn, retention_from, to).await?;
 	upsert(
 		&txn,
 		cells,
