@@ -485,8 +485,7 @@ pub(crate) async fn push_discount(
 				enabled: model.enabled,
 				discount_type,
 				discount_amount,
-				// Per item and after the sale, the way the backend quotes it.
-				discount_apply_individually: true,
+				discount_apply_individually: model.apply_individually,
 				discount_apply_before_sales: false,
 				duration: "once",
 				minimum_order_value,

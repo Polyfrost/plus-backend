@@ -83,6 +83,7 @@ mod m20261111_000000_create_roles;
 mod m20261112_000000_api_token_permissions;
 mod m20261112_000000_create_rate_limit_lockouts;
 mod m20261113_000000_split_permissions;
+mod m20261115_000000_discount_apply_individually;
 
 pub struct Migrator;
 
@@ -173,6 +174,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20261112_000000_api_token_permissions::Migration),
 			Box::new(m20261112_000000_create_rate_limit_lockouts::Migration),
 			Box::new(m20261113_000000_split_permissions::Migration),
+			Box::new(m20261115_000000_discount_apply_individually::Migration),
 		]
 	}
 }

@@ -145,6 +145,10 @@ pub struct DiscountBody {
 	/// Covers the whole catalogue, ignoring `targets`.
 	#[serde(default)]
 	pub applies_to_all: bool,
+	/// Coupons only. Takes the amount off each covered line rather than once
+	/// off the order. Only changes anything for a fixed amount.
+	#[serde(default = "enabled_by_default")]
+	pub apply_individually: bool,
 	#[serde(default)]
 	pub targets: Targets,
 	#[serde(default)]
@@ -172,6 +176,7 @@ pub struct DiscountView {
 	pub ends_at: Option<String>,
 	pub enabled: bool,
 	pub applies_to_all: bool,
+	pub apply_individually: bool,
 	pub targets: Targets,
 	pub min_subtotal_minor: Option<i64>,
 	pub max_redemptions: Option<i32>,
@@ -196,6 +201,7 @@ fn view(model: discount::Model, targets: Targets) -> DiscountView {
 		ends_at: model.ends_at.map(|at| at.to_rfc3339()),
 		enabled: model.enabled,
 		applies_to_all: model.applies_to_all,
+		apply_individually: model.apply_individually,
 		targets,
 		min_subtotal_minor: model.min_subtotal_minor,
 		max_redemptions: model.max_redemptions,
@@ -435,6 +441,7 @@ fn active(
 		ends_at: Set(body.ends_at),
 		enabled: Set(body.enabled),
 		applies_to_all: Set(body.applies_to_all),
+		apply_individually: Set(body.apply_individually),
 		min_subtotal_minor: Set(body.min_subtotal_minor),
 		max_redemptions: Set(body.max_redemptions),
 		max_per_player: Set(body.max_per_player),
@@ -542,6 +549,7 @@ mod tests {
 			ends_at: None,
 			enabled: true,
 			applies_to_all: true,
+			apply_individually: true,
 			targets: Targets::default(),
 			min_subtotal_minor: None,
 			max_redemptions: None,
