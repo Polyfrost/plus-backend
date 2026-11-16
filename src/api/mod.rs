@@ -20,7 +20,7 @@ use aide::{
 };
 use axum::{
 	Extension,
-	http::{Method, StatusCode, header},
+	http::{HeaderName, Method, StatusCode, header},
 	response::{IntoResponse, Response},
 };
 use schemars::{JsonSchema, schema_for};
@@ -196,8 +196,18 @@ pub(crate) async fn start(args: ServeArgs) {
 		.layer(
 			CorsLayer::new()
 				.allow_origin(args.cors_origins)
-				.allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-				.allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+				.allow_methods([
+					Method::GET,
+					Method::POST,
+					Method::PUT,
+					Method::PATCH,
+					Method::DELETE,
+				])
+				.allow_headers([
+					header::AUTHORIZATION,
+					header::CONTENT_TYPE,
+					HeaderName::from_static(v0::groups::ACT_AS_HEADER),
+				])
 				// The dashboard's session cookie.
 				.allow_credentials(true),
 		);

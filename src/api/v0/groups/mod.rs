@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
 
-pub(super) const ACT_AS_HEADER: &str = "x-polyplus-act-as";
+pub(crate) const ACT_AS_HEADER: &str = "x-polyplus-act-as";
 
 #[derive(Debug)]
 pub(super) struct ChatPlayer {
