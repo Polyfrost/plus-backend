@@ -30,6 +30,7 @@ use crate::{
 	api::{
 		ApiState,
 		v0::{
+			account::TokenAccess,
 			groups::{
 				ChatPlayer, GroupError, MAX_GROUP_MEMBERS, OwnPlayer, find_user_by_uuid,
 				load_group, member_ids, require_membership,
@@ -144,7 +145,8 @@ pub(crate) fn v1_router() -> ApiRouter<ApiState> {
 fn delegations_doc(op: TransformOperation) -> TransformOperation {
 	op.summary("List players whose chats you can act as")
 		.description(
-			"Pass one of these as the `x-polyplus-act-as` header on chat routes.",
+			"Pass one of these as the `x-polyplus-act-as` header on chat routes. \
+			 Empty unless called from a dashboard session holding `ACT_AS_DELEGATE`.",
 		)
 		.tag("groups")
 }
@@ -153,7 +155,11 @@ fn delegations_doc(op: TransformOperation) -> TransformOperation {
 async fn delegations(
 	State(state): State<ApiState>,
 	OwnPlayer(player): OwnPlayer,
+	access: TokenAccess,
 ) -> Result<Json<Vec<Uuid>>, GroupError> {
+	if !super::may_act_as_delegate(&state, access, player.id).await? {
+		return Ok(Json(Vec::new()));
+	}
 	let owner_ids = DmDelegates::find()
 		.filter(dm_delegates::Column::DelegateId.eq(player.id))
 		.all(&state.database)

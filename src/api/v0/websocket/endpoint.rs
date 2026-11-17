@@ -153,7 +153,8 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 						 ServerBoundPacket OpenAPI schemas. This largely follows a \
 						 request-response model, but that may not always be true. \
 						 Pass `?act_as=<uuid>` to receive the packets of a player who \
-						 delegated their chats to you, without appearing as them.",
+						 delegated their chats to you, without appearing as them. Needs a \
+						 dashboard session holding `ACT_AS_DELEGATE`.",
 					)
 					.tag("misc")
 					.response_with::<{ StatusCode::SWITCHING_PROTOCOLS.as_u16() }, (), _>(
@@ -1145,7 +1146,7 @@ async fn endpoint(
 	ws: WebSocketUpgrade,
 ) -> Response<Body> {
 	if let Some(uuid) = query.act_as {
-		return match crate::api::v0::groups::delegated_owner(&state, player.id, uuid).await {
+		return match crate::api::v0::groups::delegated_owner(&state, access, player.id, uuid).await {
 			Ok(owner) => listen_as_delegate(state, owner.minecraft_uuid, ws),
 			Err(response) => response,
 		};

@@ -16,7 +16,11 @@ use entities::{sea_orm_active_enums::GroupKind, user};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
-use crate::api::{ApiState, v0::account::AuthenticatedPlayer};
+use crate::api::{
+	ApiState,
+	permissions::{self, perm},
+	v0::account::{AuthenticatedPlayer, TokenAccess},
+};
 
 pub(crate) const ACT_AS_HEADER: &str = "x-polyplus-act-as";
 
@@ -58,7 +62,8 @@ impl FromRequestParts<ApiState> for ChatPlayer {
 			.ok()
 			.and_then(|value| Uuid::parse_str(value).ok())
 			.ok_or_else(not_a_delegate)?;
-		let owner = delegated_owner(state, actual_id, uuid).await?;
+		let access = TokenAccess::from_request_parts(parts, state).await?;
+		let owner = delegated_owner(state, access, actual_id, uuid).await?;
 
 		Ok(Self {
 			player: owner,
@@ -71,15 +76,39 @@ fn not_a_delegate() -> Response {
 	(StatusCode::FORBIDDEN, "Not a delegate of that player").into_response()
 }
 
-/// The player `uuid`, if they delegated their chats to `actual_id`.
+/// Whether `user_id` may act as their delegators: only from a dashboard
+/// session, and only with a role holding `ACT_AS_DELEGATE`.
+pub(crate) async fn may_act_as_delegate(
+	state: &ApiState,
+	access: TokenAccess,
+	user_id: i32,
+) -> Result<bool, sea_orm::DbErr> {
+	Ok(access == TokenAccess::Dashboard && holds_delegate_permission(state, user_id).await?)
+}
+
+async fn holds_delegate_permission(state: &ApiState, user_id: i32) -> Result<bool, sea_orm::DbErr> {
+	let roles = permissions::roles_of(&state.database, user_id).await?;
+	Ok(permissions::has(permissions::union(&roles), perm::ACT_AS_DELEGATE))
+}
+
+/// The player `uuid`, if they delegated their chats to `actual_id` and
+/// `actual_id` [may act as a delegate](may_act_as_delegate).
 pub(crate) async fn delegated_owner(
 	state: &ApiState,
+	access: TokenAccess,
 	actual_id: i32,
 	uuid: Uuid,
 ) -> Result<user::Model, Response> {
 	use entities::prelude::*;
 
 	let internal = |e: sea_orm::DbErr| GroupError::Database(e).into_response();
+	if !may_act_as_delegate(state, access, actual_id).await.map_err(internal)? {
+		return Err((
+			StatusCode::FORBIDDEN,
+			"Acting as a delegate needs a dashboard session and the ACT_AS_DELEGATE permission",
+		)
+			.into_response());
+	}
 	let owner = User::find()
 		.filter(user::Column::MinecraftUuid.eq(uuid))
 		.one(&state.database)
@@ -265,7 +294,12 @@ pub(super) async fn member_and_delegate_ids(
 		.filter(dm_delegates::Column::OwnerId.is_in(ids.clone()))
 		.all(&state.database)
 		.await?;
-	ids.extend(delegates.into_iter().map(|row| row.delegate_id));
+	// Delegates who lost the permission no longer hear their delegators' chats.
+	for row in delegates {
+		if holds_delegate_permission(state, row.delegate_id).await? {
+			ids.push(row.delegate_id);
+		}
+	}
 	ids.sort_unstable();
 	ids.dedup();
 	Ok(ids)

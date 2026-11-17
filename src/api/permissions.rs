@@ -44,6 +44,8 @@ pub(crate) mod perm {
 	/// Creator codes.
 	pub(crate) const MANAGE_REFERRALS: u64 = 1 << 13;
 	pub(crate) const MANAGE_EVENTS: u64 = 1 << 14;
+	/// Reading and answering the chats of players who delegated them to you.
+	pub(crate) const ACT_AS_DELEGATE: u64 = 1 << 15;
 
 	/// Everything that works from the catalogue, which may therefore read it.
 	pub(crate) const CATALOG_READERS: u64 = MANAGE_STORE
