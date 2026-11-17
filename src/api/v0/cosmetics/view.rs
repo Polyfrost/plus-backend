@@ -1,3 +1,5 @@
+use std::{collections::HashMap, slice};
+
 use aide::{
 	OperationIo,
 	axum::{ApiRouter, routing::get_with},
@@ -10,11 +12,16 @@ use axum::{
 	response::IntoResponse,
 };
 use chrono::{DateTime, FixedOffset};
-use entities::sea_orm_active_enums::CosmeticType;
+use entities::{
+	cosmetic,
+	prelude::{Cosmetic, CosmeticGroup},
+	sea_orm_active_enums::CosmeticType,
+};
 use schemars::JsonSchema;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder};
 use serde::Serialize;
 
+use super::preview_urls;
 use crate::api::{
 	ApiState,
 	v0::tags::{CosmeticTags, tags_for_cosmetics},
@@ -29,7 +36,7 @@ pub enum ViewError {
 	#[error("No enabled cosmetic with that id exists")]
 	NotFound,
 	#[error("Unable to query database: {0}")]
-	Database(#[from] sea_orm::error::DbErr),
+	Database(#[from] DbErr),
 }
 
 impl IntoResponse for ViewError {
@@ -64,6 +71,8 @@ pub struct ViewResponse {
 	settings: Option<SettingsInfo>,
 	asset_id: Option<i32>,
 	cover_asset_id: Option<i32>,
+	/// Looping animation for cosmetics that move.
+	preview_url: Option<String>,
 	created_at: DateTime<FixedOffset>,
 	tags: CosmeticTags,
 	/// Every enabled variant of this cosmetic's group, ordered by
@@ -80,11 +89,17 @@ pub struct VariantView {
 	variant_order: i32,
 	asset_id: Option<i32>,
 	cover_asset_id: Option<i32>,
+	/// Looping animation for cosmetics that move.
+	preview_url: Option<String>,
 }
 
 impl VariantView {
-	pub(super) fn from_cosmetic(cosmetic: entities::cosmetic::Model) -> Self {
+	pub(super) fn from_cosmetic(
+		cosmetic: cosmetic::Model,
+		previews: &HashMap<i32, String>,
+	) -> Self {
 		Self {
+			preview_url: preview_url(&cosmetic, previews),
 			id: cosmetic.id,
 			variant_name: cosmetic.variant_name,
 			model_variant: cosmetic.model_variant,
@@ -93,6 +108,13 @@ impl VariantView {
 			cover_asset_id: cosmetic.cover_asset_id,
 		}
 	}
+}
+
+pub(super) fn preview_url(
+	cosmetic: &cosmetic::Model,
+	previews: &HashMap<i32, String>,
+) -> Option<String> {
+	previews.get(&cosmetic.preview_asset_id?).cloned()
 }
 
 fn endpoint_doc(op: TransformOperation) -> TransformOperation {
@@ -116,8 +138,6 @@ async fn endpoint(
 	State(state): State<ApiState>,
 	Path(id): Path<i32>,
 ) -> Result<Json<ViewResponse>, ViewError> {
-	use entities::{cosmetic, prelude::*};
-
 	if let Some(cosmetic) = Cosmetic::find_by_id(id)
 		.filter(cosmetic::Column::Enabled.eq(true))
 		.filter(super::in_enabled_group())
@@ -135,12 +155,45 @@ async fn endpoint(
 		let mut settings = product_settings::infos(&state.database, &[key]).await?;
 		let sale = cosmetic_sales(
 			&state.database,
-			std::slice::from_ref(&cosmetic),
+			slice::from_ref(&cosmetic),
 			&settings,
 		)
 		.await?
 		.remove(&cosmetic.id);
 		let settings = settings.remove(&key);
+
+		// Grouped cosmetics carry variants; load the whole group, this one
+		// included, so the list is the same whichever variant was asked for.
+		let (group, group_name) = if let Some(group_id) = cosmetic.group_id {
+			let group = Cosmetic::find()
+				.filter(cosmetic::Column::GroupId.eq(group_id))
+				.filter(cosmetic::Column::Enabled.eq(true))
+				.order_by_asc(cosmetic::Column::VariantOrder)
+				.order_by_asc(cosmetic::Column::Id)
+				.all(&state.database)
+				.await?
+				.into_iter()
+				.filter(|c| !super::is_redundant_variant(c.variant_name.as_deref()))
+				.collect::<Vec<_>>();
+
+			let group_name = CosmeticGroup::find_by_id(group_id)
+				.one(&state.database)
+				.await?
+				.map(|group| group.name);
+
+			(Some(group), group_name)
+		} else {
+			(None, None)
+		};
+
+		let previews = preview_urls(&state, group.iter().flatten().chain([&cosmetic])).await?;
+		let variants = group.map(|group| {
+			group
+				.into_iter()
+				.map(|c| VariantView::from_cosmetic(c, &previews))
+				.collect()
+		});
+		let preview_url = preview_url(&cosmetic, &previews);
 
 		// Still viewable by owners and old links, just not buyable.
 		let for_sale = cosmetic.store_product_id.is_some()
@@ -149,38 +202,6 @@ async fn endpoint(
 			(cosmetic.store_product_id, cosmetic.base_price, sale)
 		} else {
 			(None, None, None)
-		};
-
-		// Grouped cosmetics carry variants; load the whole group, this one
-		// included, so the list is the same whichever variant was asked for.
-		let (variants, group_name) = if let Some(group_id) = cosmetic.group_id {
-			let group = Cosmetic::find()
-				.filter(cosmetic::Column::GroupId.eq(group_id))
-				.filter(cosmetic::Column::Enabled.eq(true))
-				.order_by_asc(cosmetic::Column::VariantOrder)
-				.order_by_asc(cosmetic::Column::Id)
-				.all(&state.database)
-				.await?;
-
-			let group_name = CosmeticGroup::find_by_id(group_id)
-				.one(&state.database)
-				.await?
-				.map(|group| group.name);
-
-			(
-				Some(
-					group
-						.into_iter()
-						.filter(|c| {
-							!super::is_redundant_variant(c.variant_name.as_deref())
-						})
-						.map(VariantView::from_cosmetic)
-						.collect(),
-				),
-				group_name,
-			)
-		} else {
-			(None, None)
 		};
 
 		Ok(Json(ViewResponse {
@@ -197,6 +218,7 @@ async fn endpoint(
 			settings,
 			asset_id: cosmetic.asset_id,
 			cover_asset_id: cosmetic.cover_asset_id,
+			preview_url,
 			created_at: cosmetic.created_at,
 			tags,
 			variants,

@@ -12,14 +12,19 @@ use axum::{
 	response::IntoResponse,
 };
 use chrono::{DateTime, FixedOffset};
-use entities::sea_orm_active_enums::{CosmeticType, TagType};
+use entities::{
+	cosmetic, cosmetic_group,
+	prelude::{Cosmetic, CosmeticGroup, Tags},
+	sea_orm_active_enums::{CosmeticType, TagType},
+	tags, tags_cosmetic,
+};
 use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
 	FromQueryResult, JoinType, Order, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
-	RelationTrait, Select,
+	RelationTrait, Select, Value,
 	sea_query::{
-		Alias, Asterisk, Expr, Func, SimpleExpr, extension::postgres::PgExpr,
+		self, Alias, Asterisk, Expr, Func, SimpleExpr, extension::postgres::PgExpr,
 	},
 };
 use serde::{Deserialize, Serialize};
@@ -28,7 +33,10 @@ use crate::{
 	api::{
 		ApiState,
 		v0::{
-			cosmetics::view::VariantView,
+			cosmetics::{
+				preview_urls,
+				view::{VariantView, preview_url},
+			},
 			tags::{CosmeticTags, TagInfo, tags_for_cosmetics},
 		},
 	},
@@ -40,7 +48,7 @@ use crate::{
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum SearchError {
 	#[error("Unable to query database: {0}")]
-	Database(#[from] sea_orm::error::DbErr),
+	Database(#[from] DbErr),
 }
 
 impl IntoResponse for SearchError {
@@ -129,6 +137,8 @@ struct CosmeticSearchInfo {
 	settings: Option<SettingsInfo>,
 	asset_id: Option<i32>,
 	cover_asset_id: Option<i32>,
+	/// Looping animation for cosmetics that move.
+	preview_url: Option<String>,
 	created_at: DateTime<FixedOffset>,
 	/// The representative variant's tags.
 	tags: CosmeticTags,
@@ -141,14 +151,16 @@ struct CosmeticSearchInfo {
 
 impl CosmeticSearchInfo {
 	fn from_cosmetic(
-		cosmetic: entities::cosmetic::Model,
+		cosmetic: cosmetic::Model,
 		name: String,
 		tags: CosmeticTags,
 		variants: Option<Vec<VariantView>>,
 		sale: Option<SaleInfo>,
 		settings: Option<SettingsInfo>,
+		previews: &HashMap<i32, String>,
 	) -> Self {
 		CosmeticSearchInfo {
+			preview_url: preview_url(&cosmetic, previews),
 			id: cosmetic.id,
 			name,
 			description: cosmetic.description,
@@ -213,7 +225,7 @@ impl BucketRow {
 	}
 }
 
-fn bucket_key_of(cosmetic: &entities::cosmetic::Model) -> BucketKey {
+fn bucket_key_of(cosmetic: &cosmetic::Model) -> BucketKey {
 	match cosmetic.group_id {
 		Some(group_id) => (Some(group_id), None),
 		None => (None, Some(cosmetic.id)),
@@ -221,8 +233,6 @@ fn bucket_key_of(cosmetic: &entities::cosmetic::Model) -> BucketKey {
 }
 
 fn solo_id_expr() -> SimpleExpr {
-	use entities::cosmetic;
-
 	Expr::case(
 		Expr::col((cosmetic::Entity, cosmetic::Column::GroupId)).is_null(),
 		Expr::col((cosmetic::Entity, cosmetic::Column::Id)),
@@ -230,9 +240,7 @@ fn solo_id_expr() -> SimpleExpr {
 	.into()
 }
 
-fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
-	use entities::{cosmetic, prelude::*, tags, tags_cosmetic};
-
+fn filtered(query: &SearchQuery) -> Select<Cosmetic> {
 	let mut find = Cosmetic::find()
 		.filter(cosmetic::Column::Enabled.eq(true))
 		.filter(super::in_enabled_group())
@@ -254,15 +262,15 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 					.add(Expr::cust_with_values(
 						"word_similarity($1, cosmetic.name) >= $2",
 						[
-							sea_orm::Value::from(text.clone()),
-							sea_orm::Value::from(SIMILARITY_THRESHOLD),
+							Value::from(text.clone()),
+							Value::from(SIMILARITY_THRESHOLD),
 						],
 					))
 					.add(Expr::cust_with_values(
 						"word_similarity($1, cosmetic_group.name) >= $2",
 						[
-							sea_orm::Value::from(text.clone()),
-							sea_orm::Value::from(SIMILARITY_THRESHOLD),
+							Value::from(text.clone()),
+							Value::from(SIMILARITY_THRESHOLD),
 						],
 					)),
 			);
@@ -277,7 +285,7 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 	if let Some(names) = &query.tags {
 		find = find.filter(
 			cosmetic::Column::Id.in_subquery(
-				sea_orm::sea_query::Query::select()
+				sea_query::Query::select()
 					.column(tags_cosmetic::Column::CosmeticId)
 					.from(tags_cosmetic::Entity)
 					.inner_join(
@@ -294,9 +302,7 @@ fn filtered(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
 	find
 }
 
-fn buckets(query: &SearchQuery) -> Select<entities::prelude::Cosmetic> {
-	use entities::cosmetic;
-
+fn buckets(query: &SearchQuery) -> Select<Cosmetic> {
 	filtered(query)
 		.select_only()
 		.column(cosmetic::Column::GroupId)
@@ -311,11 +317,11 @@ fn relevance(text: &str) -> SimpleExpr {
 			MAX(word_similarity($1, cosmetic.name)), \
 			MAX(COALESCE(word_similarity($2, cosmetic_group.name), 0))\
 		)",
-		[sea_orm::Value::from(text), sea_orm::Value::from(text)],
+		[Value::from(text), Value::from(text)],
 	)
 }
 
-type Members = HashMap<BucketKey, Vec<entities::cosmetic::Model>>;
+type Members = HashMap<BucketKey, Vec<cosmetic::Model>>;
 
 /// Loads each bucket's listed variants, representative first, and the names of
 /// the groups among them.
@@ -323,8 +329,6 @@ async fn load_members(
 	db: &DatabaseConnection,
 	page: &[BucketRow],
 ) -> Result<(Members, HashMap<i32, String>), DbErr> {
-	use entities::{cosmetic, cosmetic_group, prelude::*};
-
 	let group_ids: Vec<i32> = page.iter().filter_map(|row| row.group_id).collect();
 	let solo_ids: Vec<i32> = page.iter().filter_map(|row| row.solo_id).collect();
 
@@ -376,7 +380,7 @@ async fn load_members(
 
 fn entry_name(
 	row: &BucketRow,
-	representative: &entities::cosmetic::Model,
+	representative: &cosmetic::Model,
 	group_names: &HashMap<i32, String>,
 ) -> String {
 	match row.group_id.and_then(|id| group_names.get(&id)) {
@@ -405,8 +409,6 @@ async fn endpoint(
 	State(state): State<ApiState>,
 	Query(query): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, SearchError> {
-	use entities::cosmetic;
-
 	let nb = query.nb.min(MAX_PAGE_SIZE);
 	let offset = nb.saturating_mul(query.page.saturating_sub(1));
 
@@ -436,7 +438,7 @@ async fn endpoint(
 	let mut buckets = buckets(&query);
 
 	let total_items = {
-		let count = sea_orm::sea_query::Query::select()
+		let count = sea_query::Query::select()
 			.expr(Expr::col(Asterisk).count())
 			.from_subquery(buckets.clone().into_query(), Alias::new("buckets"))
 			.to_owned();
@@ -471,6 +473,7 @@ async fn endpoint(
 		.await?;
 
 	let (mut members, group_names) = load_members(&state.database, &page).await?;
+	let previews = preview_urls(&state, members.values().flatten()).await?;
 
 	let representative_ids: Vec<i32> = page
 		.iter()
@@ -480,7 +483,7 @@ async fn endpoint(
 
 	// Priced from the representative variant, which is the one carrying the
 	// storefront product the whole group is sold under.
-	let representatives: Vec<entities::cosmetic::Model> = page
+	let representatives: Vec<cosmetic::Model> = page
 		.iter()
 		.filter_map(|row| members.get(&row.key())?.first().cloned())
 		.collect();
@@ -498,7 +501,7 @@ async fn endpoint(
 			members
 				.iter()
 				.cloned()
-				.map(VariantView::from_cosmetic)
+				.map(|c| VariantView::from_cosmetic(c, &previews))
 				.collect()
 		});
 
@@ -520,6 +523,7 @@ async fn endpoint(
 			variants,
 			sale,
 			settings,
+			&previews,
 		));
 	}
 
@@ -576,8 +580,6 @@ async fn suggest_endpoint(
 	State(state): State<ApiState>,
 	Query(query): Query<SuggestQuery>,
 ) -> Result<Json<SuggestResponse>, SearchError> {
-	use entities::{cosmetic, prelude::*, tags};
-
 	let text = query.text.trim();
 	if text.is_empty() {
 		return Ok(Json(SuggestResponse::default()));

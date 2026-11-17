@@ -15,10 +15,16 @@ use std::{
 use aide::axum::ApiRouter;
 use entities::{
 	asset, cosmetic, cosmetic_group,
+	prelude::{Asset, CosmeticGroup, CosmeticGroupAllowedSlot},
+	product_settings,
 	sea_orm_active_enums::{BodySlot, CosmeticType},
 };
 use moka::future::Cache;
 use s3::{Bucket, error::S3Error};
+use sea_orm::{
+	ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, QueryFilter,
+	sea_query::Query,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -143,9 +149,7 @@ impl VariantInfo {
 }
 
 /// Matches cosmetics that are not hidden by their group
-pub(in crate::api) fn in_enabled_group() -> sea_orm::Condition {
-	use sea_orm::{ColumnTrait, Condition, sea_query::Query};
-
+pub(in crate::api) fn in_enabled_group() -> Condition {
 	Condition::any()
 		.add(cosmetic::Column::GroupId.is_null())
 		.add(
@@ -162,10 +166,7 @@ pub(in crate::api) fn in_enabled_group() -> sea_orm::Condition {
 /// Matches cosmetics sold under a storefront product and not taken off sale.
 /// Variants share their group's product, which an interrupted provision may
 /// leave on only some of them, and their group's settings.
-pub(super) fn is_sold() -> sea_orm::Condition {
-	use entities::product_settings;
-	use sea_orm::{ColumnTrait, Condition, sea_query::Query};
-
+pub(super) fn is_sold() -> Condition {
 	let off_sale = |column: product_settings::Column| {
 		Query::select()
 			.column(column)
@@ -206,12 +207,9 @@ pub(super) fn is_sold() -> sea_orm::Condition {
 		)
 }
 
-pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
+pub(super) async fn load_groups<C: ConnectionTrait>(
 	db: &C,
-) -> Result<HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>, sea_orm::DbErr> {
-	use entities::prelude::{CosmeticGroup, CosmeticGroupAllowedSlot};
-	use sea_orm::EntityTrait;
-
+) -> Result<HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>, DbErr> {
 	// Disabled groups are loaded too: a player who owns one of their variants
 	// keeps it, so the group is still needed to name and bucket that variant.
 	Ok(CosmeticGroup::find()
@@ -229,13 +227,10 @@ pub(super) async fn load_groups<C: sea_orm::ConnectionTrait>(
 }
 
 /// Fetches every asset in one query, keyed by id.
-pub(super) async fn load_assets<C: sea_orm::ConnectionTrait>(
+pub(super) async fn load_assets<C: ConnectionTrait>(
 	db: &C,
 	cosmetics: impl IntoIterator<Item = &cosmetic::Model>,
-) -> Result<HashMap<i32, asset::Model>, sea_orm::DbErr> {
-	use entities::prelude::Asset;
-	use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-
+) -> Result<HashMap<i32, asset::Model>, DbErr> {
 	let ids: Vec<_> = cosmetics
 		.into_iter()
 		.flat_map(|c| [c.asset_id, c.cover_asset_id])
@@ -251,6 +246,31 @@ pub(super) async fn load_assets<C: sea_orm::ConnectionTrait>(
 		.await?
 		.into_iter()
 		.map(|asset| (asset.id, asset))
+		.collect())
+}
+
+/// Animated preview urls, keyed by preview asset id.
+pub(super) async fn preview_urls(
+	state: &ApiState,
+	cosmetics: impl IntoIterator<Item = &cosmetic::Model>,
+) -> Result<HashMap<i32, String>, DbErr> {
+	let ids: Vec<i32> = cosmetics
+		.into_iter()
+		.filter_map(|c| c.preview_asset_id)
+		.collect();
+	if ids.is_empty() {
+		return Ok(HashMap::new());
+	}
+
+	Ok(Asset::find()
+		.filter(asset::Column::Id.is_in(ids))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.filter_map(|asset| {
+			let url = CachedAssetInfo::asset_url(Some(&asset), &state.s3_public_url)?;
+			Some((asset.id, url))
+		})
 		.collect())
 }
 
