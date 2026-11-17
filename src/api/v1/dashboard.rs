@@ -23,7 +23,7 @@ use crate::{
 	api::{
 		ApiState, permissions,
 		rate_limit::ClientAddress,
-		v0::account::{SESSION_COOKIE, TokenAccess, from_dashboard, mint_token},
+		v0::account::{ClientKind, SESSION_COOKIE, TokenAccess, from_dashboard, mint_token},
 	},
 	database::DatabaseUserExt,
 };
@@ -171,7 +171,13 @@ async fn start_session(
 	}
 
 	tracing::info!(%uuid, "Signed in to the dashboard");
-	Ok(mint_token(state, uuid, false, SESSION_TTL, TokenAccess::Dashboard)?)
+	Ok(mint_token(
+		state,
+		uuid,
+		ClientKind::Other,
+		SESSION_TTL,
+		TokenAccess::Dashboard,
+	)?)
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -284,7 +290,13 @@ mod dev {
 			return Err(DashboardError::WrongOrigin);
 		}
 		let token = if body.game {
-			mint_token(&state, body.player, true, SESSION_TTL, TokenAccess::Player)?
+			mint_token(
+				&state,
+				body.player,
+				ClientKind::Game,
+				SESSION_TTL,
+				TokenAccess::Player,
+			)?
 		} else {
 			start_session(&state, body.player, None).await?
 		};

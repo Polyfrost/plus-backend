@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-	api::ApiState,
+	api::{ApiState, v0::account::ClientKind},
 	database::{
 		ClientInfo, DatabaseUserExt, record_client_info, record_monthly_active_login,
 		record_player_geo,
@@ -95,6 +95,24 @@ struct LoginQuery {
 	os_version: Option<String>,
 	#[schemars(example = &"21.0.5")]
 	java_version: Option<String>,
+	/// Which app is logging in, when it is not the mod. `mobile` marks the
+	/// OneClient mobile app, whose connections show the player as `mobile`
+	/// rather than `online`. Anything else is ignored.
+	#[schemars(example = &"mobile")]
+	client: Option<String>,
+}
+
+/// What kind of client is logging in. Saying so outright wins, since the
+/// mobile app may report platform details too; otherwise only the mod sends
+/// those, so they are what marks a token as a game client.
+fn client_kind(client: Option<&str>, reported_client_info: bool) -> ClientKind {
+	if client.is_some_and(|client| client.trim().eq_ignore_ascii_case("mobile")) {
+		ClientKind::Mobile
+	} else if reported_client_info {
+		ClientKind::Game
+	} else {
+		ClientKind::Other
+	}
 }
 
 struct ClientCountry(Option<String>);
@@ -211,10 +229,12 @@ async fn endpoint(
 		os_version: normalize_client_field(query.os_version),
 		java_version: normalize_client_field(query.java_version),
 	};
-	// Only the mod reports these, so they are what marks a token as a game client.
-	let is_game_client = !client_info.is_empty();
+	let client = client_kind(query.client.as_deref(), !client_info.is_empty());
 
-	record_client_info(&state.database, player.id, client_info).await?;
+	// The client breakdown is about the mod, so the mobile app stays out of it.
+	if client != ClientKind::Mobile {
+		record_client_info(&state.database, player.id, client_info).await?;
+	}
 
 	if let Some(country) = country {
 		record_player_geo(&state.database, player.id, &country).await?;
@@ -223,7 +243,7 @@ async fn endpoint(
 	let token = super::mint_token(
 		&state,
 		parsed.id,
-		is_game_client,
+		client,
 		Duration::from_secs(60 * 60 * 2 /* 2h */),
 		super::TokenAccess::Player,
 	)?;
@@ -236,7 +256,17 @@ async fn endpoint(
 
 #[cfg(test)]
 mod tests {
-	use super::normalize_country;
+	use super::{ClientKind, client_kind, normalize_country};
+
+	#[test]
+	fn mobile_login_wins_over_reported_client_info() {
+		assert_eq!(client_kind(Some("mobile"), false), ClientKind::Mobile);
+		assert_eq!(client_kind(Some(" Mobile "), true), ClientKind::Mobile);
+		assert_eq!(client_kind(None, true), ClientKind::Game);
+		assert_eq!(client_kind(Some("launcher"), true), ClientKind::Game);
+		assert_eq!(client_kind(None, false), ClientKind::Other);
+		assert_eq!(client_kind(Some("launcher"), false), ClientKind::Other);
+	}
 
 	#[test]
 	fn keeps_country_codes_and_drops_everything_else() {

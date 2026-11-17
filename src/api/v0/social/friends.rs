@@ -16,7 +16,7 @@ use chrono::{DateTime, FixedOffset};
 use entities::{
 	prelude::*,
 	relationships,
-	sea_orm_active_enums::{PlayerStatus, RelationshipKind},
+	sea_orm_active_enums::RelationshipKind,
 	user,
 };
 use schemars::JsonSchema;
@@ -27,7 +27,7 @@ use uuid::Uuid;
 use crate::{
 	api::{
 		ApiState,
-		state::effective_status,
+		state::{Presence, Reach, effective_status},
 		v0::{
 			account::AuthenticatedPlayer,
 			social::{SocialError, canonical_pair, find_user_by_uuid},
@@ -48,7 +48,8 @@ pub struct Friend {
 	since: DateTime<FixedOffset>,
 	/// Kept for older clients
 	online: bool,
-	status: PlayerStatus,
+	/// `mobile` while the friend is only connected through the mobile app.
+	status: Presence,
 }
 
 fn list_doc(op: TransformOperation) -> TransformOperation {
@@ -147,12 +148,12 @@ async fn load(
 		.into_iter()
 		.filter_map(|row| {
 			let (uuid, status_override) = others.get(&other_id(&row, player_id))?;
-			let status = effective_status(online.contains_key(uuid), *status_override);
+			let status = effective_status(Reach::of(online.get(uuid)), *status_override);
 			Some(Friend {
 				player: *uuid,
 				kind: row.kind,
 				since: row.created_at,
-				online: status != PlayerStatus::Offline,
+				online: status.is_online(),
 				status,
 			})
 		})

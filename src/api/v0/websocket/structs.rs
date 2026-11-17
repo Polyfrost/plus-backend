@@ -1,18 +1,19 @@
 use std::{borrow::Cow, collections::HashMap};
 
 use chrono::{DateTime, Utc};
-use entities::sea_orm_active_enums::{
-	BodySlot, PartyInviteStatus, PlayerStatus, SessionInviteStatus,
-};
+use entities::sea_orm_active_enums::{BodySlot, PartyInviteStatus, SessionInviteStatus};
 use schemars::{JsonSchema, json_schema};
 use serde::{Deserialize, Serialize, ser::SerializeStruct as _};
 use uuid::Uuid;
 
-use crate::api::v1::party::{
-	PartyError, Ping, PingReply, PingRequest,
-	models::{
-		HostedJoinResult, MemberState, Party, PartyInvite, PartyLeftReason,
-		PlayDestination, PlayEndReason, PlayReason, PlayResponse,
+use crate::api::{
+	state::Presence,
+	v1::party::{
+		PartyError, Ping, PingReply, PingRequest,
+		models::{
+			HostedJoinResult, MemberState, Party, PartyInvite, PartyLeftReason,
+			PlayDestination, PlayEndReason, PlayReason, PlayResponse,
+		},
 	},
 };
 
@@ -256,7 +257,8 @@ pub enum ClientBoundPacket {
 		player: Uuid,
 		/// Kept for older clients
 		online: bool,
-		status: PlayerStatus,
+		/// `mobile` while the player is only connected through the mobile app.
+		status: Presence,
 	},
 	PlayerCosmeticEquipped {
 		player: Uuid,
@@ -422,10 +424,11 @@ impl ServerBoundPacket {
 mod tests {
 	use std::collections::HashMap;
 
-	use entities::sea_orm_active_enums::{BodySlot, PlayerStatus};
+	use entities::sea_orm_active_enums::BodySlot;
 	use uuid::Uuid;
 
 	use super::{ClientBoundPacket, ServerBoundPacket};
+	use crate::api::state::Presence;
 	use crate::api::v1::party::{PartyError, models::HostedJoinResult};
 
 	#[test]
@@ -560,7 +563,7 @@ mod tests {
 		let packet = ClientBoundPacket::PlayerPresence {
 			player,
 			online: true,
-			status: PlayerStatus::Online,
+			status: Presence::Online,
 		};
 
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");
@@ -568,5 +571,19 @@ mod tests {
 		assert_eq!(serialized["player"], player.to_string());
 		assert_eq!(serialized["online"], true);
 		assert_eq!(serialized["status"], "online");
+	}
+
+	#[test]
+	fn mobile_presence_still_counts_as_online() {
+		let status = Presence::Mobile;
+		let packet = ClientBoundPacket::PlayerPresence {
+			player: Uuid::nil(),
+			online: status.is_online(),
+			status,
+		};
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(serialized["online"], true);
+		assert_eq!(serialized["status"], "mobile");
 	}
 }
