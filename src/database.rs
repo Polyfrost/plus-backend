@@ -1,7 +1,7 @@
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use entities::{
-	cosmetic_ownership_event, daily_playtime, monthly_active_login, player_client_info,
-	player_geo,
+	cosmetic, cosmetic_ownership_event, daily_playtime, monthly_active_login,
+	player_client_info, player_geo, player_owned_cosmetic,
 	prelude::*,
 	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
 	transaction, user,
@@ -9,7 +9,7 @@ use entities::{
 use sea_orm::{
 	ActiveValue, DbErr, EntityTrait, QueryFilter, QuerySelect, Set,
 	prelude::*,
-	sea_query::{Alias, Expr, Func, OnConflict},
+	sea_query::{Alias, Expr, Func, OnConflict, SimpleExpr},
 };
 use uuid::Uuid;
 
@@ -210,6 +210,42 @@ pub(crate) async fn count_first_logins(
 		query = query.having(first_login.lt(end));
 	}
 	query.count(db).await
+}
+
+/// What an owned cosmetic counts as: its variant group, else itself. Ids are
+/// positive, so negating keeps the two apart. Needs `cosmetic` joined.
+pub(crate) fn owned_cosmetic_key() -> SimpleExpr {
+	Func::coalesce([
+		Expr::col((cosmetic::Entity, cosmetic::Column::GroupId)).into(),
+		Expr::col((cosmetic::Entity, cosmetic::Column::Id)).mul(-1),
+	])
+	.into()
+}
+
+/// Distinct (player, [owned_cosmetic_key]) pairs, so a group's variants count once.
+pub(crate) async fn count_owned(
+	db: &impl ConnectionTrait,
+	select: Select<PlayerOwnedCosmetic>,
+) -> Result<i64, DbErr> {
+	let count = select
+		.inner_join(Cosmetic)
+		.select_only()
+		.column_as(
+			Expr::expr(Func::count_distinct(Expr::tuple([
+				Expr::col((
+					player_owned_cosmetic::Entity,
+					player_owned_cosmetic::Column::PlayerId,
+				))
+				.into(),
+				owned_cosmetic_key(),
+			]))),
+			"count",
+		)
+		.into_tuple::<i64>()
+		.one(db)
+		.await?;
+
+	Ok(count.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Clone)]

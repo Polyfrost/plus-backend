@@ -21,7 +21,9 @@ use super::{
 	filter_timestamp_period,
 };
 use crate::{
-	api::ApiState, database::count_first_logins, utils::time::current_utc_month,
+	api::ApiState,
+	database::{count_first_logins, count_owned, owned_cosmetic_key},
+	utils::time::current_utc_month,
 };
 
 /// Buckets in the database, so the result is one row however many players.
@@ -36,9 +38,13 @@ async fn owned_items_histogram(
 		player_owned_cosmetic::Column::AcquiredAt,
 		period,
 	)
+	.inner_join(Cosmetic)
 	.select_only()
 	.column(player_owned_cosmetic::Column::PlayerId)
-	.column_as(player_owned_cosmetic::Column::CosmeticId.count(), "owned")
+	.column_as(
+		Expr::expr(Func::count_distinct(owned_cosmetic_key())),
+		"owned",
+	)
 	.group_by(player_owned_cosmetic::Column::PlayerId)
 	.into_query();
 
@@ -207,13 +213,15 @@ pub(super) async fn endpoint(
 
 	let owned_counts = owned_items_histogram(&state.database, up_to_end).await?;
 
-	let items_acquired = filter_timestamp_period(
-		PlayerOwnedCosmetic::find(),
-		player_owned_cosmetic::Column::AcquiredAt,
-		period,
+	let items_acquired = count_owned(
+		&state.database,
+		filter_timestamp_period(
+			PlayerOwnedCosmetic::find(),
+			player_owned_cosmetic::Column::AcquiredAt,
+			period,
+		),
 	)
-	.count(&state.database)
-	.await? as i64;
+	.await?;
 
 	let average_per_user = if total_users == 0 {
 		0.0

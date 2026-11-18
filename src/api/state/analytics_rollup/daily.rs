@@ -17,7 +17,7 @@ use sea_orm::{
 	sea_query::{Alias, Expr, Func},
 };
 
-use crate::database::count_first_logins;
+use crate::database::{count_first_logins, count_owned};
 
 use super::{CountValue, count_in_day, day_bounds};
 
@@ -126,24 +126,17 @@ pub(super) async fn collect_day(
 		),
 
 		cosmetics_acquired: ActiveValue::Set(
-			count_in_day(
-				txn,
-				PlayerOwnedCosmetic::find(),
-				player_owned_cosmetic::Column::AcquiredAt,
-				bounds,
-			)
-			.await?,
+			owned_in_day(txn, PlayerOwnedCosmetic::find(), bounds).await?,
 		),
 		cosmetics_acquired_paid: ActiveValue::Set(paid_cosmetics),
 		cosmetics_acquired_free: ActiveValue::Set(free_cosmetics),
 		cosmetics_acquired_granted: ActiveValue::Set(
-			count_in_day(
+			owned_in_day(
 				txn,
 				PlayerOwnedCosmetic::find().filter(
 					player_owned_cosmetic::Column::AcquiredVia
 						.eq(TransactionProvider::AdminGrant),
 				),
-				player_owned_cosmetic::Column::AcquiredAt,
 				bounds,
 			)
 			.await?,
@@ -325,17 +318,11 @@ async fn paid_acquisitions(
 	let purchased = PlayerOwnedCosmetic::find()
 		.filter(player_owned_cosmetic::Column::AcquiredVia.is_in(PURCHASE_PROVIDERS));
 
-	let total = count_in_day(
-		txn,
-		purchased.clone(),
-		player_owned_cosmetic::Column::AcquiredAt,
-		bounds,
-	)
-	.await?;
+	let total = owned_in_day(txn, purchased.clone(), bounds).await?;
 
 	// Priced from its own line where one exists, falling back to the order
 	// total for rows that predate lines. No amount at all counts as free.
-	let paid = count_in_day(
+	let paid = owned_in_day(
 		txn,
 		purchased
 			.left_join(Transaction)
@@ -353,12 +340,27 @@ async fn paid_acquisitions(
 				]))
 				.gt(0),
 			),
-		player_owned_cosmetic::Column::AcquiredAt,
 		bounds,
 	)
 	.await?;
 
 	Ok((paid, total - paid))
+}
+
+async fn owned_in_day(
+	txn: &DatabaseTransaction,
+	select: Select<PlayerOwnedCosmetic>,
+	(start, end): (DateTimeWithTimeZone, DateTimeWithTimeZone),
+) -> Result<i32, DbErr> {
+	let count = count_owned(
+		txn,
+		select
+			.filter(player_owned_cosmetic::Column::AcquiredAt.gte(start))
+			.filter(player_owned_cosmetic::Column::AcquiredAt.lt(end)),
+	)
+	.await?;
+
+	Ok(count.try_into().unwrap_or(i32::MAX))
 }
 
 #[derive(Debug, Default, FromQueryResult)]
