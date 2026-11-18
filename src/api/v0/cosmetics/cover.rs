@@ -1,4 +1,5 @@
 use std::{
+	f32::consts::PI,
 	io::{self, Cursor, Read},
 	str::{Utf8Error, from_utf8},
 };
@@ -6,8 +7,8 @@ use std::{
 use entities::sea_orm_active_enums::{BodySlot, CosmeticType};
 use image::{ImageError, ImageFormat, RgbaImage, load_from_memory_with_format};
 use plusrenderer::{
-	Arms, BodySlot as RenderSlot, Camera, Scene, animation, bedrock, build::Buffers, bundle,
-	molang::Interner,
+	Affine, Arms, BodySlot as RenderSlot, Camera, Scene, animation, bedrock, build::Buffers,
+	bundle, mesh::Mesh, molang::Interner,
 };
 use reqwest::Client;
 use sea_orm::ActiveEnum;
@@ -24,13 +25,21 @@ const WIDTH: u32 = 400;
 const HEIGHT: u32 = 600;
 const PLAYER: usize = 0;
 const COSMETIC: usize = 1;
-const YAW: f32 = 25.0;
-const PITCH: f32 = 10.0;
+/// The skinview3d renderer's camera, which covers keep matching. Yaw in radians.
+const YAW: f32 = 0.4;
+const FOV_Y: f32 = 50.0;
+const ZOOM: f32 = 0.9;
+const RENDERER_FOV_Y: f32 = 45.0;
+/// skinview3d's player parts in model space, outer layer included.
+/// Its hidden ears still counted towards the head.
+const HEAD: [[[f32; 3]; 2]; 3] = [
+	[[-4.5, 23.5, -4.5], [4.5, 32.5, 4.5]],
+	[[-10.0, 30.0, 0.0], [-2.0, 38.0, 4.0 / 3.0]],
+	[[2.0, 30.0, 0.0], [10.0, 38.0, 4.0 / 3.0]],
+];
+const BODY: [[[f32; 3]; 2]; 1] = [[[-4.25, 11.75, -2.25], [4.25, 24.25, 2.25]]];
 /// Default time animations and emotes are captured at, rather than at rest.
 const POSE_SECONDS: f32 = 1.0;
-/// Room left around the framed geometry.
-const MARGIN: f32 = 1.3;
-const MAX_ZOOM: f32 = 4.0;
 /// The game's tick rate, which animations are authored against.
 const PREVIEW_FPS: u32 = 20;
 const MAX_PREVIEW_SECONDS: f32 = 8.0;
@@ -40,6 +49,28 @@ pub(super) const PREVIEW_EXTENSION: &str = "webp";
 const DEFAULT_SKIN_URL: &str = "https://textures.minecraft.net/texture/31f477eb1a7beee631c2ca64d06f8f68fa93a3386d04452ab27f43acdf1b60cb";
 
 static DEFAULT_SKIN: OnceCell<RgbaImage> = OnceCell::const_new();
+
+/// `[min_x, min_y, max_x, max_y]` in skinview3d's world.
+type Bounds = [f32; 4];
+
+#[derive(Clone, Copy)]
+enum Region {
+	Head,
+	Body,
+	Cosmetic,
+}
+
+enum Center {
+	Anchor(&'static [Region]),
+	/// A share of the fitted region's horizontal centre.
+	FitX(f32),
+}
+
+struct Focus {
+	center: Center,
+	fit: &'static [Region],
+	margin: f32,
+}
 
 #[derive(thiserror::Error, Debug)]
 pub(super) enum RenderError {
@@ -134,12 +165,8 @@ fn draw(
 		length,
 	} = load(skin, arms, &cosmetic_type, slot, data)?;
 
-	// Back-worn cosmetics are hidden from the front.
-	let yaw = match cosmetic_type {
-		CosmeticType::Cape | CosmeticType::Wings | CosmeticType::Backpack => 180.0 + YAW,
-		_ => YAW,
-	};
-	let camera = Camera::orbit(yaw, PITCH, 62.0, [0.0, 16.0, 0.0]);
+	scene.pose(seconds);
+	let camera = camera(&mut scene, &cosmetic_type);
 
 	let mut cover = Cursor::new(Vec::new());
 	frames(&mut scene, &camera, &textures, &[seconds])
@@ -299,7 +326,128 @@ fn encode_webp(frames: Vec<RgbaImage>) -> Result<Vec<u8>, RenderError> {
 	Ok(encoder.finalize(timestamp)?.to_vec())
 }
 
-/// One image per time, all framed alike so the subject holds still across them.
+/// skinview3d's per-type framing. Others keep the default zoom on the player's middle.
+fn focus(cosmetic_type: &CosmeticType) -> Option<Focus> {
+	Some(match cosmetic_type {
+		// Mounted on the head, so skinview3d counted them as part of it.
+		CosmeticType::Hat | CosmeticType::Glasses => Focus {
+			center: Center::Anchor(&[Region::Head, Region::Cosmetic]),
+			fit: &[Region::Head, Region::Cosmetic],
+			margin: 1.3,
+		},
+		CosmeticType::Boots => Focus {
+			center: Center::Anchor(&[Region::Cosmetic]),
+			fit: &[Region::Cosmetic],
+			margin: 1.6,
+		},
+		CosmeticType::Shoulder => Focus {
+			center: Center::Anchor(&[Region::Cosmetic]),
+			fit: &[Region::Cosmetic, Region::Head],
+			margin: 1.35,
+		},
+		CosmeticType::Wings => Focus {
+			center: Center::FitX(0.25),
+			fit: &[Region::Cosmetic, Region::Body],
+			margin: 1.6,
+		},
+		CosmeticType::Backpack => Focus {
+			center: Center::Anchor(&[Region::Cosmetic]),
+			fit: &[Region::Cosmetic],
+			margin: 1.25,
+		},
+		_ => return None,
+	})
+}
+
+/// Level, looking at the player's middle, with the player turned and the posed scene framed.
+fn camera(scene: &mut Scene, cosmetic_type: &CosmeticType) -> Camera {
+	// Back-worn cosmetics are hidden from the front.
+	let yaw = match cosmetic_type {
+		CosmeticType::Cape | CosmeticType::Wings | CosmeticType::Backpack => PI + YAW,
+		_ => YAW,
+	};
+	let world = Affine::rot_y(yaw).mul(&Affine::translation([0.0, -16.0, 0.0]));
+	let (zoom, center) = focus(cosmetic_type)
+		.and_then(|focus| frame(scene, &world, &focus))
+		.unwrap_or((ZOOM, [0.0; 2]));
+	let distance = (4.5 + 16.5 / (FOV_Y / 2.0).to_radians().tan() / zoom).clamp(10.0, 256.0);
+
+	Camera {
+		view: Affine::translation([-center[0], -center[1], -distance]).mul(&world),
+	}
+}
+
+/// skinview3d's zoom fitting `focus.fit`, and the point it centred.
+fn frame(scene: &mut Scene, world: &Affine, focus: &Focus) -> Option<(f32, [f32; 2])> {
+	let cosmetic = mesh_bounds(scene.build_mesh(world));
+	let region = |regions: &[Region]| {
+		regions
+			.iter()
+			.filter_map(|region| match region {
+				Region::Head => boxes_bounds(world, &HEAD),
+				Region::Body => boxes_bounds(world, &BODY),
+				Region::Cosmetic => cosmetic,
+			})
+			.reduce(union)
+	};
+
+	let fit = region(focus.fit)?;
+	let center = match focus.center {
+		Center::Anchor(anchor) => {
+			let anchor = region(anchor)?;
+			[(anchor[0] + anchor[2]) / 2.0, (anchor[1] + anchor[3]) / 2.0]
+		}
+		Center::FitX(share) => [(fit[0] + fit[2]) / 2.0 * share, 0.0],
+	};
+
+	let aspect = WIDTH as f32 / HEIGHT as f32;
+	let zoom_h = 33.0 / ((fit[3] - fit[1]) * focus.margin - 4.2).max(0.1);
+	let zoom_w = 33.0 / ((fit[2] - fit[0]) * focus.margin / aspect - 4.2).max(0.1);
+	Some((zoom_h.min(zoom_w).clamp(0.5, 2.6), center))
+}
+
+fn mesh_bounds(mesh: &Mesh) -> Option<Bounds> {
+	mesh.runs
+		.iter()
+		.filter(|run| run.texture as usize == COSMETIC)
+		// Four vertices of three floats per quad.
+		.flat_map(|run| {
+			mesh.positions[run.start as usize * 12..(run.start + run.count) as usize * 12]
+				.as_chunks::<3>()
+				.0
+		})
+		.map(|&point| point_bounds(point))
+		.reduce(union)
+}
+
+/// Over each box's turned corners, as three.js bounds a mesh.
+fn boxes_bounds(world: &Affine, boxes: &[[[f32; 3]; 2]]) -> Option<Bounds> {
+	boxes
+		.iter()
+		.flat_map(|[min, max]| {
+			(0..8).map(move |corner| {
+				[0, 1, 2].map(|axis| {
+					if corner >> axis & 1 == 0 {
+						min[axis]
+					} else {
+						max[axis]
+					}
+				})
+			})
+		})
+		.map(|corner| point_bounds(world.point(corner)))
+		.reduce(union)
+}
+
+fn point_bounds([x, y, _]: [f32; 3]) -> Bounds {
+	[x, y, x, y]
+}
+
+fn union(a: Bounds, b: Bounds) -> Bounds {
+	[a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]
+}
+
+/// One image per time.
 fn frames(
 	scene: &mut Scene,
 	camera: &Camera,
@@ -307,18 +455,9 @@ fn frames(
 	times: &[f32],
 ) -> Vec<RgbaImage> {
 	let viewport = [WIDTH as f32, HEIGHT as f32];
-	let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-	for &time in times {
-		scene.pose(time);
-		let [min_x, min_y, max_x, max_y] = measure(scene.build(camera, viewport));
-		bounds = [
-			bounds[0].min(min_x),
-			bounds[1].min(min_y),
-			bounds[2].max(max_x),
-			bounds[3].max(max_y),
-		];
-	}
-	let framing = fit(bounds);
+	// plusrenderer's FOV is fixed, so widen it to skinview3d's about the centre.
+	let scale = (RENDERER_FOV_Y / 2.0).to_radians().tan() / (FOV_Y / 2.0).to_radians().tan();
+	let framing = (scale, viewport.map(|size| size / 2.0 * (1.0 - scale)));
 
 	times
 		.iter()
@@ -327,39 +466,6 @@ fn frames(
 			rasterize(scene.build(camera, viewport), textures, framing)
 		})
 		.collect()
-}
-
-/// Screen bounds of the cosmetic, else of everything.
-fn measure(buffers: &Buffers) -> [f32; 4] {
-	let has_cosmetic = buffers.runs.iter().any(|run| run.texture as usize == COSMETIC);
-	let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-
-	for run in buffers
-		.runs
-		.iter()
-		.filter(|run| !has_cosmetic || run.texture as usize == COSMETIC)
-	{
-		for &index in &buffers.indices[run.start as usize..(run.start + run.count) as usize] {
-			for axis in 0..2 {
-				let value = buffers.positions[usize::from(index) * 2 + axis];
-				bounds[axis] = bounds[axis].min(value);
-				bounds[axis + 2] = bounds[axis + 2].max(value);
-			}
-		}
-	}
-
-	bounds
-}
-
-/// Scale and offset that center `bounds` in the canvas.
-fn fit(bounds: [f32; 4]) -> (f32, [f32; 2]) {
-	let size = [WIDTH as f32, HEIGHT as f32];
-	let scale = (0..2)
-		.map(|axis| size[axis] / ((bounds[axis + 2] - bounds[axis]) * MARGIN))
-		.fold(MAX_ZOOM, f32::min);
-	let offset =
-		[0, 1].map(|axis| size[axis] / 2.0 - (bounds[axis] + bounds[axis + 2]) / 2.0 * scale);
-	(scale, offset)
 }
 
 /// Draws the back-to-front runs with no depth test, as the core expects.
@@ -465,6 +571,10 @@ mod tests {
 
 	const WAVE: &str = r#"{"animations":{"wave":{"loop":true,"animation_length":1.0,
 		"bones":{"rightArm":{"rotation":{"0.0":[0,0,0],"0.5":[0,0,-120],"1.0":[0,0,0]}}}}}}"#;
+	const HAT: &str = r#"{"format_version":"1.12.0","minecraft:geometry":[{
+		"description":{"identifier":"geometry.hat","texture_width":16,"texture_height":16},
+		"bones":[{"name":"brim","pivot":[0,24,0],
+			"cubes":[{"origin":[-5,32,-5],"size":[10,1,10],"uv":[0,0]}]}]}]}"#;
 
 	fn skin() -> RgbaImage {
 		let mut skin = RgbaImage::new(64, 64);
@@ -476,13 +586,38 @@ mod tests {
 	fn draws_the_player_framed_in_the_canvas() {
 		let mut scene = Scene::default();
 		scene.load_player(PLAYER, Arms::Wide);
-		let camera = Camera::orbit(YAW, PITCH, 62.0, [0.0, 16.0, 0.0]);
+		scene.pose(0.0);
+		let camera = camera(&mut scene, &CosmeticType::Emote);
 		let canvas = frames(&mut scene, &camera, &[Some(skin())], &[0.0]).remove(0);
 
 		let opaque = canvas.pixels().filter(|p| p.0[3] == 255).count();
 		let total = (WIDTH * HEIGHT) as usize;
 		assert!(opaque > total / 10, "the player fills the frame, got {opaque}");
 		assert_eq!(canvas.get_pixel(0, 0).0[3], 0, "corners stay clear");
+	}
+
+	#[test]
+	fn hats_are_framed_as_skinview3d_did() {
+		let mut scene = Scene::default();
+		scene.load_player(PLAYER, Arms::Wide);
+		scene.load_cosmetic(
+			COSMETIC,
+			bedrock::parse_one(HAT).unwrap(),
+			RenderSlot::Hat,
+			None,
+			None,
+		);
+		scene.pose(0.0);
+
+		// skinview3d's default: 4.5 + 16.5 / tan(25°) / 0.9 away, on the player's middle.
+		let [.., x, _, _, _, y, _, _, _, z] = camera(&mut scene, &CosmeticType::Aura).view.0;
+		assert!(x.abs() < 1e-4 && (y + 16.0).abs() < 1e-4, "{x}, {y}");
+		assert!((z + 43.816).abs() < 1e-2, "{z}");
+
+		let [.., x, _, _, _, y, _, _, _, z] = camera(&mut scene, &CosmeticType::Hat).view.0;
+		assert!(z > -43.0, "closer than the default, got {z}");
+		assert!(y < -21.0, "centred above the middle, got {y}");
+		assert!(x.abs() < 1.0, "the head stays central, got {x}");
 	}
 
 	#[test]
