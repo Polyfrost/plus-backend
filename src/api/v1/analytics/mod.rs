@@ -3,6 +3,7 @@ mod catalog;
 mod clients;
 mod daily;
 mod health;
+mod linked_accounts;
 mod monetization;
 mod mods;
 mod overview;
@@ -179,6 +180,13 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			),
 		)
 		.api_route("/analytics/mods", get_with(mods::mods_endpoint, mods::mods_doc))
+		.api_route(
+			"/analytics/linked-accounts",
+			get_with(
+				linked_accounts::linked_accounts_endpoint,
+				linked_accounts::linked_accounts_doc,
+			),
+		)
 		.api_route(
 			"/analytics/clients",
 			get_with(clients::clients_endpoint, clients::clients_doc),

@@ -19,6 +19,7 @@ use serde::Serialize;
 use super::{
 	AnalyticsError, AnalyticsPeriod, PrivateAnalyticsAuth, filter_date_period,
 	filter_timestamp_period,
+	linked_accounts::{LinkedAccountTotals, linked_account_totals},
 };
 use crate::{
 	api::ApiState, database::count_first_logins, utils::time::current_utc_month,
@@ -84,11 +85,11 @@ pub(super) fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAnalyticsOverview")
 		.summary("Get private analytics overview")
 		.description(
-			"Returns private aggregate analytics for users, MAU, owned items, and \
-			 playtime.\n\nBoth `start` and `end` are optional inclusive `YYYY-MM-DD` UTC \
-			 days, and either can be given on its own. Cumulative metrics (`total_users`, \
-			 owned items and their distribution) are snapshots of the state at the end of \
-			 the period, while flow metrics (`new_users`, `items_acquired`, playtime and \
+			"Returns private aggregate analytics for users, MAU, owned items, \
+			 linked accounts and playtime.\n\nBoth `start` and `end` are optional \
+			 inclusive `YYYY-MM-DD` UTC days, and either can be given on its own. \
+			 Cumulative metrics (`total_users`, owned items and their distribution, \
+			 linked accounts) are snapshots of the state at the end of the period, while flow metrics (`new_users`, `items_acquired`, playtime and \
 			 sessions) only count activity inside the period. Without either parameter \
 			 the response is the all-time overview.",
 		)
@@ -103,6 +104,7 @@ pub(super) struct AnalyticsOverviewResponse {
 	monthly_active_users: i64,
 	owned_items_per_user: OwnedItemsPerUser,
 	playtime: Playtime,
+	linked_accounts: LinkedAccountTotals,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -205,6 +207,8 @@ pub(super) async fn endpoint(
 			.count
 	};
 
+	let linked_accounts = linked_account_totals(&state.database, period.end).await?;
+
 	let owned_counts = owned_items_histogram(&state.database, up_to_end).await?;
 
 	let items_acquired = filter_timestamp_period(
@@ -272,6 +276,7 @@ pub(super) async fn endpoint(
 		total_users,
 		new_users,
 		monthly_active_users,
+		linked_accounts,
 		playtime: Playtime {
 			total_seconds: total_playtime_seconds,
 			average_seconds_per_user,
