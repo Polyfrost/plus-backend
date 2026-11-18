@@ -73,7 +73,8 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.summary("Set the player's status")
 		.description(
 			"Sets the status other players see while the authorized player is connected. \
-			 `online` clears any override, so the status follows the connection again. \
+			 `online` clears any override, so the status follows the connection again: \
+			 `mobile` while only the OneClient mobile app is connected, `online` otherwise. \
 			 A disconnected player always shows as offline. This only hides presence \
 			 from friends: party members always see the real online and live state, \
 			 and cosmetic and emote updates still reach players who can see them in-game.",
@@ -115,7 +116,7 @@ async fn endpoint(
 	.await?;
 
 	let owner = player.minecraft_uuid;
-	let connected = state.realtime.connections_by_owner.read().await.contains_key(&owner);
+	let reach = state.realtime.reach(owner).await;
 	let changed = state
 		.realtime
 		.player_runtime
@@ -123,9 +124,9 @@ async fn endpoint(
 		.await
 		.get_mut(&owner)
 		.and_then(|runtime| {
-			let before = effective_status(connected, runtime.status_override);
+			let before = effective_status(reach, runtime.status_override);
 			runtime.status_override = status_override;
-			let after = effective_status(connected, status_override);
+			let after = effective_status(reach, status_override);
 			(before != after).then_some(after)
 		});
 

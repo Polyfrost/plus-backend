@@ -46,6 +46,8 @@ pub struct AuthenticatedPlayer(pub user::Model);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClientKind {
 	Game,
+	/// The OneClient mobile app.
+	Mobile,
 	#[default]
 	Other,
 }
@@ -153,11 +155,20 @@ impl ClientKind {
 	/// Claim `/login` stamps when the caller reported mod and platform details,
 	/// which only the in-game mod does.
 	pub const CLAIM: &'static str = "game";
+	/// Claim `/login` stamps when the caller said it is the OneClient mobile app.
+	pub const MOBILE_CLAIM: &'static str = "mobile";
 
-	fn from_claim(claim: Option<&serde_json::Value>) -> Self {
-		match claim.and_then(serde_json::Value::as_bool) {
-			Some(true) => Self::Game,
-			_ => Self::Other,
+	fn from_claims(claims: &Claims) -> Self {
+		let is_set = |claim| {
+			claims.get_claim(claim).and_then(serde_json::Value::as_bool) == Some(true)
+		};
+
+		if is_set(Self::CLAIM) {
+			Self::Game
+		} else if is_set(Self::MOBILE_CLAIM) {
+			Self::Mobile
+		} else {
+			Self::Other
 		}
 	}
 }
@@ -236,14 +247,17 @@ fn session_cookie(parts: &Parts) -> Option<&str> {
 pub(crate) fn mint_token(
 	state: &ApiState,
 	uuid: Uuid,
-	is_game_client: bool,
+	client: ClientKind,
 	ttl: std::time::Duration,
 	access: TokenAccess,
 ) -> Result<String, pasetors::errors::Error> {
 	let mut claims = Claims::new()?;
 	claims.set_expires_in(&ttl)?;
 	claims.subject(&uuid.as_hyphenated().to_string())?;
-	claims.add_additional(ClientKind::CLAIM, is_game_client)?;
+	claims.add_additional(ClientKind::CLAIM, client == ClientKind::Game)?;
+	if client == ClientKind::Mobile {
+		claims.add_additional(ClientKind::MOBILE_CLAIM, true)?;
+	}
 	if let Some(access) = access.claim() {
 		claims.add_additional(ACCESS_CLAIM, access)?;
 	}
@@ -311,10 +325,8 @@ impl FromRequestParts<ApiState> for ClientKind {
 		parts: &mut Parts,
 		state: &ApiState,
 	) -> Result<Self, Self::Rejection> {
-		Ok(Self::from_claim(
-			token_claims(parts, state)
-				.map_err(IntoResponse::into_response)?
-				.get_claim(Self::CLAIM),
+		Ok(Self::from_claims(
+			&token_claims(parts, state).map_err(IntoResponse::into_response)?,
 		))
 	}
 }
@@ -462,19 +474,29 @@ mod tests {
 
 	#[test]
 	fn client_kind_defaults_to_other_without_a_truthy_claim() {
+		let with = |pairs: &[(&str, serde_json::Value)]| {
+			let mut claims = pasetors::claims::Claims::new().unwrap();
+			for (claim, value) in pairs {
+				claims.add_additional(claim, value.clone()).unwrap();
+			}
+			ClientKind::from_claims(&claims)
+		};
+		let game = ClientKind::CLAIM;
+		let mobile = ClientKind::MOBILE_CLAIM;
+
+		assert_eq!(with(&[(game, true.into())]), ClientKind::Game);
+		assert_eq!(with(&[(game, false.into())]), ClientKind::Other);
 		assert_eq!(
-			ClientKind::from_claim(Some(&serde_json::Value::Bool(true))),
+			with(&[(game, false.into()), (mobile, true.into())]),
+			ClientKind::Mobile
+		);
+		assert_eq!(
+			with(&[(game, true.into()), (mobile, true.into())]),
 			ClientKind::Game
 		);
-		assert_eq!(
-			ClientKind::from_claim(Some(&serde_json::Value::Bool(false))),
-			ClientKind::Other
-		);
-		// Tokens minted before the claim existed, and junk values.
-		assert_eq!(ClientKind::from_claim(None), ClientKind::Other);
-		assert_eq!(
-			ClientKind::from_claim(Some(&serde_json::Value::String("yes".into()))),
-			ClientKind::Other
-		);
+		// Tokens minted before the claims existed, and junk values.
+		assert_eq!(with(&[]), ClientKind::Other);
+		assert_eq!(with(&[(game, "yes".into())]), ClientKind::Other);
+		assert_eq!(with(&[(mobile, "yes".into())]), ClientKind::Other);
 	}
 }

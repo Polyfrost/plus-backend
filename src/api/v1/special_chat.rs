@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	permissions::{Require, perm},
-	v0::account::{TokenAccess, mint_token},
+	v0::account::{ClientKind, TokenAccess, mint_token},
 };
 
 #[derive(thiserror::Error, Debug, OperationIo)]
@@ -122,7 +122,7 @@ async fn token(
 	let token = mint_token(
 		&state,
 		body.uuid,
-		false,
+		ClientKind::Other,
 		Duration::from_secs(60 * 60 * 2),
 		TokenAccess::SpecialChat,
 	)?;

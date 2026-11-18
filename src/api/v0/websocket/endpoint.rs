@@ -26,7 +26,7 @@ use crate::api::{
 	ApiState,
 	state::{
 		ConnectionId, EquipmentPersistence, ParticleColorPersistence, PlayerRuntimeState,
-		PlaytimeSession, RealtimeConnection, effective_status,
+		PlaytimeSession, Presence, Reach, RealtimeConnection, effective_status,
 	},
 	v0::{
 		account::{AuthenticatedPlayer, ClientKind, TokenAccess},
@@ -347,13 +347,14 @@ async fn register_connection(
 			kind,
 		},
 	);
-	let is_first_connection = {
+	let (reach_before, reach) = {
 		let mut connections_by_owner = state.realtime.connections_by_owner.write().await;
 		let owner_connections = connections_by_owner.entry(owner).or_default();
-		let was_empty = owner_connections.is_empty();
-		owner_connections.insert(connection_id);
-		was_empty
+		let before = Reach::of(Some(&*owner_connections));
+		owner_connections.insert(connection_id, kind);
+		(before, Reach::of(Some(&*owner_connections)))
 	};
+	let is_first_connection = reach_before == Reach::Disconnected;
 
 	// Playtime is in-game time only. The lock is held across the insert so a
 	// game connection closing at the same moment cannot miss this one.
@@ -409,10 +410,10 @@ async fn register_connection(
 			});
 	}
 
-	// Notify anyone already watching this player that they came online,
-	// unless they chose to stay offline.
-	let status = effective_status(true, status_override);
-	if is_first_connection && status != PlayerStatus::Offline {
+	// Notify anyone already watching this player that they came online, or
+	// went from mobile to online, unless they chose to stay offline.
+	let status = effective_status(reach, status_override);
+	if status != effective_status(reach_before, status_override) {
 		announce_presence(state, owner, status).await;
 	}
 
@@ -519,40 +520,45 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		}
 	}
 
-	let owner_still_connected = {
+	let (reach_before, reach) = {
 		let mut connections_by_owner = state.realtime.connections_by_owner.write().await;
 		if let Some(owner_connections) = connections_by_owner.get_mut(&connection.owner) {
+			let before = Reach::of(Some(&*owner_connections));
 			owner_connections.remove(&connection_id);
-			let still_connected = !owner_connections.is_empty();
-			if !still_connected {
+			let after = Reach::of(Some(&*owner_connections));
+			if after == Reach::Disconnected {
 				connections_by_owner.remove(&connection.owner);
 			}
-			still_connected
+			(before, after)
 		} else {
-			false
+			(Reach::Disconnected, Reach::Disconnected)
 		}
 	};
+	let owner_still_connected = reach != Reach::Disconnected;
+
+	let status_override = state
+		.realtime
+		.player_runtime
+		.write()
+		.await
+		.get_mut(&connection.owner)
+		.and_then(|runtime| {
+			if !owner_still_connected {
+				runtime.active_emote = None;
+			}
+			runtime.status_override
+		});
 
 	if !owner_still_connected {
-		let status_override = state
-			.realtime
-			.player_runtime
-			.write()
-			.await
-			.get_mut(&connection.owner)
-			.and_then(|runtime| {
-				runtime.active_emote = None;
-				runtime.status_override
-			});
-
 		crate::api::v0::sessions::expire_sessions_after_grace(state, connection.owner);
 		crate::api::v1::party::on_player_offline(state, connection.owner).await;
+	}
 
-		// Notify anyone watching this player that they are now offline, unless
-		// they already appeared offline.
-		if effective_status(true, status_override) != PlayerStatus::Offline {
-			announce_presence(state, connection.owner, PlayerStatus::Offline).await;
-		}
+	// Notify anyone watching this player that they are now offline, or only on
+	// mobile, unless they already appeared that way.
+	let status = effective_status(reach, status_override);
+	if status != effective_status(reach_before, status_override) {
+		announce_presence(state, connection.owner, status).await;
 	}
 
 	let mut orphaned = {
@@ -682,9 +688,10 @@ async fn subscribe(
 					.get(player)
 					.and_then(|runtime| runtime.status_override);
 				effective_status(
-					connections_by_owner.contains_key(player),
+					Reach::of(connections_by_owner.get(player)),
 					status_override,
-				) != PlayerStatus::Offline
+				)
+				.is_online()
 			})
 			.collect::<Vec<_>>()
 	};
@@ -735,7 +742,7 @@ pub(crate) async fn send_to_owner(
 		.read()
 		.await
 		.get(&owner)
-		.map(|connections| connections.iter().copied().collect::<Vec<_>>())
+		.map(|connections| connections.keys().copied().collect::<Vec<_>>())
 		.unwrap_or_default();
 
 	let mut connections = state.realtime.connections.write().await;
@@ -901,11 +908,11 @@ pub(crate) async fn announce_particle_color_change(
 pub(crate) async fn announce_presence(
 	state: &ApiState,
 	player: Uuid,
-	status: PlayerStatus,
+	status: Presence,
 ) {
 	broadcast_to_watchers(state, player, || ClientBoundPacket::PlayerPresence {
 		player,
-		online: status != PlayerStatus::Offline,
+		online: status.is_online(),
 		status,
 	})
 	.await;
