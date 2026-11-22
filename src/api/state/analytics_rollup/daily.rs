@@ -1,28 +1,30 @@
 use chrono::{Days, NaiveDate, Utc};
 use entities::{
 	analytics_daily, blocks, daily_playtime, game_sessions, group_messages,
-	player_owned_cosmetic,
+	ownership_grant,
 	prelude::*,
 	relationship_requests, relationships,
 	sea_orm_active_enums::{
 		RelationshipRequestStatus, SessionInviteStatus, TransactionProvider,
 		TransactionStatus,
 	},
-	session_invites, tracked_link_hits, transaction, transaction_line, user,
+	session_invites, tracked_link_hits, transaction, transaction_line,
 };
 use sea_orm::{
-	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait,
-	FromQueryResult, PaginatorTrait as _, QueryFilter as _, QuerySelect as _, Select,
+	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait, JoinType,
+	FromQueryResult, PaginatorTrait as _, QueryFilter as _, QuerySelect as _,
+	QueryTrait as _, RelationTrait as _, Select,
 	prelude::DateTimeWithTimeZone,
 	sea_query::{Alias, Expr, Func},
 };
 
-use crate::database::{count_first_logins, count_owned};
+use crate::database::{
+	MONTHLY_WINDOW, active_players, count_acquired, count_first_logins, first_logins,
+};
 
 use super::{CountValue, count_in_day, day_bounds};
 
 const WEEKLY_WINDOW: u64 = 6;
-const MONTHLY_WINDOW: u64 = 29;
 
 const SALE_STATUSES: [TransactionStatus; 4] = [
 	TransactionStatus::Completed,
@@ -86,6 +88,7 @@ pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 32] {
 pub(super) async fn collect_day(
 	txn: &DatabaseTransaction,
 	day: NaiveDate,
+	sessions_started: i32,
 ) -> Result<analytics_daily::ActiveModel, DbErr> {
 	let bounds = day_bounds(day);
 	let (day_start, day_end) = bounds;
@@ -96,12 +99,12 @@ pub(super) async fn collect_day(
 		day: ActiveValue::Set(day),
 		computed_at: ActiveValue::Set(Utc::now().into()),
 
-		dau: ActiveValue::Set(active_players(txn, day, day).await?),
+		dau: ActiveValue::Set(count_active(txn, day, day).await?),
 		wau: ActiveValue::Set(
-			active_players(txn, window_start(day, WEEKLY_WINDOW), day).await?,
+			count_active(txn, window_start(day, WEEKLY_WINDOW), day).await?,
 		),
 		mau: ActiveValue::Set(
-			active_players(txn, window_start(day, MONTHLY_WINDOW), day).await?,
+			count_active(txn, window_start(day, MONTHLY_WINDOW), day).await?,
 		),
 		new_users: ActiveValue::Set(
 			count_first_logins(txn, Some(day_start), Some(day_end))
@@ -117,25 +120,28 @@ pub(super) async fn collect_day(
 				.unwrap_or(i32::MAX),
 		),
 		playtime_seconds: ActiveValue::Set(playtime.seconds.unwrap_or_default()),
-		sessions: ActiveValue::Set(
+		// `play_session` only exists from 2026-08-15; before that a day with
+		// none falls back to the counter kept alongside playtime.
+		sessions: ActiveValue::Set(if sessions_started > 0 {
+			sessions_started
+		} else {
 			playtime
 				.sessions
 				.unwrap_or_default()
 				.try_into()
-				.unwrap_or(i32::MAX),
-		),
+				.unwrap_or(i32::MAX)
+		}),
 
 		cosmetics_acquired: ActiveValue::Set(
-			owned_in_day(txn, PlayerOwnedCosmetic::find(), bounds).await?,
+			acquired_in_day(txn, OwnershipGrant::find(), bounds).await?,
 		),
 		cosmetics_acquired_paid: ActiveValue::Set(paid_cosmetics),
 		cosmetics_acquired_free: ActiveValue::Set(free_cosmetics),
 		cosmetics_acquired_granted: ActiveValue::Set(
-			owned_in_day(
+			acquired_in_day(
 				txn,
-				PlayerOwnedCosmetic::find().filter(
-					player_owned_cosmetic::Column::AcquiredVia
-						.eq(TransactionProvider::AdminGrant),
+				OwnershipGrant::find().filter(
+					ownership_grant::Column::Provider.eq(TransactionProvider::AdminGrant),
 				),
 				bounds,
 			)
@@ -148,19 +154,18 @@ pub(super) async fn collect_day(
 				.try_into()
 				.unwrap_or(i32::MAX),
 		),
+		// Booked on the day of the refund, like `refund_amount_minor`: a sale's
+		// own day is final before most refunds arrive.
 		transactions_refunded: ActiveValue::Set(
-			count_in_day(
-				txn,
-				Transaction::find()
-					.filter(transaction::Column::RefundedAt.is_not_null())
-					.filter(
-						Expr::col(transaction::Column::RefundedMinor)
-							.gte(Expr::col(transaction::Column::AmountMinor)),
-					),
-				transaction::Column::CreatedAt,
-				bounds,
-			)
-			.await?,
+			refunds_on_day(bounds)
+				.filter(
+					Expr::col(transaction::Column::RefundedMinor)
+						.gte(Expr::col(transaction::Column::AmountMinor)),
+				)
+				.count(txn)
+				.await?
+				.try_into()
+				.unwrap_or(i32::MAX),
 		),
 		gift_transactions: ActiveValue::Set(
 			count_in_day(
@@ -315,18 +320,18 @@ async fn paid_acquisitions(
 	txn: &DatabaseTransaction,
 	bounds: (DateTimeWithTimeZone, DateTimeWithTimeZone),
 ) -> Result<(i32, i32), DbErr> {
-	let purchased = PlayerOwnedCosmetic::find()
-		.filter(player_owned_cosmetic::Column::AcquiredVia.is_in(PURCHASE_PROVIDERS));
+	let purchased = OwnershipGrant::find()
+		.filter(ownership_grant::Column::Provider.is_in(PURCHASE_PROVIDERS));
 
-	let total = owned_in_day(txn, purchased.clone(), bounds).await?;
+	let total = acquired_in_day(txn, purchased.clone(), bounds).await?;
 
 	// Priced from its own line where one exists, falling back to the order
 	// total for rows that predate lines. No amount at all counts as free.
-	let paid = owned_in_day(
+	let paid = acquired_in_day(
 		txn,
 		purchased
-			.left_join(Transaction)
-			.left_join(TransactionLine)
+			.join(JoinType::LeftJoin, ownership_grant::Relation::Transaction.def())
+			.join(JoinType::LeftJoin, ownership_grant::Relation::TransactionLine.def())
 			.filter(
 				Expr::expr(Func::coalesce([
 					Expr::col((
@@ -347,16 +352,16 @@ async fn paid_acquisitions(
 	Ok((paid, total - paid))
 }
 
-async fn owned_in_day(
+async fn acquired_in_day(
 	txn: &DatabaseTransaction,
-	select: Select<PlayerOwnedCosmetic>,
+	select: Select<OwnershipGrant>,
 	(start, end): (DateTimeWithTimeZone, DateTimeWithTimeZone),
 ) -> Result<i32, DbErr> {
-	let count = count_owned(
+	let count = count_acquired(
 		txn,
 		select
-			.filter(player_owned_cosmetic::Column::AcquiredAt.gte(start))
-			.filter(player_owned_cosmetic::Column::AcquiredAt.lt(end)),
+			.filter(ownership_grant::Column::GrantedAt.gte(start))
+			.filter(ownership_grant::Column::GrantedAt.lt(end)),
 	)
 	.await?;
 
@@ -453,53 +458,32 @@ fn window_start(day: NaiveDate, back: u64) -> NaiveDate {
 	day.checked_sub_days(Days::new(back)).unwrap_or(day)
 }
 
-async fn active_players(
+async fn count_active(
 	txn: &DatabaseTransaction,
 	from: NaiveDate,
 	to: NaiveDate,
 ) -> Result<i32, DbErr> {
-	let count = DailyPlaytime::find()
-		.filter(daily_playtime::Column::Day.gte(from))
-		.filter(daily_playtime::Column::Day.lte(to))
-		.filter(daily_playtime::Column::TotalSeconds.gt(0))
-		.select_only()
-		.column(daily_playtime::Column::PlayerId)
-		.group_by(daily_playtime::Column::PlayerId)
-		.count(txn)
-		.await?;
+	let count = active_players(Some(from), Some(to)).count(txn).await?;
 
 	Ok(count.try_into().unwrap_or(i32::MAX))
 }
 
-/// Active on `day` and registered before it.
+/// Active on `day` and first logged in before it, the same split `new_users`
+/// makes.
 async fn returning_players(
 	txn: &DatabaseTransaction,
 	day: NaiveDate,
 	day_start: DateTimeWithTimeZone,
 ) -> Result<i32, DbErr> {
-	let value = DailyPlaytime::find()
-		.inner_join(User)
-		.filter(daily_playtime::Column::Day.eq(day))
-		.filter(daily_playtime::Column::TotalSeconds.gt(0))
-		.filter(user::Column::CreatedAt.lt(day_start))
-		.select_only()
-		.column_as(
-			Expr::expr(Func::count_distinct(Expr::col((
-				daily_playtime::Entity,
-				daily_playtime::Column::PlayerId,
-			)))),
-			"value",
+	let count = active_players(Some(day), Some(day))
+		.filter(
+			daily_playtime::Column::PlayerId
+				.in_subquery(first_logins(None, Some(day_start)).into_query()),
 		)
-		.into_model::<CountValue>()
-		.one(txn)
-		.await?
-		.unwrap_or_default();
+		.count(txn)
+		.await?;
 
-	Ok(value
-		.value
-		.unwrap_or_default()
-		.try_into()
-		.unwrap_or(i32::MAX))
+	Ok(count.try_into().unwrap_or(i32::MAX))
 }
 
 async fn playtime_totals(

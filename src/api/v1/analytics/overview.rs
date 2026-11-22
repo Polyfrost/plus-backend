@@ -3,10 +3,8 @@ use axum::{
 	Json,
 	extract::{Query, State},
 };
-use chrono::{Days, Utc};
-use entities::{
-	analytics_daily, monthly_active_login, player_owned_cosmetic, prelude::*,
-};
+use chrono::{Days, NaiveDate, Utc};
+use entities::{analytics_daily, ownership_grant, player_owned_cosmetic, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait as _, ConnectionTrait as _, DatabaseConnection, EntityTrait,
@@ -23,8 +21,10 @@ use super::{
 };
 use crate::{
 	api::ApiState,
-	database::{count_first_logins, count_owned, owned_cosmetic_key},
-	utils::time::current_utc_month,
+	database::{
+		MONTHLY_WINDOW, active_players, count_acquired, count_first_logins,
+		first_logins, owned_cosmetic_key,
+	},
 };
 
 /// Buckets in the database, so the result is one row however many players.
@@ -34,10 +34,15 @@ async fn owned_items_histogram(
 ) -> Result<OwnedItemsCounts, sea_orm::DbErr> {
 	let owned = Alias::new("owned");
 
+	// Only players, so it shares `total_users` as its denominator.
 	let per_player = filter_timestamp_period(
 		PlayerOwnedCosmetic::find(),
 		player_owned_cosmetic::Column::AcquiredAt,
 		period,
+	)
+	.filter(
+		player_owned_cosmetic::Column::PlayerId
+			.in_subquery(first_logins(None, period.end_timestamp_exclusive()).into_query()),
 	)
 	.inner_join(Cosmetic)
 	.select_only()
@@ -97,7 +102,11 @@ pub(super) fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 			 Cumulative metrics (`total_users`, owned items and their distribution, \
 			 linked accounts) are snapshots of the state at the end of the period, while flow metrics (`new_users`, `items_acquired`, playtime and \
 			 sessions) only count activity inside the period. Without either parameter \
-			 the response is the all-time overview.",
+			 the response is the all-time overview.\n\n`monthly_active_users` and \
+			 `playtime.last_30d_seconds` cover the 30 days ending on `end` (today \
+			 without one), matching `mau` in `/analytics/daily`. A player is active on a \
+			 day they played, and a user is someone who has logged in at least once. \
+			 `playtime.average_seconds_per_user` is per player active in the period.",
 		)
 		.tag("analytics")
 }
@@ -145,11 +154,6 @@ pub(super) struct OwnedItemsDistribution {
 }
 
 #[derive(Debug, Default, FromQueryResult)]
-pub(super) struct DistinctCount {
-	count: i64,
-}
-
-#[derive(Debug, Default, FromQueryResult)]
 pub(super) struct OwnedItemsCounts {
 	total_owned_items: i64,
 	users_with_any: i64,
@@ -187,41 +191,29 @@ pub(super) async fn endpoint(
 	)
 	.await? as i64;
 
-	let monthly_active_users = if period.is_unbounded() {
-		MonthlyActiveLogin::find()
-			.filter(monthly_active_login::Column::Month.eq(current_utc_month()))
+	// The same rolling window as the daily series, ending on the period's last day.
+	let window_end = period.end.unwrap_or_else(|| Utc::now().date_naive());
+	let window_start = window_end
+		.checked_sub_days(Days::new(MONTHLY_WINDOW))
+		.unwrap_or(NaiveDate::MIN);
+
+	let monthly_active_users =
+		active_players(Some(window_start), Some(window_end))
 			.count(&state.database)
-			.await? as i64
-	} else {
-		let mut query = MonthlyActiveLogin::find().select_only().column_as(
-			Expr::expr(Func::count_distinct(Expr::col(
-				monthly_active_login::Column::PlayerId,
-			))),
-			"count",
-		);
-		if let Some(start) = period.start_timestamp() {
-			query = query.filter(monthly_active_login::Column::LastLoginAt.gte(start));
-		}
-		if let Some(end) = period.end_timestamp_exclusive() {
-			query = query.filter(monthly_active_login::Column::FirstLoginAt.lt(end));
-		}
-		query
-			.into_model::<DistinctCount>()
-			.one(&state.database)
-			.await?
-			.unwrap_or_default()
-			.count
-	};
+			.await? as i64;
+	let active_in_period = active_players(period.start, period.end)
+		.count(&state.database)
+		.await? as i64;
 
 	let linked_accounts = linked_account_totals(&state.database, period.end).await?;
 
 	let owned_counts = owned_items_histogram(&state.database, up_to_end).await?;
 
-	let items_acquired = count_owned(
+	let items_acquired = count_acquired(
 		&state.database,
 		filter_timestamp_period(
-			PlayerOwnedCosmetic::find(),
-			player_owned_cosmetic::Column::AcquiredAt,
+			OwnershipGrant::find(),
+			ownership_grant::Column::GrantedAt,
 			period,
 		),
 	)
@@ -255,7 +247,6 @@ pub(super) async fn endpoint(
 			.await?
 			.unwrap_or_default();
 
-	let thirty_days_ago = (Utc::now() - Days::new(30)).date_naive();
 	let last_30d_seconds = AnalyticsDaily::find()
 		.select_only()
 		.column_as(
@@ -264,7 +255,8 @@ pub(super) async fn endpoint(
 				.cast_as(Alias::new("bigint")),
 			"total_seconds",
 		)
-		.filter(analytics_daily::Column::Day.gte(thirty_days_ago))
+		.filter(analytics_daily::Column::Day.gte(window_start))
+		.filter(analytics_daily::Column::Day.lte(window_end))
 		.into_model::<PlaytimeAggregate>()
 		.one(&state.database)
 		.await?
@@ -273,10 +265,10 @@ pub(super) async fn endpoint(
 		.unwrap_or(0);
 
 	let total_playtime_seconds = playtime_totals.total_seconds.unwrap_or(0);
-	let average_seconds_per_user = if total_users == 0 {
+	let average_seconds_per_user = if active_in_period == 0 {
 		0.0
 	} else {
-		total_playtime_seconds as f64 / total_users as f64
+		total_playtime_seconds as f64 / active_in_period as f64
 	};
 
 	Ok(Json(AnalyticsOverviewResponse {

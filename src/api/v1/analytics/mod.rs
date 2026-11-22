@@ -83,10 +83,6 @@ impl AnalyticsPeriod {
 		}
 	}
 
-	fn is_unbounded(self) -> bool {
-		self.start.is_none() && self.end.is_none()
-	}
-
 	fn start_timestamp(self) -> Option<DateTimeWithTimeZone> {
 		self.start.map(start_of_day)
 	}
@@ -231,13 +227,6 @@ mod tests {
 		] {
 			assert!(valid.validate().is_ok());
 		}
-	}
-
-	#[test]
-	fn only_a_period_without_bounds_is_unbounded() {
-		assert!(period(None, None).is_unbounded());
-		assert!(!period(Some(date(2026, 7, 1)), None).is_unbounded());
-		assert!(!period(None, Some(date(2026, 7, 1))).is_unbounded());
 	}
 
 	#[test]

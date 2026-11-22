@@ -16,11 +16,11 @@ use crate::api::ApiState;
 
 pub(super) fn retention_doc(op: TransformOperation) -> TransformOperation {
 	op.id("getAnalyticsRetention")
-		.summary("Get signup cohort retention")
+		.summary("Get first-login cohort retention")
 		.description(
-			"Returns, for each signup day in the period, how many of that day's new \
-			 accounts played again a fixed number of days later. Accounts that have \
-			 never logged in are left out.\n\nOffsets are fixed \
+			"Returns, for each day in the period, how many of the players who first \
+			 logged in that day played again a fixed number of days later, so cohorts \
+			 match `new_users` in `/analytics/daily`.\n\nOffsets are fixed \
 			 (0-7, 14, 21, 28, 30, 60, 90, 180, 365). An offset is absent until it has \
 			 actually elapsed for that cohort, so a missing entry means \"not knowable \
 			 yet\" rather than zero retention. `start` and `end` bound the cohort days \

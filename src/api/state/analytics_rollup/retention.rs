@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
 use chrono::{Days, NaiveDate, Utc};
-use entities::{
-	analytics_cohort_retention, daily_playtime, monthly_active_login, prelude::*, user,
-};
+use entities::{analytics_cohort_retention, daily_playtime, prelude::*};
 use sea_orm::{
 	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait,
 	FromQueryResult, QueryFilter as _, QuerySelect as _, prelude::DateTimeWithTimeZone,
-	sea_query::Query,
 };
 
 use super::day_bounds;
-use crate::utils::time::start_of_day;
+use crate::{
+	database::{first_login_at, first_logins},
+	utils::time::start_of_day,
+};
 
 const RETENTION_OFFSETS: [i32; 16] =
 	[0, 1, 2, 3, 4, 5, 6, 7, 14, 21, 28, 30, 60, 90, 180, 365];
@@ -19,8 +19,8 @@ const MAX_OFFSET: u64 = 365;
 
 #[derive(Debug, FromQueryResult)]
 struct CohortMember {
-	id: i32,
-	created_at: DateTimeWithTimeZone,
+	player_id: i32,
+	first_login_at: DateTimeWithTimeZone,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -29,39 +29,25 @@ struct ActiveDay {
 	day: NaiveDate,
 }
 
-/// Cohorts only hold accounts that have logged in at least once; lookups and
-/// friend requests create users who never will. `from` of `None` rebuilds
-/// every cohort.
+/// Cohorts are players by the day of their first login, the same day
+/// `new_users` counts them on. `from` of `None` rebuilds every cohort.
 pub(super) async fn collect_retention_cells(
 	txn: &DatabaseTransaction,
 	from: Option<NaiveDate>,
 	to: NaiveDate,
 ) -> Result<Vec<analytics_cohort_retention::ActiveModel>, DbErr> {
 	let (_, end) = day_bounds(to);
-	let mut members = User::find()
-		.filter(user::Column::CreatedAt.lt(end))
-		.filter(
-			user::Column::Id.in_subquery(
-				Query::select()
-					.column(monthly_active_login::Column::PlayerId)
-					.from(MonthlyActiveLogin)
-					.to_owned(),
-			),
-		)
-		.select_only()
-		.column(user::Column::Id)
-		.column(user::Column::CreatedAt);
-	if let Some(from) = from {
-		let floor = from.checked_sub_days(Days::new(MAX_OFFSET)).unwrap_or(from);
-		members = members.filter(user::Column::CreatedAt.gte(start_of_day(floor)));
-	}
+	let floor = from.map(|from| {
+		start_of_day(from.checked_sub_days(Days::new(MAX_OFFSET)).unwrap_or(from))
+	});
 
-	let cohorts: HashMap<i32, NaiveDate> = members
+	let cohorts: HashMap<i32, NaiveDate> = first_logins(floor, Some(end))
+		.column_as(first_login_at(), "first_login_at")
 		.into_model::<CohortMember>()
 		.all(txn)
 		.await?
 		.into_iter()
-		.map(|member| (member.id, member.created_at.naive_utc().date()))
+		.map(|member| (member.player_id, member.first_login_at.naive_utc().date()))
 		.collect();
 
 	let Some(activity_from) = from.or_else(|| cohorts.values().min().copied()) else {

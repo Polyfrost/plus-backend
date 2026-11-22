@@ -1,13 +1,14 @@
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use entities::{
 	cosmetic, cosmetic_ownership_event, daily_playtime, monthly_active_login,
-	player_client_info, player_geo, player_owned_cosmetic,
+	ownership_grant, player_client_daily, player_client_info, player_geo,
 	prelude::*,
 	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
 	transaction, user,
 };
 use sea_orm::{
-	ActiveValue, DbErr, EntityTrait, QueryFilter, QuerySelect, Set,
+	ActiveValue, DbErr, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
+	Set,
 	prelude::*,
 	sea_query::{Alias, Expr, Func, OnConflict, SimpleExpr},
 };
@@ -189,27 +190,59 @@ pub(crate) async fn record_monthly_active_login(
 	Ok(())
 }
 
-/// Players whose first login falls in `[start, end)`. Lookups, gifts and
-/// grants create users too, so `user.created_at` overcounts real players.
-pub(crate) async fn count_first_logins(
-	db: &impl ConnectionTrait,
+/// A player's first login, for a query grouped by player.
+pub(crate) fn first_login_at() -> SimpleExpr {
+	Func::min(Expr::col(monthly_active_login::Column::FirstLoginAt)).into()
+}
+
+/// `player_id` of every player whose first login falls in `[start, end)`.
+/// Lookups, gifts and grants create users too, so `user.created_at`
+/// overcounts real players and misdates their start.
+pub(crate) fn first_logins(
 	start: Option<DateTimeWithTimeZone>,
 	end: Option<DateTimeWithTimeZone>,
-) -> Result<u64, DbErr> {
-	let first_login = Expr::expr(Func::min(Expr::col(
-		monthly_active_login::Column::FirstLoginAt,
-	)));
+) -> Select<MonthlyActiveLogin> {
 	let mut query = MonthlyActiveLogin::find()
 		.select_only()
 		.column(monthly_active_login::Column::PlayerId)
 		.group_by(monthly_active_login::Column::PlayerId);
 	if let Some(start) = start {
-		query = query.having(first_login.clone().gte(start));
+		query = query.having(Expr::expr(first_login_at()).gte(start));
 	}
 	if let Some(end) = end {
-		query = query.having(first_login.lt(end));
+		query = query.having(Expr::expr(first_login_at()).lt(end));
 	}
-	query.count(db).await
+	query
+}
+
+pub(crate) async fn count_first_logins(
+	db: &impl ConnectionTrait,
+	start: Option<DateTimeWithTimeZone>,
+	end: Option<DateTimeWithTimeZone>,
+) -> Result<u64, DbErr> {
+	first_logins(start, end).count(db).await
+}
+
+/// Days before the last one in a monthly active window, so 30 in all.
+pub(crate) const MONTHLY_WINDOW: u64 = 29;
+
+/// `player_id` of every player with playtime on a day in `[from, to]`.
+pub(crate) fn active_players(
+	from: Option<NaiveDate>,
+	to: Option<NaiveDate>,
+) -> Select<DailyPlaytime> {
+	let mut query = DailyPlaytime::find()
+		.filter(daily_playtime::Column::TotalSeconds.gt(0))
+		.select_only()
+		.column(daily_playtime::Column::PlayerId)
+		.group_by(daily_playtime::Column::PlayerId);
+	if let Some(from) = from {
+		query = query.filter(daily_playtime::Column::Day.gte(from));
+	}
+	if let Some(to) = to {
+		query = query.filter(daily_playtime::Column::Day.lte(to));
+	}
+	query
 }
 
 /// What an owned cosmetic counts as: its variant group, else itself. Ids are
@@ -222,21 +255,19 @@ pub(crate) fn owned_cosmetic_key() -> SimpleExpr {
 	.into()
 }
 
-/// Distinct (player, [owned_cosmetic_key]) pairs, so a group's variants count once.
-pub(crate) async fn count_owned(
+/// Distinct (player, [owned_cosmetic_key]) pairs granted, so a group's variants
+/// count once. Grants are kept after a refund, so a sale stays counted.
+pub(crate) async fn count_acquired(
 	db: &impl ConnectionTrait,
-	select: Select<PlayerOwnedCosmetic>,
+	select: Select<OwnershipGrant>,
 ) -> Result<i64, DbErr> {
 	let count = select
-		.inner_join(Cosmetic)
+		.join(JoinType::InnerJoin, ownership_grant::Relation::Cosmetic.def())
 		.select_only()
 		.column_as(
 			Expr::expr(Func::count_distinct(Expr::tuple([
-				Expr::col((
-					player_owned_cosmetic::Entity,
-					player_owned_cosmetic::Column::PlayerId,
-				))
-				.into(),
+				Expr::col((ownership_grant::Entity, ownership_grant::Column::PlayerId))
+					.into(),
 				owned_cosmetic_key(),
 			]))),
 			"count",
@@ -325,6 +356,57 @@ pub(crate) async fn record_player_geo(
 			.update_column(player_geo::Column::Country)
 			.value(player_geo::Column::LastSeenAt, Expr::current_timestamp())
 			.to_owned(),
+	)
+	.exec_without_returning(db)
+	.await?;
+
+	Ok(())
+}
+
+/// What the player ran today, so past days keep the client they were played on.
+pub(crate) async fn record_client_day(
+	db: &impl ConnectionTrait,
+	player_id: i32,
+	info: &ClientInfo,
+	country: Option<&str>,
+) -> Result<(), DbErr> {
+	if info.is_empty() {
+		return Ok(());
+	}
+
+	PlayerClientDaily::insert(player_client_daily::ActiveModel {
+		player_id: Set(player_id),
+		day: Set(Utc::now().date_naive()),
+		client_version: Set(info.client_version.clone()),
+		minecraft_version: Set(info.minecraft_version.clone()),
+		loader: Set(info.loader.clone()),
+		os: Set(info.os.clone()),
+		country: Set(country.map(str::to_owned)),
+	})
+	.on_conflict(
+		OnConflict::columns([
+			player_client_daily::Column::PlayerId,
+			player_client_daily::Column::Day,
+		])
+		.update_columns([
+			player_client_daily::Column::ClientVersion,
+			player_client_daily::Column::MinecraftVersion,
+			player_client_daily::Column::Loader,
+			player_client_daily::Column::Os,
+		])
+		.value(
+			player_client_daily::Column::Country,
+			Func::coalesce([
+				Expr::col((Alias::new("excluded"), player_client_daily::Column::Country))
+					.into(),
+				Expr::col((
+					player_client_daily::Entity,
+					player_client_daily::Column::Country,
+				))
+				.into(),
+			]),
+		)
+		.to_owned(),
 	)
 	.exec_without_returning(db)
 	.await?;

@@ -1,14 +1,14 @@
 use chrono::{Datelike as _, Days, NaiveDate};
 use entities::{
 	analytics_cosmetic_daily, analytics_cosmetic_snapshot, analytics_slot_snapshot,
-	cosmetic_ownership_event, player_equipped_cosmetic, player_owned_cosmetic,
-	prelude::*,
+	cosmetic_ownership_event, ownership_grant, player_equipped_cosmetic,
+	player_owned_cosmetic, prelude::*,
 	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
 	transaction, transaction_line,
 };
 use sea_orm::{
 	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait,
-	FromQueryResult, QueryFilter as _, QuerySelect as _,
+	FromQueryResult, JoinType, QueryFilter as _, QuerySelect as _, RelationTrait as _,
 	prelude::DateTimeWithTimeZone,
 	sea_query::{Expr, Func, SimpleExpr},
 };
@@ -86,28 +86,25 @@ pub(super) async fn cosmetic_rows(
 ) -> Result<Vec<analytics_cosmetic_daily::ActiveModel>, DbErr> {
 	let (start, end) = day_bounds(day);
 
-	let rows = PlayerOwnedCosmetic::find()
-		.left_join(Transaction)
-		.left_join(TransactionLine)
-		.filter(player_owned_cosmetic::Column::AcquiredAt.gte(start))
-		.filter(player_owned_cosmetic::Column::AcquiredAt.lt(end))
+	// Grants, not owned rows: a refund deletes the row, and the sale must
+	// stay booked on its day however late the refund comes.
+	let rows = OwnershipGrant::find()
+		.join(JoinType::LeftJoin, ownership_grant::Relation::Transaction.def())
+		.join(JoinType::LeftJoin, ownership_grant::Relation::TransactionLine.def())
+		.filter(ownership_grant::Column::GrantedAt.gte(start))
+		.filter(ownership_grant::Column::GrantedAt.lt(end))
 		.select_only()
-		.column(player_owned_cosmetic::Column::CosmeticId)
+		.column(ownership_grant::Column::CosmeticId)
+		.column_as(ownership_grant::Column::CosmeticId.count(), "acquisitions")
 		.column_as(
-			player_owned_cosmetic::Column::CosmeticId.count(),
-			"acquisitions",
-		)
-		.column_as(
-			count_where(
-				player_owned_cosmetic::Column::AcquiredVia.is_in(PURCHASE_PROVIDERS),
-			),
+			count_where(ownership_grant::Column::Provider.is_in(PURCHASE_PROVIDERS)),
 			"purchased",
 		)
 		// Priced from the line that delivered it, so a free item in a paid
 		// basket is no longer counted as paid.
 		.column_as(
 			count_where(
-				player_owned_cosmetic::Column::AcquiredVia
+				ownership_grant::Column::Provider
 					.is_in(PURCHASE_PROVIDERS)
 					.and(Expr::expr(amount_paid()).gt(0)),
 			),
@@ -115,12 +112,11 @@ pub(super) async fn cosmetic_rows(
 		)
 		.column_as(
 			count_where(
-				player_owned_cosmetic::Column::AcquiredVia
-					.eq(TransactionProvider::AdminGrant),
+				ownership_grant::Column::Provider.eq(TransactionProvider::AdminGrant),
 			),
 			"granted",
 		)
-		.group_by(player_owned_cosmetic::Column::CosmeticId)
+		.group_by(ownership_grant::Column::CosmeticId)
 		.into_model::<CosmeticAcquisitions>()
 		.all(txn)
 		.await?;
@@ -248,17 +244,20 @@ async fn revenue_by_cosmetic(
 	start: DateTimeWithTimeZone,
 	end: DateTimeWithTimeZone,
 ) -> Result<std::collections::HashMap<i32, i64>, DbErr> {
-	let acquisitions = PlayerOwnedCosmetic::find()
-		.inner_join(TransactionLine)
-		.filter(player_owned_cosmetic::Column::AcquiredAt.gte(start))
-		.filter(player_owned_cosmetic::Column::AcquiredAt.lt(end))
+	let mut acquisitions = OwnershipGrant::find()
+		.join(JoinType::InnerJoin, ownership_grant::Relation::TransactionLine.def())
+		.filter(ownership_grant::Column::GrantedAt.gte(start))
+		.filter(ownership_grant::Column::GrantedAt.lt(end))
 		.select_only()
-		.column(player_owned_cosmetic::Column::CosmeticId)
-		.column(player_owned_cosmetic::Column::TransactionLineId)
+		.column(ownership_grant::Column::CosmeticId)
+		.column(ownership_grant::Column::TransactionLineId)
 		.column(transaction_line::Column::TotalMinor)
 		.into_model::<LineAcquisition>()
 		.all(txn)
 		.await?;
+	acquisitions.sort_unstable_by_key(|acquisition| {
+		(acquisition.transaction_line_id, acquisition.cosmetic_id)
+	});
 
 	let mut per_line: std::collections::HashMap<i64, i64> =
 		std::collections::HashMap::new();
@@ -268,14 +267,23 @@ async fn revenue_by_cosmetic(
 
 	let mut revenue: std::collections::HashMap<i32, i64> =
 		std::collections::HashMap::new();
+	let mut handed_out: std::collections::HashMap<i64, i64> =
+		std::collections::HashMap::new();
 	for acquisition in acquisitions {
 		let share = per_line
 			.get(&acquisition.transaction_line_id)
 			.copied()
 			.unwrap_or(1)
 			.max(1);
+		// The first `total % share` take a minor unit more, so the parts add
+		// back up to the line.
+		let index = handed_out
+			.entry(acquisition.transaction_line_id)
+			.or_default();
+		let extra = i64::from(*index < acquisition.total_minor % share);
+		*index += 1;
 		*revenue.entry(acquisition.cosmetic_id).or_default() +=
-			acquisition.total_minor / share;
+			acquisition.total_minor / share + extra;
 	}
 
 	Ok(revenue)

@@ -107,7 +107,10 @@ pub(super) fn catalog_doc(op: TransformOperation) -> TransformOperation {
 			 `acquisitions_free` the ones that came to zero, priced from the order \
 			 line that delivered each cosmetic. `revenue_minor` splits a line's \
 			 total evenly across the cosmetics it delivered, so a bundle's price is \
-			 shared between its contents.\n\n`refunded` and `charged_back` count \
+			 shared between its contents.\n\nAn acquisition stays counted on its day \
+			 after a refund; the refund shows up in `refunded` on the day it happened. \
+			 Each cosmetic is counted on its own, so variants of one group add up to \
+			 more than `cosmetics_acquired` in `/analytics/daily`.\n\n`refunded` and `charged_back` count \
 			 acquisitions taken back on the day they were taken back, kept apart \
 			 because a dispute says something different about a cosmetic than a \
 			 change of mind does. Both are read from the ownership trail, so they \

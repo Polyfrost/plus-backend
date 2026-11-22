@@ -102,9 +102,11 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 	let mut clients = Vec::new();
 	let mut day = from;
 	while day <= to {
-		rows.push(daily::collect_day(&txn, day).await?);
+		let spans = hourly::session_spans_for_day(&txn, day).await?;
+		rows.push(
+			daily::collect_day(&txn, day, hourly::sessions_started(day, &spans)).await?,
+		);
 
-		let spans = hourly::session_spans_for_day(&txn, day, now).await?;
 		hourly.extend(hourly::hourly_rows(
 			day,
 			hourly::bucket_sessions_into_hours(day, &spans),
@@ -134,6 +136,27 @@ async fn run_rollup(database: &DatabaseConnection) -> Result<Rollup, DbErr> {
 			.to_owned(),
 	)
 	.await?;
+
+	// Both are keyed by what was seen, so a key that is gone on a recompute
+	// would otherwise keep its old count.
+	AnalyticsClientDaily::delete_many()
+		.filter(analytics_client_daily::Column::Day.between(from, to))
+		.exec(&txn)
+		.await?;
+	// Views are counted live, so the rolled up columns are zeroed, not deleted.
+	AnalyticsCosmeticDaily::update_many()
+		.col_expr(analytics_cosmetic_daily::Column::Acquisitions, Expr::value(0))
+		.col_expr(analytics_cosmetic_daily::Column::AcquisitionsPaid, Expr::value(0))
+		.col_expr(analytics_cosmetic_daily::Column::AcquisitionsFree, Expr::value(0))
+		.col_expr(analytics_cosmetic_daily::Column::AcquisitionsGranted, Expr::value(0))
+		.col_expr(analytics_cosmetic_daily::Column::RevenueMinor, Expr::value(0i64))
+		.col_expr(analytics_cosmetic_daily::Column::Refunded, Expr::value(0))
+		.col_expr(analytics_cosmetic_daily::Column::ChargedBack, Expr::value(0))
+		.col_expr(analytics_cosmetic_daily::Column::RefundedMinor, Expr::value(0i64))
+		.col_expr(analytics_cosmetic_daily::Column::ChargedBackMinor, Expr::value(0i64))
+		.filter(analytics_cosmetic_daily::Column::Day.between(from, to))
+		.exec(&txn)
+		.await?;
 
 	upsert(
 		&txn,

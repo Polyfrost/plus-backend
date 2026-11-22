@@ -19,8 +19,8 @@ use uuid::Uuid;
 use crate::{
 	api::ApiState,
 	database::{
-		ClientInfo, DatabaseUserExt, record_client_info, record_monthly_active_login,
-		record_player_geo,
+		ClientInfo, DatabaseUserExt, record_client_day, record_client_info,
+		record_monthly_active_login, record_player_geo,
 	},
 };
 
@@ -214,6 +214,8 @@ async fn endpoint(
 	// Only the mod reports these, so they are what marks a token as a game client.
 	let is_game_client = !client_info.is_empty();
 
+	record_client_day(&state.database, player.id, &client_info, country.as_deref())
+		.await?;
 	record_client_info(&state.database, player.id, client_info).await?;
 
 	if let Some(country) = country {

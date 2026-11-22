@@ -1,15 +1,16 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::repeat_with};
 
 use chrono::NaiveDate;
-use entities::{
-	analytics_client_daily, daily_playtime, player_client_info, player_geo, prelude::*,
-};
+use entities::{analytics_client_daily, player_client_daily, prelude::*};
 use sea_orm::{
 	ActiveValue, ColumnTrait as _, DatabaseTransaction, DbErr, EntityTrait,
-	FromQueryResult, QueryFilter as _, QuerySelect as _, prelude::DateTimeWithTimeZone,
+	FromQueryResult, PaginatorTrait as _, QueryFilter as _, QueryOrder as _,
+	QuerySelect as _, QueryTrait as _, prelude::DateTimeWithTimeZone,
 };
 
-#[derive(Debug, FromQueryResult)]
+use crate::database::active_players;
+
+#[derive(Debug, Default, FromQueryResult)]
 struct ClientRow {
 	client_version: Option<String>,
 	minecraft_version: Option<String>,
@@ -23,20 +24,32 @@ pub(super) async fn client_rows(
 	day: NaiveDate,
 	computed_at: DateTimeWithTimeZone,
 ) -> Result<Vec<analytics_client_daily::ActiveModel>, DbErr> {
-	let rows = DailyPlaytime::find()
-		.inner_join(PlayerClientInfo)
-		.left_join(PlayerGeo)
-		.filter(daily_playtime::Column::Day.eq(day))
-		.filter(daily_playtime::Column::TotalSeconds.gt(0))
+	let active = active_players(Some(day), Some(day));
+	let active_count = active.clone().count(txn).await?;
+
+	// What each player last reported on or before the day, not what they run now.
+	let mut rows = PlayerClientDaily::find()
+		.filter(player_client_daily::Column::PlayerId.in_subquery(active.into_query()))
+		.filter(player_client_daily::Column::Day.lte(day))
+		.distinct_on([player_client_daily::Column::PlayerId])
+		.order_by_asc(player_client_daily::Column::PlayerId)
+		.order_by_desc(player_client_daily::Column::Day)
 		.select_only()
-		.column(player_client_info::Column::ClientVersion)
-		.column(player_client_info::Column::MinecraftVersion)
-		.column(player_client_info::Column::Loader)
-		.column(player_client_info::Column::Os)
-		.column(player_geo::Column::Country)
+		.column(player_client_daily::Column::ClientVersion)
+		.column(player_client_daily::Column::MinecraftVersion)
+		.column(player_client_daily::Column::Loader)
+		.column(player_client_daily::Column::Os)
+		.column(player_client_daily::Column::Country)
 		.into_model::<ClientRow>()
 		.all(txn)
 		.await?;
+
+	// Players with no report land under the empty value, so every breakdown
+	// adds up to the day's active players.
+	let unreported = usize::try_from(active_count)
+		.unwrap_or(usize::MAX)
+		.saturating_sub(rows.len());
+	rows.extend(repeat_with(ClientRow::default).take(unreported));
 
 	Ok(tally(rows, day, computed_at))
 }

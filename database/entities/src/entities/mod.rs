@@ -49,6 +49,7 @@ pub mod party_invites;
 pub mod party_members;
 pub mod paynow_webhook_event;
 pub mod play_session;
+pub mod player_client_daily;
 pub mod player_client_info;
 pub mod player_equipped_cosmetic;
 pub mod player_geo;

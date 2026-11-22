@@ -47,6 +47,7 @@ pub use super::party_invites::Entity as PartyInvites;
 pub use super::party_members::Entity as PartyMembers;
 pub use super::paynow_webhook_event::Entity as PaynowWebhookEvent;
 pub use super::play_session::Entity as PlaySession;
+pub use super::player_client_daily::Entity as PlayerClientDaily;
 pub use super::player_client_info::Entity as PlayerClientInfo;
 pub use super::player_equipped_cosmetic::Entity as PlayerEquippedCosmetic;
 pub use super::player_geo::Entity as PlayerGeo;

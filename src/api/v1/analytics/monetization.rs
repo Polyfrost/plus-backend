@@ -31,8 +31,7 @@ pub(super) struct MonetizationResponse {
 	discount_amount_minor: i64,
 	/// Sales made in the period, including ones refunded later.
 	transactions_completed: i64,
-	/// Sales made in the period that have since been refunded, whenever that
-	/// refund was processed.
+	/// Sales refunded in full, booked on the day the refund was processed.
 	transactions_refunded: i64,
 	/// Sales refunded in part only, so some of their cosmetics are still owned.
 	transactions_partially_refunded: i64,
