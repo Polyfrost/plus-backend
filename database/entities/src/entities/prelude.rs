@@ -21,6 +21,7 @@ pub use super::cosmetic_group::Entity as CosmeticGroup;
 pub use super::cosmetic_group_allowed_slot::Entity as CosmeticGroupAllowedSlot;
 pub use super::cosmetic_ownership_event::Entity as CosmeticOwnershipEvent;
 pub use super::cosmetic_package::Entity as CosmeticPackage;
+pub use super::daily_login::Entity as DailyLogin;
 pub use super::daily_playtime::Entity as DailyPlaytime;
 pub use super::discount::Entity as Discount;
 pub use super::discount_redemption::Entity as DiscountRedemption;

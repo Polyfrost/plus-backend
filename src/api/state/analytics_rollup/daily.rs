@@ -1,6 +1,6 @@
 use chrono::{Days, NaiveDate, Utc};
 use entities::{
-	analytics_daily, blocks, daily_playtime, game_sessions, group_messages,
+	analytics_daily, blocks, daily_login, daily_playtime, game_sessions, group_messages,
 	ownership_grant,
 	prelude::*,
 	relationship_requests, relationships,
@@ -46,7 +46,7 @@ struct PlaytimeTotals {
 }
 
 /// Overwritten on conflict, so a re-run replaces rather than accumulates.
-pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 32] {
+pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 33] {
 	use analytics_daily::Column as C;
 
 	[
@@ -82,6 +82,7 @@ pub(super) fn rolled_up_columns() -> [analytics_daily::Column; 32] {
 		C::ChargebackAmountMinor,
 		C::TransactionsChargedBack,
 		C::TransactionsPartiallyRefunded,
+		C::Logins,
 	]
 }
 
@@ -105,6 +106,14 @@ pub(super) async fn collect_day(
 		),
 		mau: ActiveValue::Set(
 			count_active(txn, window_start(day, MONTHLY_WINDOW), day).await?,
+		),
+		logins: ActiveValue::Set(
+			DailyLogin::find()
+				.filter(daily_login::Column::Day.eq(day))
+				.count(txn)
+				.await?
+				.try_into()
+				.unwrap_or(i32::MAX),
 		),
 		new_users: ActiveValue::Set(
 			count_first_logins(txn, Some(day_start), Some(day_end))

@@ -27,6 +27,8 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+	#[sea_orm(has_many = "super::daily_login::Entity")]
+	DailyLogin,
 	#[sea_orm(has_many = "super::daily_playtime::Entity")]
 	DailyPlaytime,
 	#[sea_orm(has_many = "super::monthly_active_login::Entity")]
@@ -49,6 +51,12 @@ pub enum Relation {
 	TransactionLine,
 	#[sea_orm(has_many = "super::user_role::Entity")]
 	UserRole,
+}
+
+impl Related<super::daily_login::Entity> for Entity {
+	fn to() -> RelationDef {
+		Relation::DailyLogin.def()
+	}
 }
 
 impl Related<super::daily_playtime::Entity> for Entity {

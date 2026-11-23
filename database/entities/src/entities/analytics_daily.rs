@@ -39,6 +39,7 @@ pub struct Model {
 	pub chargeback_amount_minor: i64,
 	pub transactions_charged_back: i32,
 	pub transactions_partially_refunded: i32,
+	pub logins: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

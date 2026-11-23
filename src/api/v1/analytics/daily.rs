@@ -49,6 +49,8 @@ pub(super) struct DailyPoint {
 	dau: i32,
 	wau: i32,
 	mau: i32,
+	/// Distinct players who logged in, whether or not they played.
+	logins: i32,
 	new_users: i32,
 	returning_users: i32,
 	total_users: i32,
@@ -91,6 +93,7 @@ impl From<analytics_daily::Model> for DailyPoint {
 			dau: row.dau,
 			wau: row.wau,
 			mau: row.mau,
+			logins: row.logins,
 			new_users: row.new_users,
 			returning_users: row.returning_users,
 			total_users: row.total_users,

@@ -20,7 +20,7 @@ use crate::{
 	api::ApiState,
 	database::{
 		ClientInfo, DatabaseUserExt, record_client_day, record_client_info,
-		record_monthly_active_login, record_player_geo,
+		record_daily_login, record_monthly_active_login, record_player_geo,
 	},
 };
 
@@ -202,6 +202,7 @@ async fn endpoint(
 		.await?;
 
 	record_monthly_active_login(&state.database, player.id).await?;
+	record_daily_login(&state.database, player.id).await?;
 
 	let client_info = ClientInfo {
 		client_version: normalize_client_field(query.client_version),

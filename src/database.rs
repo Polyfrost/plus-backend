@@ -1,6 +1,6 @@
 use chrono::{DateTime, Days, NaiveDate, Utc};
 use entities::{
-	cosmetic, cosmetic_ownership_event, daily_playtime, monthly_active_login,
+	cosmetic, cosmetic_ownership_event, daily_login, daily_playtime, monthly_active_login,
 	ownership_grant, player_client_daily, player_client_info, player_geo,
 	prelude::*,
 	sea_orm_active_enums::{OwnershipEventKind, TransactionProvider, TransactionStatus},
@@ -183,6 +183,25 @@ pub(crate) async fn record_monthly_active_login(
 			.add(1),
 		)
 		.to_owned(),
+	)
+	.exec_without_returning(db)
+	.await?;
+
+	Ok(())
+}
+
+pub(crate) async fn record_daily_login(
+	db: &impl ConnectionTrait,
+	player_id: i32,
+) -> Result<(), DbErr> {
+	DailyLogin::insert(daily_login::ActiveModel {
+		player_id: Set(player_id),
+		day: Set(Utc::now().date_naive()),
+	})
+	.on_conflict(
+		OnConflict::columns([daily_login::Column::PlayerId, daily_login::Column::Day])
+			.do_nothing()
+			.to_owned(),
 	)
 	.exec_without_returning(db)
 	.await?;

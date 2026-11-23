@@ -23,6 +23,7 @@ pub mod cosmetic_group;
 pub mod cosmetic_group_allowed_slot;
 pub mod cosmetic_ownership_event;
 pub mod cosmetic_package;
+pub mod daily_login;
 pub mod daily_playtime;
 pub mod discount;
 pub mod discount_redemption;
