@@ -39,7 +39,7 @@ use crate::{
 		settings::SharedSettings,
 		v0::{
 			account::links::{self, DiscordOAuth},
-			cosmetics::CachedAssetInfo,
+			cosmetics::{CachedAssetInfo, spawn_catalog_notifier},
 			oidc::{self, AuthorizationCode, OidcSigningKey},
 		},
 		v1::SyncStorage,
@@ -47,6 +47,7 @@ use crate::{
 	},
 	commands::ServeArgs,
 	paynow::PayNowClient,
+	utils::debounce::Debouncer,
 };
 
 /// How long to wait for a free database connection before giving up.
@@ -142,6 +143,7 @@ pub(super) struct ApiState {
 	pub(super) ping_limit: RateLimiter<i32>,
 	pub(super) ping_clear_limit: RateLimiter<i32>,
 	pub(super) ping_reply_limit: RateLimiter<i32>,
+	pub(super) catalog_updates: Debouncer,
 }
 
 #[derive(Clone)]
@@ -169,6 +171,7 @@ impl ApiState {
 		reap_open_play_sessions(&database).await;
 
 		let realtime = RealtimeState::default();
+		let catalog_updates = spawn_catalog_notifier(realtime.clone());
 		persistence::spawn_playtime_flush(database.clone(), realtime.playtime.clone());
 		analytics_rollup::spawn_analytics_rollup(database.clone());
 
@@ -304,6 +307,7 @@ impl ApiState {
 			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
 			database,
+			catalog_updates,
 		}
 	}
 

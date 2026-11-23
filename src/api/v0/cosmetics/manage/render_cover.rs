@@ -4,7 +4,7 @@ use aide::{
 	transform::TransformOperation,
 };
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use entities::sea_orm_active_enums::BodySlot;
+use entities::sea_orm_active_enums::{BodySlot, CosmeticType};
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,8 @@ pub enum RenderCoverError {
 	MissingAsset,
 	#[error("The cosmetic already has a cover; pass force=true to regenerate")]
 	CoverExists,
+	#[error("Nameplate covers can't be rendered; upload one with /set-cover instead")]
+	NameplateCover,
 	#[error("Failed to render cover: {0}")]
 	Render(String),
 	#[error("Database error: {0}")]
@@ -34,7 +36,9 @@ impl IntoResponse for RenderCoverError {
 		crate::api::admin_error_response(
 			match self {
 				Self::MissingCosmetic => StatusCode::NOT_FOUND,
-				Self::MissingAsset | Self::CoverExists => StatusCode::BAD_REQUEST,
+				Self::MissingAsset | Self::CoverExists | Self::NameplateCover => {
+					StatusCode::BAD_REQUEST
+				}
 				Self::Render(_) => StatusCode::BAD_GATEWAY,
 				Self::Database(_) | Self::S3(_) | Self::Store(_) => {
 					StatusCode::INTERNAL_SERVER_ERROR
@@ -106,6 +110,10 @@ async fn endpoint(
 		return Err(RenderCoverError::MissingCosmetic);
 	};
 
+	if cosmetic.r#type == CosmeticType::Nameplate {
+		return Err(RenderCoverError::NameplateCover);
+	}
+
 	if cosmetic.cover_asset_id.is_some() && !body.force {
 		return Err(RenderCoverError::CoverExists);
 	}
@@ -142,6 +150,8 @@ async fn endpoint(
 	active.cover_asset_id = Set(Some(cover_asset_id));
 	active.preview_asset_id = Set(preview_asset_id);
 	let updated = active.update(&state.database).await?;
+
+	crate::api::v0::cosmetics::notify_catalog_updated(&state);
 
 	Ok(Json(RenderCoverResponse {
 		cosmetic_id: updated.id,

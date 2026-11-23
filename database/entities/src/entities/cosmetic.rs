@@ -31,6 +31,8 @@ pub struct Model {
 	pub purchase_count: i32,
 	pub cover_asset_id: Option<i32>,
 	pub preview_asset_id: Option<i32>,
+	#[sea_orm(column_type = "Text", nullable)]
+	pub variant_key: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

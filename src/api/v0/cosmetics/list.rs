@@ -195,7 +195,7 @@ async fn endpoint(
 
 		let mut keys: HashMap<i32, SortKey> = HashMap::new();
 		for (cosmetic, ..) in &rows {
-			if is_redundant_variant(cosmetic.variant_name.as_deref()) {
+			if is_redundant_variant(cosmetic) {
 				continue;
 			}
 			let bucket_id = cosmetic

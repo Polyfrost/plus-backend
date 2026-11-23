@@ -1,3 +1,4 @@
+pub(crate) mod debounce;
 pub(crate) mod hash;
 pub(crate) mod money;
 pub(crate) mod pagination;

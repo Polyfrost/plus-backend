@@ -650,6 +650,7 @@ mod tests {
 			purchase_count: 0,
 			cover_asset_id: None,
 			preview_asset_id: None,
+			variant_key: None,
 		}
 	}
 

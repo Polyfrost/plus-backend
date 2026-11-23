@@ -281,6 +281,9 @@ pub enum ClientBoundPacket {
 		/// are we revoking stuff
 		revoked: bool,
 	},
+	CatalogUpdated {
+		version: i64,
+	},
 	FriendRequestReceived {
 		request_id: i32,
 		sender: Uuid,
