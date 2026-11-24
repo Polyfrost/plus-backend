@@ -24,7 +24,7 @@ pub(in crate::api) use self::{
 	instrumentation::Instrumentation,
 	persistence::{EquipmentPersistence, ParticleColorPersistence, PersistQueue},
 	realtime::{
-		ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
+		ActiveEmote, ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
 		RealtimeConnection, RealtimeState, effective_status,
 	},
 };

@@ -25,8 +25,9 @@ use uuid::Uuid;
 use crate::api::{
 	ApiState,
 	state::{
-		ConnectionId, EquipmentPersistence, ParticleColorPersistence, PlayerRuntimeState,
-		PlaytimeSession, RealtimeConnection, effective_status,
+		ActiveEmote, ConnectionId, EquipmentPersistence, ParticleColorPersistence,
+		PlayerRuntimeState, PlaytimeSession, RealtimeConnection, RealtimeState,
+		effective_status,
 	},
 	v0::{
 		account::{AuthenticatedPlayer, ClientKind, TokenAccess},
@@ -129,11 +130,45 @@ fn empty_snapshot(rejected: Vec<Uuid>, request_id: Option<u64>) -> ClientBoundPa
 	ClientBoundPacket::SubscriptionSnapshot {
 		equipped: HashMap::new(),
 		active_emotes: HashMap::new(),
+		active_emote_starts: HashMap::new(),
 		particle_colors: HashMap::new(),
 		users: Vec::new(),
 		rejected,
 		request_id,
 	}
+}
+
+#[derive(Debug, Default)]
+struct RuntimeSnapshot {
+	equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
+	active_emotes: HashMap<Uuid, i32>,
+	active_emote_starts: HashMap<Uuid, i64>,
+	particle_colors: HashMap<Uuid, i32>,
+	missing: Vec<Uuid>,
+}
+
+fn read_runtime(
+	player_runtime: &HashMap<Uuid, PlayerRuntimeState>,
+	players: &[Uuid],
+) -> RuntimeSnapshot {
+	let mut snapshot = RuntimeSnapshot::default();
+	for player in players {
+		let Some(runtime) = player_runtime.get(player) else {
+			snapshot.missing.push(*player);
+			continue;
+		};
+		snapshot.equipped.insert(*player, runtime.equipped.clone());
+		if let Some(emote) = runtime.active_emote {
+			snapshot.active_emotes.insert(*player, emote.emote_id);
+			snapshot
+				.active_emote_starts
+				.insert(*player, emote.started_at);
+		}
+		if let Some(color) = runtime.particle_color {
+			snapshot.particle_colors.insert(*player, color);
+		}
+	}
+	snapshot
 }
 
 pub(super) fn router() -> ApiRouter<ApiState> {
@@ -534,16 +569,14 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 	};
 
 	if !owner_still_connected {
+		end_emote_on_disconnect(&state.realtime, connection.owner).await;
 		let status_override = state
 			.realtime
 			.player_runtime
-			.write()
+			.read()
 			.await
-			.get_mut(&connection.owner)
-			.and_then(|runtime| {
-				runtime.active_emote = None;
-				runtime.status_override
-			});
+			.get(&connection.owner)
+			.and_then(|runtime| runtime.status_override);
 
 		crate::api::v0::sessions::expire_sessions_after_grace(state, connection.owner);
 		crate::api::v1::party::on_player_offline(state, connection.owner).await;
@@ -569,12 +602,11 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 	prune_player_runtime(state, orphaned).await;
 }
 
-async fn subscribe(
-	state: &ApiState,
+async fn watch_players(
+	realtime: &RealtimeState,
 	connection_id: ConnectionId,
 	players: Vec<Uuid>,
-	request_id: Option<u64>,
-) -> Result<ClientBoundPacket, WebsocketError> {
+) -> Option<(Vec<Uuid>, Vec<Uuid>)> {
 	let mut seen = HashSet::new();
 	let requested = players
 		.into_iter()
@@ -582,10 +614,8 @@ async fn subscribe(
 		.collect::<Vec<_>>();
 
 	let (newly_subscribed, rejected) = {
-		let mut connections = state.realtime.connections.write().await;
-		let Some(connection) = connections.get_mut(&connection_id) else {
-			return Ok(empty_snapshot(Vec::new(), request_id));
-		};
+		let mut connections = realtime.connections.write().await;
+		let connection = connections.get_mut(&connection_id)?;
 
 		let mut newly_subscribed = Vec::new();
 		let mut rejected = Vec::new();
@@ -607,6 +637,28 @@ async fn subscribe(
 		(newly_subscribed, rejected)
 	};
 
+	if !newly_subscribed.is_empty() {
+		let mut watchers = realtime.watchers.write().await;
+		for player in &newly_subscribed {
+			watchers.entry(*player).or_default().insert(connection_id);
+		}
+	}
+
+	Some((newly_subscribed, rejected))
+}
+
+async fn subscribe(
+	state: &ApiState,
+	connection_id: ConnectionId,
+	players: Vec<Uuid>,
+	request_id: Option<u64>,
+) -> Result<ClientBoundPacket, WebsocketError> {
+	let Some((newly_subscribed, rejected)) =
+		watch_players(&state.realtime, connection_id, players).await
+	else {
+		return Ok(empty_snapshot(Vec::new(), request_id));
+	};
+
 	if !rejected.is_empty() {
 		warn!(
 			"Connection {connection_id} rejected {} subscription(s) (cap {MAX_PLAYER_SUBSCRIPTIONS})",
@@ -618,33 +670,16 @@ async fn subscribe(
 		return Ok(empty_snapshot(rejected, request_id));
 	}
 
-	{
-		let mut watchers = state.realtime.watchers.write().await;
-		for player in &newly_subscribed {
-			watchers.entry(*player).or_default().insert(connection_id);
-		}
-	}
-
-	let mut equipped = HashMap::new();
-	let mut active_emotes = HashMap::new();
-	let mut particle_colors = HashMap::new();
-	let mut missing = Vec::new();
-	{
-		let player_runtime = state.realtime.player_runtime.read().await;
-		for player in &newly_subscribed {
-			if let Some(runtime) = player_runtime.get(player) {
-				equipped.insert(*player, runtime.equipped.clone());
-				if let Some(emote_id) = runtime.active_emote {
-					active_emotes.insert(*player, emote_id);
-				}
-				if let Some(color) = runtime.particle_color {
-					particle_colors.insert(*player, color);
-				}
-			} else {
-				missing.push(*player);
-			}
-		}
-	}
+	let RuntimeSnapshot {
+		mut equipped,
+		active_emotes,
+		active_emote_starts,
+		mut particle_colors,
+		missing,
+	} = read_runtime(
+		&*state.realtime.player_runtime.read().await,
+		&newly_subscribed,
+	);
 
 	let loaded_equipped = load_equipped_for_players(state, &missing).await?;
 	let loaded_particle_colors =
@@ -692,6 +727,7 @@ async fn subscribe(
 	Ok(ClientBoundPacket::SubscriptionSnapshot {
 		equipped,
 		active_emotes,
+		active_emote_starts,
 		particle_colors,
 		users,
 		rejected,
@@ -822,7 +858,7 @@ pub(crate) async fn unequip_revoked(state: &ApiState, revoked: &HashMap<Uuid, Ve
 			slot: slot.clone(),
 			cosmetic_id: None,
 		};
-		broadcast_to_watchers(state, player, packet).await;
+		broadcast_to_watchers(&state.realtime, player, packet).await;
 		send_to_owner(state, player, packet).await;
 	}
 }
@@ -863,7 +899,7 @@ pub(crate) async fn announce_equipment_change(
 		slot: slot.clone(),
 		cosmetic_id,
 	};
-	broadcast_to_watchers(state, player, packet).await;
+	broadcast_to_watchers(&state.realtime, player, packet).await;
 	if notify_owner {
 		send_to_owner(state, player, packet).await;
 	}
@@ -892,7 +928,7 @@ pub(crate) async fn announce_particle_color_change(
 	notify_owner: bool,
 ) {
 	let packet = || ClientBoundPacket::PlayerParticleColorChanged { player, color };
-	broadcast_to_watchers(state, player, packet).await;
+	broadcast_to_watchers(&state.realtime, player, packet).await;
 	if notify_owner {
 		send_to_owner(state, player, packet).await;
 	}
@@ -903,10 +939,12 @@ pub(crate) async fn announce_presence(
 	player: Uuid,
 	status: PlayerStatus,
 ) {
-	broadcast_to_watchers(state, player, || ClientBoundPacket::PlayerPresence {
-		player,
-		online: status != PlayerStatus::Offline,
-		status,
+	broadcast_to_watchers(&state.realtime, player, || {
+		ClientBoundPacket::PlayerPresence {
+			player,
+			online: status != PlayerStatus::Offline,
+			status,
+		}
 	})
 	.await;
 }
@@ -922,12 +960,11 @@ pub(crate) async fn broadcast_all(
 }
 
 async fn broadcast_to_watchers(
-	state: &ApiState,
+	realtime: &RealtimeState,
 	player: Uuid,
 	mut make_packet: impl FnMut() -> ClientBoundPacket,
 ) {
-	let connection_ids = state
-		.realtime
+	let connection_ids = realtime
 		.watchers
 		.read()
 		.await
@@ -935,11 +972,67 @@ async fn broadcast_to_watchers(
 		.map(|watchers| watchers.iter().copied().collect::<Vec<_>>())
 		.unwrap_or_default();
 
-	let mut connections = state.realtime.connections.write().await;
+	let mut connections = realtime.connections.write().await;
 	for connection_id in connection_ids {
 		if let Some(connection) = connections.get_mut(&connection_id) {
 			let _ = connection.tx.send(make_packet());
 		}
+	}
+}
+
+async fn start_emote(
+	realtime: &RealtimeState,
+	player: Uuid,
+	emote_id: i32,
+	started_at: i64,
+) {
+	realtime
+		.player_runtime
+		.write()
+		.await
+		.entry(player)
+		.or_default()
+		.active_emote = Some(ActiveEmote {
+		emote_id,
+		started_at,
+	});
+	broadcast_to_watchers(realtime, player, || ClientBoundPacket::PlayerEmoteStarted {
+		player,
+		emote_id,
+		start_time: Some(started_at),
+	})
+	.await;
+}
+
+async fn stop_emote(realtime: &RealtimeState, player: Uuid, emote_id: Option<i32>) {
+	{
+		let mut player_runtime = realtime.player_runtime.write().await;
+		let runtime = player_runtime.entry(player).or_default();
+		let active_id = runtime.active_emote.map(|emote| emote.emote_id);
+		if emote_id.is_some_and(|emote_id| active_id != Some(emote_id)) {
+			return;
+		}
+		runtime.active_emote = None;
+	}
+	broadcast_to_watchers(realtime, player, || ClientBoundPacket::PlayerEmoteStopped {
+		player,
+	})
+	.await;
+}
+
+async fn end_emote_on_disconnect(realtime: &RealtimeState, player: Uuid) {
+	let ended = realtime
+		.player_runtime
+		.write()
+		.await
+		.get_mut(&player)
+		.and_then(|runtime| runtime.active_emote.take())
+		.is_some();
+	if ended {
+		broadcast_to_watchers(realtime, player, || {
+			ClientBoundPacket::PlayerEmoteStopped { player }
+		})
+		.await;
 	}
 }
 
@@ -1041,35 +1134,16 @@ async fn handle_packet(
 		ServerBoundPacket::PlayEmote { emote_id } => {
 			validate_emote(state, player.id, emote_id).await?;
 
-			{
-				let mut player_runtime = state.realtime.player_runtime.write().await;
-				player_runtime
-					.entry(player.minecraft_uuid)
-					.or_default()
-					.active_emote = Some(emote_id);
-			}
-			broadcast_to_watchers(state, player.minecraft_uuid, || {
-				ClientBoundPacket::PlayerEmoteStarted {
-					player: player.minecraft_uuid,
-					emote_id,
-				}
-			})
+			start_emote(
+				&state.realtime,
+				player.minecraft_uuid,
+				emote_id,
+				Utc::now().timestamp_millis(),
+			)
 			.await;
 		}
-		ServerBoundPacket::StopEmote => {
-			{
-				let mut player_runtime = state.realtime.player_runtime.write().await;
-				player_runtime
-					.entry(player.minecraft_uuid)
-					.or_default()
-					.active_emote = None;
-			}
-			broadcast_to_watchers(state, player.minecraft_uuid, || {
-				ClientBoundPacket::PlayerEmoteStopped {
-					player: player.minecraft_uuid,
-				}
-			})
-			.await;
+		ServerBoundPacket::StopEmote { emote_id } => {
+			stop_emote(&state.realtime, player.minecraft_uuid, emote_id).await;
 		}
 		ServerBoundPacket::SetPartyState {
 			state: member_state,
@@ -1252,11 +1326,288 @@ fn listen_as_delegate(state: ApiState, owner: Uuid, ws: WebSocketUpgrade) -> Res
 mod tests {
 	use std::collections::{HashMap, HashSet};
 
+	use tokio::sync::mpsc;
 	use uuid::Uuid;
 
 	use super::{
-		ConnectionId, drop_watchers, shrink_map_if_sparse, shrink_set_if_sparse,
+		ActiveEmote, ClientBoundPacket, ConnectionId, PlayerRuntimeState,
+		RealtimeConnection, RealtimeState, drop_watchers, end_emote_on_disconnect,
+		read_runtime, shrink_map_if_sparse, shrink_set_if_sparse, start_emote,
+		stop_emote, watch_players,
 	};
+	use crate::api::v0::account::ClientKind;
+
+	async fn watch(
+		realtime: &RealtimeState,
+		player: Uuid,
+	) -> mpsc::UnboundedReceiver<ClientBoundPacket> {
+		let (tx, rx) = mpsc::unbounded_channel();
+		let connection_id = Uuid::new_v4();
+		realtime.connections.write().await.insert(
+			connection_id,
+			RealtimeConnection {
+				owner: Uuid::new_v4(),
+				tx,
+				subscriptions: HashSet::from([player]),
+				kind: ClientKind::Game,
+			},
+		);
+		realtime
+			.watchers
+			.write()
+			.await
+			.entry(player)
+			.or_default()
+			.insert(connection_id);
+		rx
+	}
+
+	async fn active_emote(realtime: &RealtimeState, player: Uuid) -> Option<ActiveEmote> {
+		realtime
+			.player_runtime
+			.read()
+			.await
+			.get(&player)
+			.and_then(|runtime| runtime.active_emote)
+	}
+
+	#[tokio::test]
+	async fn records_and_broadcasts_emote_start_time() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		let mut rx = watch(&realtime, player).await;
+
+		start_emote(&realtime, player, 7, 1_700_000_000_000).await;
+
+		assert_eq!(
+			active_emote(&realtime, player).await,
+			Some(ActiveEmote {
+				emote_id: 7,
+				started_at: 1_700_000_000_000
+			})
+		);
+		assert!(matches!(
+			rx.try_recv(),
+			Ok(ClientBoundPacket::PlayerEmoteStarted {
+				player: sent,
+				emote_id: 7,
+				start_time: Some(1_700_000_000_000),
+			}) if sent == player
+		));
+	}
+
+	#[test]
+	fn snapshot_carries_emote_start_times() {
+		let (dancing, idle, unknown) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+		let runtime = HashMap::from([
+			(
+				dancing,
+				PlayerRuntimeState {
+					active_emote: Some(ActiveEmote {
+						emote_id: 7,
+						started_at: 1_700_000_000_000,
+					}),
+					..Default::default()
+				},
+			),
+			(idle, PlayerRuntimeState::default()),
+		]);
+
+		let snapshot = read_runtime(&runtime, &[dancing, idle, unknown]);
+
+		assert_eq!(snapshot.active_emotes, HashMap::from([(dancing, 7)]));
+		assert_eq!(
+			snapshot.active_emote_starts,
+			HashMap::from([(dancing, 1_700_000_000_000)])
+		);
+		assert_eq!(snapshot.missing, vec![unknown]);
+		assert!(snapshot.equipped.contains_key(&idle));
+	}
+
+	#[tokio::test]
+	async fn stop_with_matching_emote_id_clears() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		start_emote(&realtime, player, 7, 1).await;
+		let mut rx = watch(&realtime, player).await;
+
+		stop_emote(&realtime, player, Some(7)).await;
+
+		assert_eq!(active_emote(&realtime, player).await, None);
+		assert!(matches!(
+			rx.try_recv(),
+			Ok(ClientBoundPacket::PlayerEmoteStopped { player: sent }) if sent == player
+		));
+	}
+
+	#[tokio::test]
+	async fn stop_with_stale_emote_id_is_ignored() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		start_emote(&realtime, player, 7, 1).await;
+		start_emote(&realtime, player, 8, 2).await;
+		let mut rx = watch(&realtime, player).await;
+
+		stop_emote(&realtime, player, Some(7)).await;
+
+		assert_eq!(
+			active_emote(&realtime, player).await,
+			Some(ActiveEmote {
+				emote_id: 8,
+				started_at: 2
+			})
+		);
+		assert!(rx.try_recv().is_err());
+	}
+
+	#[tokio::test]
+	async fn stop_with_emote_id_and_nothing_active_is_ignored() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		let mut rx = watch(&realtime, player).await;
+
+		stop_emote(&realtime, player, Some(7)).await;
+
+		assert_eq!(active_emote(&realtime, player).await, None);
+		assert!(rx.try_recv().is_err());
+	}
+
+	#[tokio::test]
+	async fn stop_without_emote_id_clears() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		start_emote(&realtime, player, 7, 1).await;
+		let mut rx = watch(&realtime, player).await;
+
+		stop_emote(&realtime, player, None).await;
+
+		assert_eq!(active_emote(&realtime, player).await, None);
+		assert!(matches!(
+			rx.try_recv(),
+			Ok(ClientBoundPacket::PlayerEmoteStopped { player: sent }) if sent == player
+		));
+	}
+
+	async fn connect(
+		realtime: &RealtimeState,
+		owner: Uuid,
+	) -> (ConnectionId, mpsc::UnboundedReceiver<ClientBoundPacket>) {
+		let (tx, rx) = mpsc::unbounded_channel();
+		let connection_id = Uuid::new_v4();
+		realtime.connections.write().await.insert(
+			connection_id,
+			RealtimeConnection {
+				owner,
+				tx,
+				subscriptions: HashSet::new(),
+				kind: ClientKind::Game,
+			},
+		);
+		(connection_id, rx)
+	}
+
+	#[tokio::test]
+	async fn partymate_subscribing_mid_emote_gets_its_start_and_later_stop() {
+		let realtime = RealtimeState::default();
+		let (viewer, dancer) = (Uuid::new_v4(), Uuid::new_v4());
+		start_emote(&realtime, dancer, 7, 1_700_000_000_000).await;
+		let (connection_id, mut rx) = connect(&realtime, viewer).await;
+
+		let (newly_subscribed, rejected) =
+			watch_players(&realtime, connection_id, vec![dancer, dancer])
+				.await
+				.expect("connection should exist");
+		let snapshot =
+			read_runtime(&*realtime.player_runtime.read().await, &newly_subscribed);
+
+		assert_eq!(newly_subscribed, vec![dancer]);
+		assert!(rejected.is_empty());
+		assert_eq!(snapshot.active_emotes, HashMap::from([(dancer, 7)]));
+		assert_eq!(
+			snapshot.active_emote_starts,
+			HashMap::from([(dancer, 1_700_000_000_000)])
+		);
+
+		stop_emote(&realtime, dancer, Some(7)).await;
+
+		assert!(matches!(
+			rx.try_recv(),
+			Ok(ClientBoundPacket::PlayerEmoteStopped { player: sent }) if sent == dancer
+		));
+	}
+
+	#[tokio::test]
+	async fn resubscribing_reports_nothing_new() {
+		let realtime = RealtimeState::default();
+		let dancer = Uuid::new_v4();
+		let (connection_id, _rx) = connect(&realtime, Uuid::new_v4()).await;
+
+		watch_players(&realtime, connection_id, vec![dancer]).await;
+		let again = watch_players(&realtime, connection_id, vec![dancer]).await;
+
+		assert_eq!(again, Some((Vec::new(), Vec::new())));
+	}
+
+	#[tokio::test]
+	async fn watching_needs_a_live_connection() {
+		let realtime = RealtimeState::default();
+
+		let result = watch_players(&realtime, Uuid::new_v4(), vec![Uuid::new_v4()]).await;
+
+		assert_eq!(result, None);
+		assert!(realtime.watchers.read().await.is_empty());
+	}
+
+	#[tokio::test]
+	async fn player_watching_itself_receives_its_own_emote() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		let (connection_id, mut rx) = connect(&realtime, player).await;
+		watch_players(&realtime, connection_id, vec![player]).await;
+
+		start_emote(&realtime, player, 7, 1_700_000_000_000).await;
+
+		assert!(matches!(
+			rx.try_recv(),
+			Ok(ClientBoundPacket::PlayerEmoteStarted {
+				player: sent,
+				emote_id: 7,
+				start_time: Some(1_700_000_000_000),
+			}) if sent == player
+		));
+	}
+
+	#[tokio::test]
+	async fn disconnecting_mid_emote_tells_watchers_it_stopped() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		start_emote(&realtime, player, 7, 1).await;
+		let mut rx = watch(&realtime, player).await;
+
+		end_emote_on_disconnect(&realtime, player).await;
+
+		assert_eq!(active_emote(&realtime, player).await, None);
+		assert!(matches!(
+			rx.try_recv(),
+			Ok(ClientBoundPacket::PlayerEmoteStopped { player: sent }) if sent == player
+		));
+	}
+
+	#[tokio::test]
+	async fn disconnecting_without_an_emote_sends_nothing() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		realtime
+			.player_runtime
+			.write()
+			.await
+			.insert(player, PlayerRuntimeState::default());
+		let mut rx = watch(&realtime, player).await;
+
+		end_emote_on_disconnect(&realtime, player).await;
+
+		assert!(rx.try_recv().is_err());
+	}
 
 	#[test]
 	fn reports_players_left_without_watchers() {

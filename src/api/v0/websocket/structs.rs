@@ -190,7 +190,10 @@ pub enum ServerBoundPacket {
 	PlayEmote {
 		emote_id: i32,
 	},
-	StopEmote,
+	StopEmote {
+		#[serde(default)]
+		emote_id: Option<i32>,
+	},
 	SetPartyState {
 		state: MemberState,
 	},
@@ -244,6 +247,7 @@ pub enum ClientBoundPacket {
 	SubscriptionSnapshot {
 		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
 		active_emotes: HashMap<Uuid, i32>,
+		active_emote_starts: HashMap<Uuid, i64>,
 		particle_colors: HashMap<Uuid, i32>,
 		/// The subset of subscribed players that currently have a live PolyPlus
 		/// session connected. Used to render a "uses PolyPlus" indicator.
@@ -270,6 +274,7 @@ pub enum ClientBoundPacket {
 	PlayerEmoteStarted {
 		player: Uuid,
 		emote_id: i32,
+		start_time: Option<i64>,
 	},
 	PlayerEmoteStopped {
 		player: Uuid,
@@ -481,6 +486,7 @@ mod tests {
 		let packet = ClientBoundPacket::SubscriptionSnapshot {
 			equipped: HashMap::from([(player, HashMap::from([(BodySlot::Cape, 1)]))]),
 			active_emotes: HashMap::from([(player, 6)]),
+			active_emote_starts: HashMap::from([(player, 1_700_000_000_000)]),
 			particle_colors: HashMap::from([(player, 0xFF_0000)]),
 			users: vec![player],
 			rejected: Vec::new(),
@@ -490,6 +496,11 @@ mod tests {
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");
 		assert_eq!(serialized["type"], "SubscriptionSnapshot");
 		assert_eq!(serialized["equipped"][player.to_string()]["cape"], 1);
+		assert_eq!(serialized["active_emotes"][player.to_string()], 6);
+		assert_eq!(
+			serialized["active_emote_starts"][player.to_string()],
+			1_700_000_000_000_i64
+		);
 		assert_eq!(serialized["users"][0], player.to_string());
 		assert_eq!(serialized["rejected"].as_array().map(Vec::len), Some(0));
 		assert_eq!(serialized["request_id"], 3);
@@ -552,6 +563,89 @@ mod tests {
 		let error = super::WebsocketError::from(PartyError::HostOffline);
 		assert_eq!(error.error_code(), "host_offline");
 		assert!(super::WebsocketError::ERROR_CODES.contains(&error.error_code()));
+	}
+
+	#[test]
+	fn parses_stop_emote_without_emote_id() {
+		let packet: ServerBoundPacket =
+			serde_json::from_str(r#"{"type":"StopEmote"}"#).expect("packet should parse");
+
+		assert!(matches!(
+			packet,
+			ServerBoundPacket::StopEmote { emote_id: None }
+		));
+	}
+
+	#[test]
+	fn parses_stop_emote_with_null_emote_id() {
+		let packet: ServerBoundPacket =
+			serde_json::from_str(r#"{"type":"StopEmote","emote_id":null}"#)
+				.expect("packet should parse");
+
+		assert!(matches!(
+			packet,
+			ServerBoundPacket::StopEmote { emote_id: None }
+		));
+	}
+
+	#[test]
+	fn parses_stop_emote_with_emote_id() {
+		let packet: ServerBoundPacket =
+			serde_json::from_str(r#"{"type":"StopEmote","emote_id":12}"#)
+				.expect("packet should parse");
+
+		assert!(matches!(
+			packet,
+			ServerBoundPacket::StopEmote { emote_id: Some(12) }
+		));
+	}
+
+	#[test]
+	fn parses_play_emote_unchanged() {
+		let packet: ServerBoundPacket =
+			serde_json::from_str(r#"{"type":"PlayEmote","emote_id":12}"#)
+				.expect("packet should parse");
+
+		assert!(matches!(
+			packet,
+			ServerBoundPacket::PlayEmote { emote_id: 12 }
+		));
+	}
+
+	#[test]
+	fn serializes_player_emote_started_with_start_time() {
+		let player = Uuid::nil();
+		let packet = ClientBoundPacket::PlayerEmoteStarted {
+			player,
+			emote_id: 12,
+			start_time: Some(1_700_000_000_000),
+		};
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(
+			serialized,
+			serde_json::json!({
+				"type": "PlayerEmoteStarted",
+				"player": player.to_string(),
+				"emote_id": 12,
+				"start_time": 1_700_000_000_000_i64
+			})
+		);
+	}
+
+	#[test]
+	fn serializes_player_emote_stopped_unchanged() {
+		let player = Uuid::nil();
+		let packet = ClientBoundPacket::PlayerEmoteStopped { player };
+
+		let serialized = serde_json::to_value(packet).expect("packet should serialize");
+		assert_eq!(
+			serialized,
+			serde_json::json!({
+				"type": "PlayerEmoteStopped",
+				"player": player.to_string()
+			})
+		);
 	}
 
 	#[test]

@@ -67,10 +67,16 @@ pub struct RealtimeConnection {
 #[derive(Debug, Clone, Default)]
 pub struct PlayerRuntimeState {
 	pub equipped: HashMap<BodySlot, i32>,
-	pub active_emote: Option<i32>,
+	pub active_emote: Option<ActiveEmote>,
 	pub particle_color: Option<i32>,
 	/// The status the player picked, `None` meaning derive it from their connection.
 	pub status_override: Option<PlayerStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveEmote {
+	pub emote_id: i32,
+	pub started_at: i64,
 }
 
 /// The status other players see: offline while disconnected, otherwise the
