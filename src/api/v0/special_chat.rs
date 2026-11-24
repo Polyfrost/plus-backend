@@ -154,7 +154,17 @@ async fn get_or_create_special_chat_group(
 		return Ok(Some((false, group, targets)));
 	}
 
-	if pending_target {
+	// A Special Chat converted to a normal chat stays the player's only chat with staff.
+	let converted = GroupMembers::find()
+		.filter(group_members::Column::UserId.eq(player.id))
+		.inner_join(Groups)
+		.filter(groups::Column::Kind.eq(GroupKind::Group))
+		.filter(groups::Column::OwnerId.is_in(targets.iter().map(|target| target.id)))
+		.one(&txn)
+		.await
+		.map_err(GroupError::from)?;
+
+	if pending_target || converted.is_some() {
 		txn.rollback().await.map_err(GroupError::from)?;
 		return Ok(None);
 	}
