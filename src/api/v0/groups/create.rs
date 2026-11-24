@@ -120,8 +120,8 @@ fn claim_doc(op: TransformOperation) -> TransformOperation {
 		.description(
 			"Claims ownership of the eagerly-created Special Chat group (see \
 			 GET /special-chat), turning it into an ordinary group chat you \
-			 own - a fresh Special Chat group is created the next time one is \
-			 needed. Only works on that specific group.",
+			 own. No new Special Chat group is created for that player afterwards. \
+			 Only works on that specific group.",
 		)
 		.tag("groups")
 }
