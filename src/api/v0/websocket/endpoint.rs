@@ -26,7 +26,7 @@ use crate::api::{
 	ApiState,
 	state::{
 		ConnectionId, EquipmentPersistence, ParticleColorPersistence, PlayerRuntimeState,
-		PlaytimeSession, RealtimeConnection, effective_status,
+		PlaytimeSession, RealtimeConnection, effective_status, shows_badge,
 	},
 	v0::{
 		account::{AuthenticatedPlayer, ClientKind, TokenAccess},
@@ -249,10 +249,10 @@ async fn load_equipped_for_players(
 	Ok(equipped)
 }
 
-async fn load_particle_colors_for_players(
+async fn load_profiles_for_players(
 	state: &ApiState,
 	players: &[Uuid],
-) -> Result<HashMap<Uuid, Option<i32>>, WebsocketError> {
+) -> Result<HashMap<Uuid, (Option<i32>, Option<PlayerStatus>)>, WebsocketError> {
 	use entities::{prelude::*, user};
 
 	if players.is_empty() {
@@ -264,7 +264,7 @@ async fn load_particle_colors_for_players(
 		.all(&state.database)
 		.await?
 		.into_iter()
-		.map(|user| (user.minecraft_uuid, user.particle_color))
+		.map(|user| (user.minecraft_uuid, (user.particle_color, user.status_override)))
 		.collect())
 }
 
@@ -647,30 +647,29 @@ async fn subscribe(
 	}
 
 	let loaded_equipped = load_equipped_for_players(state, &missing).await?;
-	let loaded_particle_colors =
-		load_particle_colors_for_players(state, &missing).await?;
+	let loaded_profiles = load_profiles_for_players(state, &missing).await?;
 	{
 		let mut player_runtime = state.realtime.player_runtime.write().await;
 		for (player, equipped) in &loaded_equipped {
+			let (particle_color, status_override) =
+				loaded_profiles.get(player).copied().unwrap_or_default();
 			player_runtime
 				.entry(*player)
 				.or_insert_with(|| PlayerRuntimeState {
 					equipped: equipped.clone(),
 					active_emote: None,
-					particle_color: loaded_particle_colors.get(player).copied().flatten(),
-					status_override: None,
+					particle_color,
+					status_override,
 				});
 		}
 	}
 	equipped.extend(loaded_equipped);
-	for (player, color) in loaded_particle_colors {
+	for (player, (color, _)) in loaded_profiles {
 		if let Some(color) = color {
 			particle_colors.insert(player, color);
 		}
 	}
 
-	// A player is a live PolyPlus user if they hold a connection and have not
-	// chosen to appear offline.
 	let users = {
 		let connections_by_owner = state.realtime.connections_by_owner.read().await;
 		let player_runtime = state.realtime.player_runtime.read().await;
@@ -681,10 +680,7 @@ async fn subscribe(
 				let status_override = player_runtime
 					.get(player)
 					.and_then(|runtime| runtime.status_override);
-				effective_status(
-					connections_by_owner.contains_key(player),
-					status_override,
-				) != PlayerStatus::Offline
+				shows_badge(connections_by_owner.contains_key(player), status_override)
 			})
 			.collect::<Vec<_>>()
 	};

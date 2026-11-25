@@ -245,8 +245,8 @@ pub enum ClientBoundPacket {
 		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
 		active_emotes: HashMap<Uuid, i32>,
 		particle_colors: HashMap<Uuid, i32>,
-		/// The subset of subscribed players that currently have a live PolyPlus
-		/// session connected. Used to render a "uses PolyPlus" indicator.
+		/// The subset of subscribed players to render a "uses PolyPlus" indicator for:
+		/// those with a live session, plus those appearing offline whether connected or not.
 		users: Vec<Uuid>,
 		rejected: Vec<Uuid>,
 		request_id: Option<u64>,
