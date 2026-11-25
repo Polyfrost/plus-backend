@@ -85,6 +85,10 @@ pub fn effective_status(
 	status_override.unwrap_or(PlayerStatus::Online)
 }
 
+pub fn shows_badge(connected: bool, status_override: Option<PlayerStatus>) -> bool {
+	connected || status_override == Some(PlayerStatus::Offline)
+}
+
 #[cfg(test)]
 mod status_tests {
 	use super::*;
@@ -97,6 +101,15 @@ mod status_tests {
 		assert_eq!(effective_status(true, None), Online);
 		assert_eq!(effective_status(true, Some(Offline)), Offline);
 		assert_eq!(effective_status(true, Some(Online)), Online);
+	}
+
+	#[test]
+	fn appear_offline_badge_ignores_connection() {
+		use PlayerStatus::*;
+		assert_eq!(shows_badge(true, Some(Offline)), shows_badge(false, Some(Offline)));
+		assert!(shows_badge(false, Some(Offline)));
+		assert!(shows_badge(true, None));
+		assert!(!shows_badge(false, None));
 	}
 }
 

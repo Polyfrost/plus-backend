@@ -18,7 +18,9 @@ use sea_orm::{ActiveValue::Set, EntityTrait as _};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{
-	ApiState, state::effective_status, v0::account::AuthenticatedPlayer,
+	ApiState,
+	state::{effective_status, shows_badge},
+	v0::account::AuthenticatedPlayer,
 	v0::websocket::announce_presence,
 };
 
@@ -116,21 +118,25 @@ async fn endpoint(
 
 	let owner = player.minecraft_uuid;
 	let connected = state.realtime.connections_by_owner.read().await.contains_key(&owner);
-	let changed = state
+	let (status_changed, badge_changed) = state
 		.realtime
 		.player_runtime
 		.write()
 		.await
 		.get_mut(&owner)
-		.and_then(|runtime| {
-			let before = effective_status(connected, runtime.status_override);
-			runtime.status_override = status_override;
-			let after = effective_status(connected, status_override);
-			(before != after).then_some(after)
-		});
+		.map(|runtime| {
+			let before = std::mem::replace(&mut runtime.status_override, status_override);
+			(
+				effective_status(connected, before) != effective_status(connected, status_override),
+				shows_badge(connected, before) != shows_badge(connected, status_override),
+			)
+		})
+		.unwrap_or_default();
 
-	if let Some(status) = changed {
-		announce_presence(&state, owner, status).await;
+	if status_changed || badge_changed {
+		announce_presence(&state, owner, connected, status_override).await;
+	}
+	if status_changed {
 		crate::api::v1::party::refresh_party(&state, owner).await;
 	}
 

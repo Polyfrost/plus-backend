@@ -245,9 +245,10 @@ pub enum ClientBoundPacket {
 		equipped: HashMap<Uuid, HashMap<BodySlot, i32>>,
 		active_emotes: HashMap<Uuid, i32>,
 		particle_colors: HashMap<Uuid, i32>,
-		/// The subset of subscribed players that currently have a live PolyPlus
-		/// session connected. Used to render a "uses PolyPlus" indicator.
 		users: Vec<Uuid>,
+		/// The subset of subscribed players to render a "uses PolyPlus" indicator for:
+		/// those with a live session, plus those appearing offline whether connected or not.
+		badges: Vec<Uuid>,
 		rejected: Vec<Uuid>,
 		request_id: Option<u64>,
 	},
@@ -257,6 +258,7 @@ pub enum ClientBoundPacket {
 		/// Kept for older clients
 		online: bool,
 		status: PlayerStatus,
+		badge: bool,
 	},
 	PlayerCosmeticEquipped {
 		player: Uuid,
@@ -482,7 +484,8 @@ mod tests {
 			equipped: HashMap::from([(player, HashMap::from([(BodySlot::Cape, 1)]))]),
 			active_emotes: HashMap::from([(player, 6)]),
 			particle_colors: HashMap::from([(player, 0xFF_0000)]),
-			users: vec![player],
+			users: Vec::new(),
+			badges: vec![player],
 			rejected: Vec::new(),
 			request_id: Some(3),
 		};
@@ -490,7 +493,8 @@ mod tests {
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");
 		assert_eq!(serialized["type"], "SubscriptionSnapshot");
 		assert_eq!(serialized["equipped"][player.to_string()]["cape"], 1);
-		assert_eq!(serialized["users"][0], player.to_string());
+		assert_eq!(serialized["users"].as_array().map(Vec::len), Some(0));
+		assert_eq!(serialized["badges"][0], player.to_string());
 		assert_eq!(serialized["rejected"].as_array().map(Vec::len), Some(0));
 		assert_eq!(serialized["request_id"], 3);
 	}
@@ -561,6 +565,7 @@ mod tests {
 			player,
 			online: true,
 			status: PlayerStatus::Online,
+			badge: true,
 		};
 
 		let serialized = serde_json::to_value(packet).expect("packet should serialize");
@@ -568,5 +573,6 @@ mod tests {
 		assert_eq!(serialized["player"], player.to_string());
 		assert_eq!(serialized["online"], true);
 		assert_eq!(serialized["status"], "online");
+		assert_eq!(serialized["badge"], true);
 	}
 }
