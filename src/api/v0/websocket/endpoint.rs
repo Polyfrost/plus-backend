@@ -131,6 +131,7 @@ fn empty_snapshot(rejected: Vec<Uuid>, request_id: Option<u64>) -> ClientBoundPa
 		active_emotes: HashMap::new(),
 		particle_colors: HashMap::new(),
 		users: Vec::new(),
+		badges: Vec::new(),
 		rejected,
 		request_id,
 	}
@@ -413,7 +414,7 @@ async fn register_connection(
 	// unless they chose to stay offline.
 	let status = effective_status(true, status_override);
 	if is_first_connection && status != PlayerStatus::Offline {
-		announce_presence(state, owner, status).await;
+		announce_presence(state, owner, true, status_override).await;
 	}
 
 	if is_first_connection {
@@ -551,7 +552,7 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		// Notify anyone watching this player that they are now offline, unless
 		// they already appeared offline.
 		if effective_status(true, status_override) != PlayerStatus::Offline {
-			announce_presence(state, connection.owner, PlayerStatus::Offline).await;
+			announce_presence(state, connection.owner, false, status_override).await;
 		}
 	}
 
@@ -670,26 +671,31 @@ async fn subscribe(
 		}
 	}
 
-	let users = {
+	let mut users = Vec::new();
+	let mut badges = Vec::new();
+	{
 		let connections_by_owner = state.realtime.connections_by_owner.read().await;
 		let player_runtime = state.realtime.player_runtime.read().await;
-		newly_subscribed
-			.iter()
-			.copied()
-			.filter(|player| {
-				let status_override = player_runtime
-					.get(player)
-					.and_then(|runtime| runtime.status_override);
-				shows_badge(connections_by_owner.contains_key(player), status_override)
-			})
-			.collect::<Vec<_>>()
-	};
+		for &player in &newly_subscribed {
+			let connected = connections_by_owner.contains_key(&player);
+			let status_override = player_runtime
+				.get(&player)
+				.and_then(|runtime| runtime.status_override);
+			if effective_status(connected, status_override) != PlayerStatus::Offline {
+				users.push(player);
+			}
+			if shows_badge(connected, status_override) {
+				badges.push(player);
+			}
+		}
+	}
 
 	Ok(ClientBoundPacket::SubscriptionSnapshot {
 		equipped,
 		active_emotes,
 		particle_colors,
 		users,
+		badges,
 		rejected,
 		request_id,
 	})
@@ -897,12 +903,15 @@ pub(crate) async fn announce_particle_color_change(
 pub(crate) async fn announce_presence(
 	state: &ApiState,
 	player: Uuid,
-	status: PlayerStatus,
+	connected: bool,
+	status_override: Option<PlayerStatus>,
 ) {
+	let status = effective_status(connected, status_override);
 	broadcast_to_watchers(state, player, || ClientBoundPacket::PlayerPresence {
 		player,
 		online: status != PlayerStatus::Offline,
 		status,
+		badge: shows_badge(connected, status_override),
 	})
 	.await;
 }
