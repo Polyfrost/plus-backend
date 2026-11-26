@@ -9,6 +9,7 @@ pub struct Model {
 	pub user_id: i32,
 	pub joined_at: DateTimeWithTimeZone,
 	pub voice_hard_muted: bool,
+	pub soundboard_muted: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

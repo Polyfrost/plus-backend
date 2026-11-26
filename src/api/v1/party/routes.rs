@@ -12,9 +12,10 @@ use axum::{
 	response::{IntoResponse, Response},
 };
 use entities::{
-	parties,
+	parties, party_members,
 	prelude::*,
 	sea_orm_active_enums::{PartyInvitePolicy, PartyVoiceMode},
+	user,
 };
 use schemars::JsonSchema;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
@@ -25,8 +26,8 @@ use super::{
 	PartyError,
 	models::{Party, PartyLeftReason},
 	roster::{
-		broadcast, create_party, current_party, disband, find_member, party_view,
-		remove_member, require_leader, require_party, room_name, touch,
+		Member, broadcast, create_party, current_party, disband, find_member,
+		party_view, remove_member, require_leader, require_party, room_name, touch,
 	},
 };
 use crate::api::{ApiState, eos::spawn_with_retries, v0::account::AuthenticatedPlayer};
@@ -47,6 +48,11 @@ struct LeaderBody {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct HardMuteBody {
 	hard_muted: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SoundboardMuteBody {
+	muted: bool,
 }
 
 fn get_doc(op: TransformOperation) -> TransformOperation {
@@ -118,6 +124,16 @@ fn hard_mute_doc(op: TransformOperation) -> TransformOperation {
 		.tag("party")
 }
 
+fn soundboard_mute_doc(op: TransformOperation) -> TransformOperation {
+	op.id("soundboardMutePartyMember")
+		.summary("Mute or unmute a member's soundboard")
+		.description(
+			"Leader only. Clients stop sending and playing that member's soundboard \
+			 sounds while `soundboard_muted` is set. Their voice is not affected.",
+		)
+		.tag("party")
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.api_route(
@@ -139,6 +155,10 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 		.api_route(
 			"/party/members/{player}/voice",
 			put_with(self::hard_mute, self::hard_mute_doc),
+		)
+		.api_route(
+			"/party/members/{player}/soundboard",
+			put_with(self::soundboard_mute, self::soundboard_mute_doc),
 		)
 }
 
@@ -281,6 +301,39 @@ async fn kick(
 	Ok(StatusCode::NO_CONTENT)
 }
 
+async fn led_member(
+	state: &ApiState,
+	player: &user::Model,
+	target: Uuid,
+) -> Result<(parties::Model, Member), PartyError> {
+	let (party, _) = require_party(state, player.id).await?;
+	require_leader(&party, player)?;
+	let member = find_member(state, party.id, target).await?;
+	Ok((party, member))
+}
+
+fn hard_mute_change(
+	membership: party_members::Model,
+	hard_muted: bool,
+) -> Option<party_members::ActiveModel> {
+	(membership.voice_hard_muted != hard_muted).then(|| {
+		let mut active: party_members::ActiveModel = membership.into();
+		active.voice_hard_muted = Set(hard_muted);
+		active
+	})
+}
+
+fn soundboard_mute_change(
+	membership: party_members::Model,
+	muted: bool,
+) -> Option<party_members::ActiveModel> {
+	(membership.soundboard_muted != muted).then(|| {
+		let mut active: party_members::ActiveModel = membership.into();
+		active.soundboard_muted = Set(muted);
+		active
+	})
+}
+
 #[tracing::instrument(level = "debug", skip(state))]
 async fn hard_mute(
 	State(state): State<ApiState>,
@@ -290,13 +343,9 @@ async fn hard_mute(
 ) -> Result<StatusCode, PartyError> {
 	let _guard = state.party.lock().await;
 
-	let (party, _) = require_party(&state, player.id).await?;
-	require_leader(&party, &player)?;
-	let (membership, user) = find_member(&state, party.id, target).await?;
+	let (party, (membership, user)) = led_member(&state, &player, target).await?;
 
-	if membership.voice_hard_muted != body.hard_muted {
-		let mut active: entities::party_members::ActiveModel = membership.into();
-		active.voice_hard_muted = Set(body.hard_muted);
+	if let Some(active) = hard_mute_change(membership, body.hard_muted) {
 		active.update(&state.database).await?;
 		touch(&state.database, party.id).await?;
 		broadcast(&state, party.id).await?;
@@ -314,4 +363,134 @@ async fn hard_mute(
 	}
 
 	Ok(StatusCode::NO_CONTENT)
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+async fn soundboard_mute(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	Path(target): Path<Uuid>,
+	Json(body): Json<SoundboardMuteBody>,
+) -> Result<StatusCode, PartyError> {
+	let _guard = state.party.lock().await;
+
+	let (party, (membership, _)) = led_member(&state, &player, target).await?;
+
+	if let Some(active) = soundboard_mute_change(membership, body.muted) {
+		active.update(&state.database).await?;
+		touch(&state.database, party.id).await?;
+		broadcast(&state, party.id).await?;
+	}
+
+	Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+	use chrono::Utc;
+	use sea_orm::{ActiveValue::Unchanged, TryIntoModel};
+
+	use super::*;
+	use crate::api::v1::party::roster::member_view;
+
+	fn player(id: i32) -> user::Model {
+		user::Model {
+			id,
+			minecraft_uuid: Uuid::new_v4(),
+			created_at: Utc::now().fixed_offset(),
+			blacklisted: false,
+			particle_color: None,
+			refund_count: 0,
+			eos_product_user_id: None,
+			username: None,
+			chargeback_count: 0,
+			paynow_customer_id: None,
+			active_outfit_id: None,
+			outfits_seeded: false,
+			status_override: None,
+			eos_product_user_id_verified_at: None,
+		}
+	}
+
+	fn membership() -> party_members::Model {
+		party_members::Model {
+			party_id: Uuid::nil(),
+			user_id: 2,
+			joined_at: Utc::now().fixed_offset(),
+			voice_hard_muted: false,
+			soundboard_muted: false,
+		}
+	}
+
+	fn apply(change: Option<party_members::ActiveModel>) -> party_members::Model {
+		change
+			.expect("the mute should change the row")
+			.try_into_model()
+			.expect("every column should be set")
+	}
+
+	#[test]
+	fn non_leaders_get_the_hard_mute_rejection() {
+		let party = parties::Model {
+			id: Uuid::nil(),
+			leader_id: 1,
+			voice_mode: PartyVoiceMode::Party,
+			invite_policy: PartyInvitePolicy::Leader,
+			chat_group_id: None,
+			created_at: Utc::now().fixed_offset(),
+			updated_at: Utc::now().fixed_offset(),
+		};
+
+		let rejection = require_leader(&party, &player(2))
+			.expect_err("only the leader may change a member's mutes");
+		assert!(matches!(rejection, PartyError::NotLeader));
+		assert_eq!(rejection.code(), "not_leader");
+		assert_eq!(rejection.into_response().status(), StatusCode::FORBIDDEN);
+		assert!(require_leader(&party, &player(1)).is_ok());
+	}
+
+	#[test]
+	fn muting_shows_in_the_party_view_and_unmuting_clears_it() {
+		let muted = apply(soundboard_mute_change(membership(), true));
+		assert!(member_view(muted.clone(), player(2), true, None).soundboard_muted);
+
+		let unmuted = apply(soundboard_mute_change(muted, false));
+		assert!(!member_view(unmuted, player(2), true, None).soundboard_muted);
+	}
+
+	#[test]
+	fn setting_the_current_value_changes_nothing() {
+		assert!(soundboard_mute_change(membership(), false).is_none());
+		assert!(hard_mute_change(membership(), false).is_none());
+	}
+
+	#[test]
+	fn soundboard_mute_leaves_the_hard_mute_alone() {
+		let hard_muted = party_members::Model {
+			voice_hard_muted: true,
+			..membership()
+		};
+		let change = soundboard_mute_change(hard_muted, true)
+			.expect("muting changes the row");
+		assert_eq!(change.voice_hard_muted, Unchanged(true));
+
+		let view = member_view(apply(Some(change)), player(2), true, None);
+		assert!(view.voice_hard_muted);
+		assert!(view.soundboard_muted);
+	}
+
+	#[test]
+	fn hard_mute_leaves_the_soundboard_mute_alone() {
+		let soundboard_muted = party_members::Model {
+			soundboard_muted: true,
+			..membership()
+		};
+		let change = hard_mute_change(soundboard_muted, true)
+			.expect("hard-muting changes the row");
+		assert_eq!(change.soundboard_muted, Unchanged(true));
+
+		let view = member_view(apply(Some(change)), player(2), true, None);
+		assert!(view.voice_hard_muted);
+		assert!(view.soundboard_muted);
+	}
 }

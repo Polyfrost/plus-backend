@@ -38,7 +38,7 @@ pub(super) const MAX_PARTY_SIZE: usize = 8;
 const OFFLINE_GRACE: Duration = Duration::from_secs(5 * 60);
 const STATE_FORWARD_INTERVAL: Duration = Duration::from_millis(250);
 
-type Member = (party_members::Model, user::Model);
+pub(super) type Member = (party_members::Model, user::Model);
 
 pub(super) fn room_name(party: Uuid) -> String {
 	format!("p{}", party.simple())
@@ -229,19 +229,30 @@ pub(super) async fn party_view(
 			.into_iter()
 			.map(|(membership, user)| {
 				let online = online.contains(&user.minecraft_uuid);
-				PartyMember {
-					player: user.minecraft_uuid,
-					joined_at: membership.joined_at.with_timezone(&Utc),
-					online,
-					eos_product_user_id: user
-						.eos_product_user_id_verified_at
-						.and(user.eos_product_user_id),
-					voice_hard_muted: membership.voice_hard_muted,
-					state: states.remove(&user.minecraft_uuid).filter(|_| online),
-				}
+				let state = states.remove(&user.minecraft_uuid).filter(|_| online);
+				member_view(membership, user, online, state)
 			})
 			.collect(),
 	})
+}
+
+pub(super) fn member_view(
+	membership: party_members::Model,
+	user: user::Model,
+	online: bool,
+	state: Option<MemberState>,
+) -> PartyMember {
+	PartyMember {
+		player: user.minecraft_uuid,
+		joined_at: membership.joined_at.with_timezone(&Utc),
+		online,
+		eos_product_user_id: user
+			.eos_product_user_id_verified_at
+			.and(user.eos_product_user_id),
+		voice_hard_muted: membership.voice_hard_muted,
+		soundboard_muted: membership.soundboard_muted,
+		state,
+	}
 }
 
 pub(super) async fn broadcast(
@@ -270,17 +281,22 @@ pub(super) async fn broadcast_or_log(state: &ApiState, party: Uuid) {
 	}
 }
 
+fn new_membership(party: Uuid, user_id: i32) -> party_members::ActiveModel {
+	party_members::ActiveModel {
+		party_id: Set(party),
+		user_id: Set(user_id),
+		joined_at: ActiveValue::NotSet,
+		voice_hard_muted: Set(false),
+		soundboard_muted: Set(false),
+	}
+}
+
 async fn insert_member(
 	db: &impl ConnectionTrait,
 	party: &parties::Model,
 	user_id: i32,
 ) -> Result<(), DbErr> {
-	PartyMembers::insert(party_members::ActiveModel {
-		party_id: Set(party.id),
-		user_id: Set(user_id),
-		joined_at: ActiveValue::NotSet,
-		voice_hard_muted: Set(false),
-	})
+	PartyMembers::insert(new_membership(party.id, user_id))
 	.exec_without_returning(db)
 	.await?;
 
@@ -739,5 +755,36 @@ async fn forward_state(state: &ApiState, party: Uuid, player: Uuid) {
 			}
 		})
 		.await;
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use sea_orm::{
+		DbBackend, Schema,
+		sea_query::{PostgresQueryBuilder, Table},
+	};
+
+	use super::*;
+
+	#[test]
+	fn new_members_start_unmuted() {
+		let member = new_membership(Uuid::nil(), 2);
+		assert_eq!(member.voice_hard_muted, Set(false));
+		assert_eq!(member.soundboard_muted, Set(false));
+	}
+
+	#[test]
+	fn entity_matches_the_soundboard_mute_migration() {
+		let column = Schema::new(DbBackend::Postgres)
+			.get_column_def::<PartyMembers>(party_members::Column::SoundboardMuted);
+		assert_eq!(
+			Table::alter()
+				.table(PartyMembers)
+				.add_column(column)
+				.to_owned()
+				.to_string(PostgresQueryBuilder),
+			r#"ALTER TABLE "party_members" ADD COLUMN "soundboard_muted" bool NOT NULL"#
+		);
 	}
 }

@@ -49,6 +49,7 @@ pub struct PartyMember {
 	pub online: bool,
 	pub eos_product_user_id: Option<String>,
 	pub voice_hard_muted: bool,
+	pub soundboard_muted: bool,
 	pub state: Option<MemberState>,
 }
 
