@@ -7,6 +7,7 @@ mod linked_accounts;
 mod monetization;
 mod mods;
 mod overview;
+mod perf;
 mod realtime;
 mod retention;
 mod sessions;
@@ -176,6 +177,11 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 			),
 		)
 		.api_route("/analytics/mods", get_with(mods::mods_endpoint, mods::mods_doc))
+		.api_route("/analytics/perf", get_with(perf::perf_endpoint, perf::perf_doc))
+		.api_route(
+			"/analytics/perf/daily",
+			get_with(perf::perf_daily_endpoint, perf::perf_daily_doc),
+		)
 		.api_route(
 			"/analytics/linked-accounts",
 			get_with(
