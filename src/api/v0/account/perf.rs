@@ -318,7 +318,6 @@ async fn profile_endpoint(
 	let storage = state.oneclient_sync.as_ref().ok_or(PerfError::Unavailable)?;
 	let profile = validate_profile(query, player.id, Uuid::now_v7(), body.len())?;
 
-	// Held until commit so concurrent uploads can't both pass the 24-hour check.
 	let txn = state.database.begin().await?;
 	txn.execute(Statement::from_sql_and_values(
 		txn.get_database_backend(),
