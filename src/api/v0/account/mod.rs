@@ -2,6 +2,7 @@ mod link_puid;
 pub(crate) mod links;
 mod login;
 pub(super) mod mods;
+mod shared_emotes;
 mod status;
 
 use aide::{OperationInput, axum::ApiRouter, openapi::SecurityRequirement};
@@ -34,6 +35,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(links::router())
 		.merge(mods::router())
 		.merge(status::router())
+		.merge(shared_emotes::router())
 }
 
 #[derive(Debug)]

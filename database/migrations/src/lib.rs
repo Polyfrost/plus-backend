@@ -1,5 +1,7 @@
 pub use sea_orm_migration::prelude::*;
 
+mod enum_guard;
+
 include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
 
 pub struct Migrator;

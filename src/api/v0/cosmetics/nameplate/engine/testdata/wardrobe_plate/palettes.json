@@ -1,0 +1,70 @@
+{
+  "slots": [
+    {
+      "id": "border",
+      "name": "Border",
+      "ramp": [
+        "#D94040"
+      ]
+    },
+    {
+      "id": "fill",
+      "name": "Fill",
+      "ramp": [
+        "#262A3A",
+        "#1A1D29"
+      ]
+    },
+    {
+      "id": "gem",
+      "name": "Gem",
+      "ramp": [
+        "#2E5FA8",
+        "#7FB6FF"
+      ]
+    },
+    {
+      "id": "glow",
+      "name": "Glow",
+      "ramp": [
+        "#808080"
+      ]
+    },
+    {
+      "id": "text",
+      "name": "Text",
+      "ramp": [
+        "#F2F4FF"
+      ]
+    }
+  ],
+  "colorways": {
+    "ember": {},
+    "frost": {
+      "border": [
+        "#4FB3E8"
+      ],
+      "fill": [
+        "#1E2A3A",
+        "#141C29"
+      ],
+      "gem": [
+        "#B8E4FF",
+        "#E9F6FF"
+      ]
+    },
+    "moss": {
+      "border": [
+        "#5FAE4A"
+      ],
+      "fill": [
+        "#22301F",
+        "#182316"
+      ],
+      "gem": [
+        "#3E8A2E",
+        "#A4E08A"
+      ]
+    }
+  }
+}

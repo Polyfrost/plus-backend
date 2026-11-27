@@ -1,0 +1,290 @@
+{
+  "format": 1,
+  "kind": "nameplate",
+  "id": "wardrobe_plate",
+  "requires": [
+    "nameplate",
+    "nameplate_reactions",
+    "nameplate_one_shots",
+    "nameplate_palette_animation"
+  ],
+  "fps": 6,
+  "loop": 12,
+  "ownsBackground": true,
+  "text": {
+    "mode": "vanilla",
+    "color": "text",
+    "shadow": "none",
+    "outline": "none",
+    "formatting": "adjust",
+    "candidates": [
+      "#FFFFFF",
+      "#1A1A1A"
+    ]
+  },
+  "badge": {
+    "placement": "placed",
+    "anchor": "top_right",
+    "offset": [
+      -4,
+      -10
+    ],
+    "tint": "gem[1]",
+    "decoration": "auto",
+    "candidates": [
+      "#FFFFFF",
+      "#1A1A1A"
+    ]
+  },
+  "variants": {
+    "ember": {
+      "palette": "ember"
+    },
+    "frost": {
+      "palette": "frost"
+    },
+    "moss": {
+      "palette": "moss"
+    }
+  },
+  "layers": [
+    {
+      "id": "body"
+    },
+    {
+      "id": "gem",
+      "depth": "over_text"
+    },
+    {
+      "id": "spark",
+      "depth": "over_text"
+    }
+  ],
+  "groups": [
+    {
+      "id": "ornaments",
+      "layers": [
+        "gem",
+        "spark"
+      ]
+    }
+  ],
+  "animations": {
+    "loop": {
+      "tracks": {
+        "gem": {
+          "frame": [
+            [
+              0,
+              0
+            ],
+            [
+              6,
+              1
+            ]
+          ]
+        },
+        "spark": {
+          "visible": [
+            [
+              0,
+              false
+            ]
+          ]
+        },
+        "palette.border": {
+          "keys": [
+            [
+              0,
+              "q.bg_x0 < -1 ? math.hsv(200, 0.9, 1) : math.hsv(0, 0.85, 0.9)"
+            ]
+          ]
+        },
+        "palette.glow": {
+          "keys": [
+            [
+              0,
+              "q.prefix_width > 0 ? math.hsv(120, 0.8, 1) : (q.name_width > 0 ? math.hsv(50, 0.9, 1) : math.hsv(0, 0, 0.5))"
+            ]
+          ]
+        }
+      }
+    },
+    "sneak_drop": {
+      "trigger": {
+        "reaction": "is_sneaking",
+        "on": "while"
+      },
+      "tracks": {
+        "gem": {
+          "position": [
+            [
+              0,
+              [
+                0,
+                3
+              ]
+            ]
+          ]
+        }
+      }
+    },
+    "sprint_lift": {
+      "trigger": {
+        "reaction": "is_sprinting",
+        "on": "while"
+      },
+      "tracks": {
+        "ornaments": {
+          "position": [
+            [
+              0,
+              [
+                0,
+                -3
+              ]
+            ]
+          ]
+        }
+      }
+    },
+    "fire_spark": {
+      "trigger": {
+        "reaction": "is_on_fire",
+        "on": "while"
+      },
+      "tracks": {
+        "spark": {
+          "visible": [
+            [
+              0,
+              true
+            ]
+          ]
+        }
+      }
+    },
+    "hurt_shake": {
+      "trigger": {
+        "reaction": "is_hurt",
+        "on": "start"
+      },
+      "length": 6,
+      "tracks": {
+        "ornaments": {
+          "position": [
+            [
+              0,
+              [
+                -2,
+                0
+              ]
+            ],
+            [
+              1,
+              [
+                2,
+                0
+              ]
+            ],
+            [
+              2,
+              [
+                -2,
+                0
+              ]
+            ],
+            [
+              3,
+              [
+                2,
+                0
+              ]
+            ],
+            [
+              4,
+              [
+                0,
+                0
+              ]
+            ]
+          ]
+        }
+      }
+    },
+    "unsneak_hop": {
+      "trigger": {
+        "reaction": "is_sneaking",
+        "on": "stop"
+      },
+      "length": 6,
+      "tracks": {
+        "gem": {
+          "position": [
+            [
+              0,
+              [
+                0,
+                -5
+              ]
+            ],
+            [
+              5,
+              [
+                0,
+                0
+              ],
+              "linear"
+            ]
+          ]
+        }
+      }
+    },
+    "appear_fade": {
+      "trigger": {
+        "appear": 3
+      },
+      "length": 12,
+      "tracks": {
+        "ornaments": {
+          "opacity": [
+            [
+              0,
+              0
+            ],
+            [
+              11,
+              1,
+              "linear"
+            ]
+          ]
+        }
+      }
+    },
+    "equip_pop": {
+      "trigger": "equip",
+      "length": 8,
+      "tracks": {
+        "gem": {
+          "position": [
+            [
+              0,
+              [
+                0,
+                -8
+              ]
+            ],
+            [
+              7,
+              [
+                0,
+                0
+              ],
+              "ease"
+            ]
+          ]
+        }
+      }
+    }
+  }
+}

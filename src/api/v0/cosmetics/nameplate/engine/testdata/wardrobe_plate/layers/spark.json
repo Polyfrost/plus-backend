@@ -1,0 +1,12 @@
+{
+  "kind": "sprite",
+  "sprite": "spark",
+  "of": "body",
+  "anchor": "left",
+  "pivot": "right",
+  "offset": [
+    -1,
+    0
+  ],
+  "mirror": true
+}

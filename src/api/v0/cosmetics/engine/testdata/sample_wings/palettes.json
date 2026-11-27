@@ -1,0 +1,4 @@
+{
+  "slots": [{ "id": "feather", "name": "Feather", "ramp": ["#ff304050", "#ff6080a0"], "customizable": true }],
+  "colorways": { "storm": { "feather": ["#ff202020", "#ff505050"] } }
+}

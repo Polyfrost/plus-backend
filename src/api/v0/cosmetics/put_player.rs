@@ -9,6 +9,8 @@ use axum::{
 	http::StatusCode,
 	response::{IntoResponse, NoContent},
 };
+use std::collections::HashMap;
+
 use entities::sea_orm_active_enums::BodySlot;
 use schemars::JsonSchema;
 use sea_orm::{
@@ -20,12 +22,13 @@ use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
-	state::EquipmentPersistence,
+	state::{RealtimeState, holding_slot_rules},
 	v0::{
 		account::AuthenticatedPlayer,
+		bonuses::{deliver_discoveries, record_completions, resolve_transition},
 		cosmetics::PartialEquippedCosmetics,
 		outfits::mirror_active_outfit_slots,
-		websocket::announce_equipment_change,
+		websocket::{adopt_aura_color, announce_equipment_change},
 	},
 };
 
@@ -90,7 +93,8 @@ async fn endpoint(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Json(body): Json<RequestBody>,
 ) -> Result<NoContent, ResponseError> {
-	{
+	let updates = state.realtime.player_updates.lock(player.minecraft_uuid).await;
+	let recorded = {
 		use entities::{
 			cosmetic_allowed_slot, player_equipped_cosmetic, player_owned_cosmetic,
 			prelude::*,
@@ -103,6 +107,9 @@ async fn endpoint(
 			.one(&txn)
 			.await?
 			.and_then(|player| player.active_outfit_id);
+		holding_slot_rules(body.equipment.equipped.values().flatten().copied())
+			.all(&txn)
+			.await?;
 
 		for (slot, value) in body.equipment.equipped.clone() {
 			if let Some(id) = value {
@@ -166,61 +173,106 @@ async fn endpoint(
 		)
 		.await?;
 
-		let applied = {
-			let mut player_runtime = state.realtime.player_runtime.write().await;
-			let mut runtime = player_runtime.get_mut(&player.minecraft_uuid);
-			let mut applied = Vec::new();
-			for (slot, cosmetic_id) in &body.equipment.equipped {
+		let recorded = record_completions(&txn, &state.bonus_catalog, player.id).await?;
+
+		let superseded: Vec<_> = body
+			.equipment
+			.equipped
+			.keys()
+			.filter_map(|slot| {
 				state
 					.equipment_persist
-					.supersede((player.minecraft_uuid, slot.clone()));
-				if let Some(runtime) = runtime.as_deref_mut() {
-					let previous = match cosmetic_id {
-						Some(cosmetic_id) => {
-							runtime.equipped.insert(slot.clone(), *cosmetic_id)
-						}
-						None => runtime.equipped.remove(slot),
-					};
-					applied.push((slot.clone(), previous, *cosmetic_id));
+					.supersede((player.minecraft_uuid, slot.clone()))
+			})
+			.collect();
+		publish_after_commit(
+			&state.realtime,
+			player.minecraft_uuid,
+			&body.equipment.equipped,
+			async move {
+				txn.commit().await?;
+				for supersession in superseded {
+					supersession.confirm();
 				}
-			}
-			applied
-		};
+				Ok::<_, sea_orm::DbErr>(())
+			},
+		)
+		.await?;
+		recorded
+	};
 
-		if let Err(error) = txn.commit().await {
-			restore_runtime(&state, player.minecraft_uuid, applied).await;
-			return Err(error.into());
-		}
+	if body
+		.equipment
+		.equipped
+		.get(&BodySlot::Aura)
+		.is_some_and(Option::is_some)
+	{
+		adopt_aura_color(&state, player.minecraft_uuid, &updates).await;
 	}
-
 	for (slot, cosmetic_id) in body.equipment.equipped {
 		announce_equipment_change(&state, player.minecraft_uuid, slot, cosmetic_id, true)
 			.await;
+	}
+	resolve_transition(&state, player.minecraft_uuid, &updates).await;
+	drop(updates);
+	if recorded {
+		deliver_discoveries(&state, player.minecraft_uuid, player.id).await;
 	}
 
 	Ok(NoContent)
 }
 
-async fn restore_runtime(
-	state: &ApiState,
+async fn publish_after_commit<E>(
+	realtime: &RealtimeState,
 	player: Uuid,
-	applied: Vec<(BodySlot, Option<i32>, Option<i32>)>,
-) {
-	let mut player_runtime = state.realtime.player_runtime.write().await;
-	let Some(runtime) = player_runtime.get_mut(&player) else {
-		return;
-	};
-	for (slot, previous, cosmetic_id) in applied {
-		if runtime.equipped.get(&slot).copied() == cosmetic_id {
-			match previous {
-				Some(previous) => runtime.equipped.insert(slot.clone(), previous),
-				None => runtime.equipped.remove(&slot),
+	equipment: &HashMap<BodySlot, Option<i32>>,
+	commit: impl Future<Output = Result<(), E>>,
+) -> Result<(), E> {
+	commit.await?;
+	let mut player_runtime = realtime.player_runtime.write().await;
+	if let Some(runtime) = player_runtime.get_mut(&player) {
+		for (slot, cosmetic_id) in equipment {
+			match cosmetic_id {
+				Some(cosmetic_id) => runtime.equipped.insert(slot.clone(), *cosmetic_id),
+				None => runtime.equipped.remove(slot),
 			};
 		}
-		state.equipment_persist.enqueue(EquipmentPersistence {
-			player,
-			cosmetic_id: runtime.equipped.get(&slot).copied(),
-			slot,
+	}
+	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::HashMap;
+
+	use entities::sea_orm_active_enums::BodySlot;
+	use uuid::Uuid;
+
+	use super::publish_after_commit;
+	use crate::api::state::{PlayerRuntimeState, RealtimeState};
+
+	#[tokio::test]
+	async fn the_live_equipment_changes_only_after_the_commit_lands() {
+		let realtime = RealtimeState::default();
+		let player = Uuid::new_v4();
+		let cape = HashMap::from([(BodySlot::Cape, 10)]);
+		let live = PlayerRuntimeState { equipped: cape.clone(), ..Default::default() };
+		realtime.player_runtime.write().await.insert(player, live);
+		let equipped = async || realtime.player_runtime.read().await[&player].equipped.clone();
+		let change = HashMap::from([(BodySlot::Hat, Some(41)), (BodySlot::Cape, None)]);
+
+		let failed = publish_after_commit(&realtime, player, &change, async {
+			assert_eq!(equipped().await, cape);
+			Err::<(), _>("commit failed")
 		});
+		assert!(failed.await.is_err());
+		assert_eq!(equipped().await, cape);
+
+		publish_after_commit(&realtime, player, &change, async { Ok::<_, ()>(()) }).await.unwrap();
+		assert_eq!(equipped().await, HashMap::from([(BodySlot::Hat, 41)]));
+
+		let offline = Uuid::new_v4();
+		publish_after_commit(&realtime, offline, &change, async { Ok::<_, ()>(()) }).await.unwrap();
+		assert!(!realtime.player_runtime.read().await.contains_key(&offline));
 	}
 }

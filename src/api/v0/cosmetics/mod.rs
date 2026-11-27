@@ -1,8 +1,14 @@
+pub(in crate::api) mod color_slots;
 mod cover;
+mod definitions;
+mod effect;
+mod engine;
 mod get_player;
+mod limits;
 pub(in crate::api) mod grant;
 mod list;
 mod manage;
+mod nameplate;
 mod put_player;
 mod search;
 mod view;
@@ -10,6 +16,7 @@ mod view;
 use std::{
 	collections::{BTreeMap, HashMap},
 	sync::Arc,
+	time::Duration,
 };
 
 use aide::axum::ApiRouter;
@@ -28,13 +35,21 @@ use sea_orm::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::ApiState;
+use crate::{
+	api::{
+		ApiState, state::RealtimeState, v0::websocket::structs::ClientBoundPacket,
+	},
+	utils::debounce::Debouncer,
+};
+
+const CATALOG_UPDATE_DELAY: Duration = Duration::from_secs(3);
 
 pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 	ApiRouter::new()
 		.nest(
 			"/cosmetics",
 			ApiRouter::new()
+				.merge(definitions::router())
 				.merge(get_player::router())
 				.merge(put_player::router())
 				.merge(manage::router())
@@ -56,6 +71,10 @@ pub(super) struct CosmeticInfo {
 	/// The unique ID of this cosmetic. For a grouped cosmetic this is the group
 	/// id; for an ungrouped cosmetic it is the cosmetic's own id.
 	id: i32,
+	#[schemars(
+		description = "Whether `id` is a group id (true) or the id of an ungrouped cosmetic (false). Group ids and cosmetic ids come from separate sequences and may be equal, so clients key entries by `id` and `grouped` together."
+	)]
+	grouped: bool,
 	/// The type of this cosmetic
 	r#type: CosmeticType,
 	/// The display name for this cosmetic
@@ -93,26 +112,28 @@ pub(super) struct VariantInfo {
 	url: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	cover_url: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	variant_key: Option<String>,
 	#[serde(flatten)]
 	cached_info: CachedAssetInfo,
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
-pub(super) struct EmoteInfo {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub(in crate::api) struct EmoteInfo {
 	/// The unique ID of this emote
-	id: i32,
+	pub(in crate::api) id: i32,
 	/// The display name for this emote
-	name: String,
+	pub(in crate::api) name: String,
 	/// The emote bundle URL
 	#[serde(skip_serializing_if = "Option::is_none")]
-	url: Option<String>,
+	pub(in crate::api) url: Option<String>,
 	#[serde(flatten)]
-	cached_info: CachedAssetInfo,
+	pub(in crate::api) cached_info: CachedAssetInfo,
 }
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CachedAssetInfo {
-	hash: String,
+	pub(in crate::api) hash: String,
 }
 
 impl VariantInfo {
@@ -143,9 +164,27 @@ impl VariantInfo {
 			model: value.model_variant.clone(),
 			url: CachedAssetInfo::asset_url(asset, public_url),
 			cover_url: CachedAssetInfo::asset_url(cover_asset, public_url),
+			variant_key: value.variant_key.clone(),
 			cached_info,
 		})
 	}
+}
+
+pub(in crate::api) fn spawn_catalog_notifier(realtime: RealtimeState) -> Debouncer {
+	Debouncer::spawn(CATALOG_UPDATE_DELAY, move || {
+		let realtime = realtime.clone();
+		async move {
+			let version = chrono::Utc::now().timestamp_millis();
+			let connections = realtime.connections.read().await;
+			for connection in connections.values() {
+				let _ = connection.tx.send(ClientBoundPacket::CatalogUpdated { version });
+			}
+		}
+	})
+}
+
+pub(super) fn notify_catalog_updated(state: &ApiState) {
+	state.catalog_updates.trigger();
 }
 
 /// Matches cosmetics that are not hidden by their group
@@ -207,9 +246,7 @@ pub(super) fn is_sold() -> Condition {
 		)
 }
 
-pub(super) async fn load_groups<C: ConnectionTrait>(
-	db: &C,
-) -> Result<HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>, DbErr> {
+pub(super) async fn load_groups<C: ConnectionTrait>(db: &C) -> Result<Groups, DbErr> {
 	// Disabled groups are loaded too: a player who owns one of their variants
 	// keeps it, so the group is still needed to name and bucket that variant.
 	Ok(CosmeticGroup::find()
@@ -281,8 +318,11 @@ pub(super) type CosmeticRow = (
 	Vec<BodySlot>,
 );
 
-pub(super) fn is_redundant_variant(variant_name: Option<&str>) -> bool {
-	let Some(name) = variant_name else {
+pub(super) fn is_redundant_variant(cosmetic: &cosmetic::Model) -> bool {
+	if cosmetic.r#type == CosmeticType::Nameplate {
+		return false;
+	}
+	let Some(name) = cosmetic.variant_name.as_deref() else {
 		return false;
 	};
 
@@ -290,21 +330,46 @@ pub(super) fn is_redundant_variant(variant_name: Option<&str>) -> bool {
 	lower.contains("reversed") || lower.contains("fold")
 }
 
+pub(super) type Groups = HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) struct BucketKey {
+	id: i32,
+	grouped: bool,
+}
+
+impl BucketKey {
+	pub(super) fn of(cosmetic: &cosmetic::Model, groups: &Groups) -> Self {
+		match cosmetic.group_id.filter(|id| groups.contains_key(id)) {
+			Some(id) => Self { id, grouped: true },
+			None => Self {
+				id: cosmetic.id,
+				grouped: false,
+			},
+		}
+	}
+}
+
+impl CosmeticInfo {
+	pub(super) fn key(&self) -> BucketKey {
+		BucketKey {
+			id: self.id,
+			grouped: self.grouped,
+		}
+	}
+}
+
 pub(super) async fn group_cosmetics(
 	cosmetics: Vec<CosmeticRow>,
-	groups: HashMap<i32, (cosmetic_group::Model, Vec<BodySlot>)>,
+	groups: Groups,
 	cache: Cache<i32, CachedAssetInfo>,
 	s3_bucket: Arc<Bucket>,
 	public_url: &str,
 	hide_redundant_variants: bool,
 ) -> Result<Vec<CosmeticInfo>, S3Error> {
-	let mut buckets: BTreeMap<i32, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
-		BTreeMap::new();
-
+	let mut variants = Vec::with_capacity(cosmetics.len());
 	for (cosmetic, asset, cover_asset, allowed_slots) in cosmetics {
-		if hide_redundant_variants
-			&& is_redundant_variant(cosmetic.variant_name.as_deref())
-		{
+		if hide_redundant_variants && is_redundant_variant(&cosmetic) {
 			continue;
 		}
 
@@ -318,51 +383,58 @@ pub(super) async fn group_cosmetics(
 			public_url,
 		)
 		.await?;
+		variants.push((cosmetic, allowed_slots, variant));
+	}
 
-		let group = cosmetic
-			.group_id
-			.and_then(|id| groups.get(&id).map(|g| (id, g)));
-		let (bucket_id, entry) = match group {
-			Some((group_id, (group, group_slots))) => (
-				group_id,
-				CosmeticInfo {
-					id: group_id,
-					r#type: group.r#type.clone(),
-					name: group.name.clone(),
-					allowed_slots: group_slots.clone(),
-					variants: Vec::new(),
-				},
-			),
-			None => (
-				cosmetic.id,
-				CosmeticInfo {
-					id: cosmetic.id,
-					r#type: cosmetic.r#type.clone(),
-					name: cosmetic
-						.name
-						.clone()
-						.unwrap_or_else(|| format!("Cosmetic {}", cosmetic.id)),
-					allowed_slots,
-					variants: Vec::new(),
-				},
-			),
+	Ok(bucket_variants(variants, &groups))
+}
+
+fn bucket_variants(
+	variants: Vec<(cosmetic::Model, Vec<BodySlot>, VariantInfo)>,
+	groups: &Groups,
+) -> Vec<CosmeticInfo> {
+	let mut buckets: BTreeMap<BucketKey, (CosmeticInfo, Vec<(i32, VariantInfo)>)> =
+		BTreeMap::new();
+
+	for (cosmetic, allowed_slots, variant) in variants {
+		let key = BucketKey::of(&cosmetic, groups);
+		let entry = match groups.get(&key.id).filter(|_| key.grouped) {
+			Some((group, group_slots)) => CosmeticInfo {
+				id: key.id,
+				grouped: true,
+				r#type: group.r#type.clone(),
+				name: group.name.clone(),
+				allowed_slots: group_slots.clone(),
+				variants: Vec::new(),
+			},
+			None => CosmeticInfo {
+				id: cosmetic.id,
+				grouped: false,
+				r#type: cosmetic.r#type.clone(),
+				name: cosmetic
+					.name
+					.clone()
+					.unwrap_or_else(|| format!("Cosmetic {}", cosmetic.id)),
+				allowed_slots,
+				variants: Vec::new(),
+			},
 		};
 
 		buckets
-			.entry(bucket_id)
+			.entry(key)
 			.or_insert((entry, Vec::new()))
 			.1
 			.push((cosmetic.variant_order, variant));
 	}
 
-	Ok(buckets
+	buckets
 		.into_values()
 		.map(|(mut entry, mut variants)| {
 			variants.sort_by_key(|(order, variant)| (*order, variant.id));
 			entry.variants = variants.into_iter().map(|(_, variant)| variant).collect();
 			entry
 		})
-		.collect())
+		.collect()
 }
 
 impl EmoteInfo {
@@ -426,7 +498,7 @@ impl CachedAssetInfo {
 		})
 	}
 
-	async fn from_optional_asset(
+	pub(in crate::api) async fn from_optional_asset(
 		asset: Option<&asset::Model>,
 		cache: Cache<i32, CachedAssetInfo>,
 		s3_bucket: Arc<Bucket>,
@@ -477,11 +549,101 @@ pub(super) struct PartialEquippedCosmetics {
 }
 
 #[cfg(test)]
-mod tests {
-	use entities::{asset, sea_orm_active_enums::AssetKind};
+pub(crate) mod tests {
+	use entities::{
+		asset, cosmetic, cosmetic_group,
+		sea_orm_active_enums::{AssetKind, BodySlot, CosmeticType},
+	};
 
-	use super::CachedAssetInfo;
+	use super::{
+		BucketKey, CachedAssetInfo, Groups, PartialEquippedCosmetics, VariantInfo,
+		bucket_variants, is_redundant_variant,
+	};
 	use crate::utils::hash::sha256_hex;
+
+	pub(crate) fn cosmetic(id: i32, r#type: CosmeticType) -> cosmetic::Model {
+		cosmetic::Model {
+			id,
+			r#type,
+			asset_id: None,
+			name: Some(format!("Cosmetic {id}")),
+			enabled: true,
+			created_at: Default::default(),
+			updated_at: Default::default(),
+			group_id: None,
+			variant_name: None,
+			model_variant: None,
+			variant_order: 0,
+			store_product_id: None,
+			base_price: None,
+			collection: None,
+			description: None,
+			purchase_count: 0,
+			cover_asset_id: None,
+			preview_asset_id: None,
+			variant_key: None,
+		}
+	}
+
+	fn row(id: i32, r#type: CosmeticType, group_id: Option<i32>, slot: BodySlot) -> (cosmetic::Model, Vec<BodySlot>, VariantInfo) {
+		let cached_info = CachedAssetInfo { hash: CachedAssetInfo::DEFAULT_HASH.to_string() };
+		let (name, allowed_slots) = (format!("Variant {id}"), vec![slot.clone()]);
+		let variant = VariantInfo { id, name, model: None, allowed_slots, url: None, cover_url: None, variant_key: None, cached_info };
+		(cosmetic::Model { group_id, ..cosmetic(id, r#type) }, vec![slot], variant)
+	}
+
+	#[test]
+	fn groups_and_ungrouped_cosmetics_with_one_id_stay_apart() {
+		let cape_group = cosmetic_group::Model {
+			id: 20,
+			name: "Group 20".to_owned(),
+			r#type: CosmeticType::Cape,
+			enabled: true,
+			created_at: Default::default(),
+			updated_at: Default::default(),
+		};
+		let groups: Groups = [(20, (cape_group, vec![BodySlot::Cape]))].into();
+		let rows = vec![
+			row(20, CosmeticType::Pet, None, BodySlot::Pet),
+			row(31, CosmeticType::Cape, Some(20), BodySlot::Cape),
+			row(32, CosmeticType::Cape, Some(20), BodySlot::Cape),
+		];
+		let infos = bucket_variants(rows, &groups);
+		let summary: Vec<_> = infos
+			.iter()
+			.map(|info| (info.id, info.grouped, info.r#type.clone(), info.name.as_str(), info.variants.iter().map(|v| v.id).collect::<Vec<_>>()))
+			.collect();
+		assert_eq!(summary, [
+			(20, false, CosmeticType::Pet, "Cosmetic 20", vec![20]),
+			(20, true, CosmeticType::Cape, "Group 20", vec![31, 32]),
+		]);
+		assert_ne!(infos[0].key(), infos[1].key());
+		let json = serde_json::to_value(&infos).unwrap();
+		assert_eq!((&json[0]["grouped"], &json[1]["grouped"]), (&false.into(), &true.into()));
+
+		let unknown_group = cosmetic::Model { group_id: Some(99), ..cosmetic(5, CosmeticType::Pet) };
+		assert_eq!(BucketKey::of(&unknown_group, &groups), BucketKey { id: 5, grouped: false });
+		let known_group = cosmetic::Model { group_id: Some(20), ..cosmetic(31, CosmeticType::Cape) };
+		assert_eq!(BucketKey::of(&known_group, &groups), BucketKey { id: 20, grouped: true });
+	}
+
+	#[test]
+	fn only_reversed_and_folded_non_nameplate_variants_are_redundant() {
+		for (kind, name, redundant) in [
+			(CosmeticType::Cape, Some("Reversed"), true),
+			(CosmeticType::Cape, Some("Folded"), true),
+			(CosmeticType::Cape, Some("Blue"), false),
+			(CosmeticType::Cape, None, false),
+			(CosmeticType::Nameplate, Some("Reversed"), false),
+			(CosmeticType::Nameplate, Some("Fold"), false),
+		] {
+			let variant = cosmetic::Model { group_id: Some(1), variant_name: name.map(str::to_owned), ..cosmetic(1, kind) };
+			assert_eq!(is_redundant_variant(&variant), redundant, "{name:?}");
+		}
+		let body: PartialEquippedCosmetics = serde_json::from_str(r#"{"equipped":{"effect_a":3,"effect_b":null}}"#).unwrap();
+		assert_eq!(body.equipped.get(&BodySlot::EffectA), Some(&Some(3)));
+		assert_eq!(body.equipped.get(&BodySlot::EffectB), Some(&None));
+	}
 
 	#[test]
 	fn default_hash_is_sha256_of_null() {

@@ -1,0 +1,11 @@
+{
+  "kind": "sprite",
+  "sprite": "gem",
+  "of": "body",
+  "anchor": "top",
+  "pivot": "bottom",
+  "offset": [
+    0,
+    1
+  ]
+}

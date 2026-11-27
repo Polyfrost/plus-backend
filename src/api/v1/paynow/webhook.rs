@@ -23,7 +23,7 @@ use super::{
 use crate::{
 	api::{
 		ApiState,
-		v0::websocket::{send_to_owner, structs::ClientBoundPacket, unequip_revoked},
+		v0::websocket::{send_to_owner_connections, structs::ClientBoundPacket, unequip_revoked},
 	},
 	database::{DatabaseTransactionExt, DatabaseUserExt, OrderCharge},
 	paynow::{
@@ -581,11 +581,13 @@ pub(super) async fn broadcast(state: &ApiState, grants: Grants, revoked: bool) {
 	}
 
 	for (player, grant) in grants {
-		send_to_owner(state, player, || ClientBoundPacket::OwnershipUpdated {
-			player,
-			cosmetic_ids: grant.cosmetic_ids.clone(),
-			emote_ids: grant.emote_ids.clone(),
-			revoked,
+		send_to_owner_connections(&state.realtime, player, || {
+			ClientBoundPacket::OwnershipUpdated {
+				player,
+				cosmetic_ids: grant.cosmetic_ids.clone(),
+				emote_ids: grant.emote_ids.clone(),
+				revoked,
+			}
 		})
 		.await;
 	}

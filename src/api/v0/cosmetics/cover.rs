@@ -19,6 +19,10 @@ use tokio::{
 use webp_animation::{Encoder, Error as WebpError};
 use zip::{ZipArchive, result::ZipError};
 
+use super::{
+	engine::has_root_manifest,
+	nameplate::{Engine, EngineError, NameplateEngine},
+};
 use crate::utils::zip::is_zip;
 
 const WIDTH: u32 = 400;
@@ -96,6 +100,10 @@ pub(super) enum RenderError {
 	Slot(String),
 	#[error("Render task failed: {0}")]
 	Join(#[from] JoinError),
+	#[error("Unable to render the nameplate: {0}")]
+	Nameplate(#[from] EngineError),
+	#[error("Bundles with a manifest.json can't get an automatic cover yet. Upload one with /set-cover")]
+	ManifestBundle,
 }
 
 pub(super) struct Renders {
@@ -103,6 +111,10 @@ pub(super) struct Renders {
 	pub(super) cover: Vec<u8>,
 	/// Looping lossless animated WebP, for cosmetics that move.
 	pub(super) preview: Option<Vec<u8>>,
+}
+
+pub(super) fn renders_cover(cosmetic_type: &CosmeticType) -> bool {
+	!matches!(cosmetic_type, CosmeticType::Effect)
 }
 
 /// Renders the cosmetic worn by the default player: a cover posed `seconds`
@@ -116,6 +128,7 @@ pub(super) async fn render_cosmetic(
 	seconds: Option<f32>,
 	data: Vec<u8>,
 ) -> Result<Renders, RenderError> {
+	legacy_bundle(&data)?;
 	let skin = DEFAULT_SKIN
 		.get_or_try_init(|| fetch_skin(client))
 		.await?
@@ -131,6 +144,13 @@ pub(super) async fn render_cosmetic(
 		.unwrap_or(POSE_SECONDS);
 
 	spawn_blocking(move || draw(skin, arms, cosmetic_type, slot, seconds, &data)).await?
+}
+
+pub(super) async fn render_nameplate(
+	data: Vec<u8>,
+	variant_key: Option<String>,
+) -> Result<Option<Vec<u8>>, RenderError> {
+	Ok(spawn_blocking(move || Engine::cover(&data, variant_key.as_deref())).await??)
 }
 
 async fn fetch_skin(client: &Client) -> Result<RgbaImage, RenderError> {
@@ -163,10 +183,10 @@ fn draw(
 		mut scene,
 		textures,
 		length,
-	} = load(skin, arms, &cosmetic_type, slot, data)?;
+	} = load(skin, arms, &cosmetic_type, slot.clone(), data)?;
 
 	scene.pose(seconds);
-	let camera = camera(&mut scene, &cosmetic_type);
+	let camera = camera(&mut scene, &cosmetic_type, slot.as_ref());
 
 	let mut cover = Cursor::new(Vec::new());
 	frames(&mut scene, &camera, &textures, &[seconds])
@@ -198,7 +218,7 @@ fn load(
 	data: &[u8],
 ) -> Result<Loaded, RenderError> {
 	let files = if is_zip(data) {
-		unzip(data)?
+		legacy_files(unzip(data)?)
 	} else {
 		vec![("cosmetic.png".to_owned(), data.to_vec())]
 	};
@@ -289,6 +309,40 @@ fn decode(bytes: &[u8]) -> Result<RgbaImage, RenderError> {
 	Ok(load_from_memory_with_format(bytes, ImageFormat::Png)?.to_rgba8())
 }
 
+fn legacy_bundle(data: &[u8]) -> Result<(), RenderError> {
+	match has_root_manifest(data) {
+		Ok(false) => Ok(()),
+		_ => Err(RenderError::ManifestBundle),
+	}
+}
+
+fn legacy_files(mut files: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+	files.retain(|(name, _)| {
+		let file = file_name(name);
+		!matches!(file.as_str(), "manifest.json" | "palettes.json")
+			&& !file.ends_with(".idx.png")
+	});
+	let is_glow = |name: &str| {
+		file_name(name)
+			.strip_suffix(".png")
+			.is_some_and(|stem| stem.ends_with("_glow"))
+	};
+	let has_colour = files
+		.iter()
+		.any(|(name, _)| file_name(name).ends_with(".png") && !is_glow(name));
+	if has_colour {
+		files.retain(|(name, _)| !is_glow(name));
+	}
+	files
+}
+
+fn file_name(path: &str) -> String {
+	path.rsplit('/')
+		.next()
+		.unwrap_or(path)
+		.to_ascii_lowercase()
+}
+
 fn unzip(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, RenderError> {
 	let mut archive = ZipArchive::new(Cursor::new(data))?;
 	(0..archive.len())
@@ -311,7 +365,9 @@ fn body_slot(
 		(None, CosmeticType::Glove) => "right_hand".to_owned(),
 		(None, other) => other.to_value(),
 	};
-	RenderSlot::from_name(&name).ok_or(RenderError::Slot(name))
+	RenderSlot::from_name(&name)
+		.or_else(|| (name == BodySlot::Tail.to_value()).then_some(RenderSlot::Backpack))
+		.ok_or(RenderError::Slot(name))
 }
 
 /// Lossless and looping forever, the encoder's defaults.
@@ -360,7 +416,11 @@ fn focus(cosmetic_type: &CosmeticType) -> Option<Focus> {
 }
 
 /// Level, looking at the player's middle, with the player turned and the posed scene framed.
-fn camera(scene: &mut Scene, cosmetic_type: &CosmeticType) -> Camera {
+fn camera(scene: &mut Scene, cosmetic_type: &CosmeticType, slot: Option<&BodySlot>) -> Camera {
+	let cosmetic_type = match slot {
+		Some(BodySlot::Tail) => &CosmeticType::Backpack,
+		_ => cosmetic_type,
+	};
 	// Back-worn cosmetics are hidden from the front.
 	let yaw = match cosmetic_type {
 		CosmeticType::Cape | CosmeticType::Wings | CosmeticType::Backpack => PI + YAW,
@@ -568,6 +628,61 @@ mod tests {
 	use zip::{ZipWriter, write::SimpleFileOptions};
 
 	use super::*;
+	use crate::api::v0::cosmetics::engine::tests::{SAMPLE, nested, zip};
+
+	fn sample(name: &str) -> &'static [u8] {
+		SAMPLE.iter().find(|(file, _)| *file == name).map(|(_, data)| *data).unwrap()
+	}
+
+	#[test]
+	fn only_legacy_bundles_get_an_automatic_cover_from_their_colour_texture() {
+		for bundle in [zip(SAMPLE), nested("wings/", SAMPLE)] {
+			assert!(matches!(legacy_bundle(&bundle), Err(RenderError::ManifestBundle)));
+		}
+		assert!(legacy_bundle(&zip(&SAMPLE[1..])).is_ok());
+		assert!(legacy_bundle(sample("textures/wings.png")).is_ok());
+
+		let kept = |names: &[&str]| {
+			let files = names.iter().map(|name| ((*name).to_owned(), Vec::new())).collect();
+			legacy_files(files).into_iter().map(|(name, _)| name).collect::<Vec<_>>()
+		};
+		let engine_files = [
+			"Manifest.json",
+			"palettes.json",
+			"wings.geo.json",
+			"textures/aaa_glow.png",
+			"textures/wings.idx.png",
+			"textures/wings.png",
+		];
+		assert_eq!(kept(&engine_files), ["wings.geo.json", "textures/wings.png"]);
+		assert_eq!(kept(&["glow.geo.json", "glow_glow.png"]), ["glow.geo.json", "glow_glow.png"]);
+
+		let bundle = zip(&[
+			("palettes.json", b"{}"),
+			("models/wings.geo.json", sample("models/wings.geo.json")),
+			("textures/aaa_glow.png", b"not a png"),
+			("textures/wings.idx.png", b"not a png"),
+			("textures/wings.png", sample("textures/wings.png")),
+		]);
+		assert!(load(skin(), Arms::Wide, &CosmeticType::Wings, None, &bundle).is_ok());
+	}
+
+	#[cfg(not(feature = "nameplate-engine"))]
+	#[tokio::test]
+	async fn no_nameplate_cover_is_drawn_until_the_engine_is_linked() {
+		assert_eq!(render_nameplate(b"bundle".to_vec(), Some("blue".to_string())).await.unwrap(), None);
+	}
+
+	#[test]
+	fn tails_hang_off_the_body_and_are_shown_from_behind() {
+		assert_eq!(body_slot(&CosmeticType::Wings, Some(BodySlot::Tail)).unwrap(), RenderSlot::Backpack);
+		let mut scene = Scene::default();
+		scene.load_player(PLAYER, Arms::Wide);
+		scene.load_cosmetic(COSMETIC, bedrock::parse_one(HAT).unwrap(), RenderSlot::Backpack, None, None);
+		scene.pose(0.0);
+		let tail = camera(&mut scene, &CosmeticType::Hat, Some(&BodySlot::Tail)).view.0;
+		assert_eq!(tail, camera(&mut scene, &CosmeticType::Backpack, None).view.0);
+	}
 
 	const WAVE: &str = r#"{"animations":{"wave":{"loop":true,"animation_length":1.0,
 		"bones":{"rightArm":{"rotation":{"0.0":[0,0,0],"0.5":[0,0,-120],"1.0":[0,0,0]}}}}}}"#;
@@ -587,7 +702,7 @@ mod tests {
 		let mut scene = Scene::default();
 		scene.load_player(PLAYER, Arms::Wide);
 		scene.pose(0.0);
-		let camera = camera(&mut scene, &CosmeticType::Emote);
+		let camera = camera(&mut scene, &CosmeticType::Emote, None);
 		let canvas = frames(&mut scene, &camera, &[Some(skin())], &[0.0]).remove(0);
 
 		let opaque = canvas.pixels().filter(|p| p.0[3] == 255).count();
@@ -610,11 +725,13 @@ mod tests {
 		scene.pose(0.0);
 
 		// skinview3d's default: 4.5 + 16.5 / tan(25°) / 0.9 away, on the player's middle.
-		let [.., x, _, _, _, y, _, _, _, z] = camera(&mut scene, &CosmeticType::Aura).view.0;
+		let [.., x, _, _, _, y, _, _, _, z] =
+			camera(&mut scene, &CosmeticType::Aura, None).view.0;
 		assert!(x.abs() < 1e-4 && (y + 16.0).abs() < 1e-4, "{x}, {y}");
 		assert!((z + 43.816).abs() < 1e-2, "{z}");
 
-		let [.., x, _, _, _, y, _, _, _, z] = camera(&mut scene, &CosmeticType::Hat).view.0;
+		let [.., x, _, _, _, y, _, _, _, z] =
+			camera(&mut scene, &CosmeticType::Hat, None).view.0;
 		assert!(z > -43.0, "closer than the default, got {z}");
 		assert!(y < -21.0, "centred above the middle, got {y}");
 		assert!(x.abs() < 1.0, "the head stays central, got {x}");

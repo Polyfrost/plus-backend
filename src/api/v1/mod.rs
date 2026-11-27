@@ -8,6 +8,7 @@ mod listings;
 mod oneclient;
 pub(super) mod party;
 mod paynow;
+mod player_cosmetics;
 mod referrals;
 mod roles;
 mod settings;
@@ -43,6 +44,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.merge(dashboard::router())
 		.merge(special_chat::router())
 		.merge(store::router())
+		.merge(player_cosmetics::router())
 		.merge(hello::router())
 		.merge(tokens::router())
 		.merge(analytics::setup_router().await)

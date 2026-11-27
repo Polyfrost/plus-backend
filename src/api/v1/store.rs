@@ -16,6 +16,8 @@ use axum::{
 };
 use entities::{
 	asset,
+	asset_color_slot,
+	cosmetic_allowed_slot,
 	prelude::*,
 	sea_orm_active_enums::*,
 	transaction,
@@ -38,7 +40,11 @@ use crate::{
 	api::{
 		ApiState,
 		permissions::{Require, RequireAny, perm},
-		v0::{cosmetics::CachedAssetInfo, players::lookup::resolve_username}
+		v0::{
+			cosmetics::CachedAssetInfo,
+			players::lookup::resolve_username,
+			websocket::colors::allowed_slots
+		}
 	},
 	utils::pagination::{MAX_PAGE_SIZE, default_page, default_page_size}
 };
@@ -122,7 +128,23 @@ struct CatalogCosmetic {
 	/// Looping animation for cosmetics that move.
 	preview_url: Option<String>,
 	tag_ids: Vec<i32>,
-	created_at: String
+	created_at: String,
+	variant_key: Option<String>,
+	asset_id: Option<i32>,
+	slots: Vec<BodySlot>,
+	color_slots: Vec<CatalogColorSlot>
+}
+
+#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+struct CatalogColorSlot {
+	name: String
+}
+
+fn color_slots(kind: &CosmeticType, declared: Vec<String>) -> Vec<CatalogColorSlot> {
+	allowed_slots(kind, declared)
+		.into_iter()
+		.map(|name| CatalogColorSlot { name })
+		.collect()
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -191,6 +213,26 @@ async fn catalog(
 			.into_iter()
 			.map(|row| (row.bundle_id, row.cosmetic_id))
 	);
+	let mut slots = group(
+		CosmeticAllowedSlot::find()
+			.order_by_asc(cosmetic_allowed_slot::Column::Slot)
+			.all(db)
+			.await?
+			.into_iter()
+			.map(|row| (row.cosmetic_id, row.slot))
+	);
+	let cosmetic_assets = cosmetics
+		.iter()
+		.filter_map(|c| c.asset_id)
+		.collect::<HashSet<_>>();
+	let declared = group(
+		AssetColorSlot::find()
+			.filter(asset_color_slot::Column::AssetId.is_in(cosmetic_assets))
+			.all(db)
+			.await?
+			.into_iter()
+			.map(|row| (row.asset_id, row.slot))
+	);
 
 	Ok(Json(CatalogResponse {
 		cosmetics: cosmetics
@@ -200,6 +242,15 @@ async fn catalog(
 				cover_url: url(c.cover_asset_id),
 				preview_url: url(c.preview_asset_id),
 				tag_ids: tags.remove(&c.id).unwrap_or_default(),
+				slots: slots.remove(&c.id).unwrap_or_default(),
+				color_slots: color_slots(
+					&c.r#type,
+					c.asset_id
+						.and_then(|id| declared.get(&id).cloned())
+						.unwrap_or_default()
+				),
+				variant_key: c.variant_key,
+				asset_id: c.asset_id,
 				id: c.id,
 				name: c.name,
 				r#type: c.r#type,
@@ -487,4 +538,52 @@ fn group<V>(pairs: impl Iterator<Item = (i32, V)>) -> HashMap<i32, Vec<V>> {
 		map.entry(key).or_default().push(value);
 	}
 	map
+}
+
+#[cfg(test)]
+mod tests {
+	use entities::sea_orm_active_enums::{BodySlot, CosmeticType};
+	use serde_json::json;
+
+	use super::{CatalogCosmetic, color_slots};
+
+	#[test]
+	fn catalogue_rows_list_their_variant_asset_and_sorted_colour_slots() {
+		let names = |kind, declared: &[&str]| {
+			let declared = declared.iter().map(|name| (*name).to_owned()).collect();
+			color_slots(&kind, declared).into_iter().map(|slot| slot.name).collect::<Vec<_>>()
+		};
+		assert_eq!(names(CosmeticType::Wings, &["trim", "glow"]), ["glow", "trim"]);
+		assert!(names(CosmeticType::Cape, &[]).is_empty());
+		assert_eq!(names(CosmeticType::Aura, &[]), ["aura"]);
+		assert_eq!(names(CosmeticType::Aura, &["aura"]), ["aura"]);
+
+		let row = CatalogCosmetic {
+			id: 5,
+			name: Some("Pride".to_owned()),
+			r#type: CosmeticType::Nameplate,
+			enabled: false,
+			group_id: Some(2),
+			variant_name: Some("Rainbow".to_owned()),
+			model_variant: None,
+			variant_order: 1,
+			store_product_id: None,
+			base_price: None,
+			collection: None,
+			description: None,
+			purchase_count: 0,
+			url: None,
+			cover_url: None,
+			preview_url: None,
+			tag_ids: Vec::new(),
+			created_at: "2026-11-25T12:00:00+00:00".to_owned(),
+			variant_key: Some("rainbow".to_owned()),
+			asset_id: Some(40),
+			slots: vec![BodySlot::Nameplate],
+			color_slots: color_slots(&CosmeticType::Nameplate, vec!["ink".to_owned()])
+		};
+		let body = serde_json::to_value(row).unwrap();
+		assert_eq!((&body["variant_key"], &body["asset_id"], &body["enabled"]), (&json!("rainbow"), &json!(40), &json!(false)));
+		assert_eq!((&body["slots"], &body["color_slots"]), (&json!(["nameplate"]), &json!([{ "name": "ink" }])));
+	}
 }

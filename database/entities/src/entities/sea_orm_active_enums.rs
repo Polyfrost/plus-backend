@@ -59,6 +59,14 @@ pub enum BodySlot {
 	Shoulder,
 	#[sea_orm(string_value = "pet")]
 	Pet,
+	#[sea_orm(string_value = "nameplate")]
+	Nameplate,
+	#[sea_orm(string_value = "effect_a")]
+	EffectA,
+	#[sea_orm(string_value = "effect_b")]
+	EffectB,
+	#[sea_orm(string_value = "tail")]
+	Tail,
 }
 #[derive(
 	Debug,
@@ -97,6 +105,10 @@ pub enum CosmeticType {
 	Shoulder,
 	#[sea_orm(string_value = "pet")]
 	Pet,
+	#[sea_orm(string_value = "nameplate")]
+	Nameplate,
+	#[sea_orm(string_value = "effect")]
+	Effect,
 }
 #[derive(
 	Debug,
@@ -486,4 +498,54 @@ pub enum PartyInviteStatus {
 	Cancelled,
 	#[sea_orm(string_value = "expired")]
 	Expired,
+}
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(
+	rs_type = "String",
+	db_type = "Enum",
+	enum_name = "shared_emote_privacy"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedEmotePrivacy {
+	#[sea_orm(string_value = "everyone")]
+	Everyone,
+	#[sea_orm(string_value = "friends")]
+	Friends,
+	#[sea_orm(string_value = "nobody")]
+	Nobody,
+}
+#[derive(
+	Debug,
+	Clone,
+	Copy,
+	PartialEq,
+	Eq,
+	EnumIter,
+	DeriveActiveEnum,
+	schemars :: JsonSchema,
+	serde :: Deserialize,
+	serde :: Serialize,
+	Hash,
+)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "pet_interactions")]
+#[serde(rename_all = "snake_case")]
+pub enum PetInteractions {
+	#[sea_orm(string_value = "everyone")]
+	Everyone,
+	#[sea_orm(string_value = "friends")]
+	Friends,
+	#[sea_orm(string_value = "off")]
+	Off,
 }

@@ -173,7 +173,7 @@ async fn endpoint(
 				.all(&state.database)
 				.await?
 				.into_iter()
-				.filter(|c| !super::is_redundant_variant(c.variant_name.as_deref()))
+				.filter(|c| !super::is_redundant_variant(c))
 				.collect::<Vec<_>>();
 
 			let group_name = CosmeticGroup::find_by_id(group_id)

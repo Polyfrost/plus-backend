@@ -20,8 +20,8 @@ use entities::{
 use schemars::JsonSchema;
 use sea_orm::{
 	ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, DatabaseTransaction,
-	EntityTrait, Iterable, PaginatorTrait, QueryFilter, QueryOrder, Set,
-	TransactionTrait, sea_query::Expr,
+	EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+	sea_query::Expr,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -32,9 +32,15 @@ use super::{
 };
 use crate::api::{
 	ApiState,
+	state::holding_slot_rules,
 	v0::{
 		account::AuthenticatedPlayer,
-		websocket::{announce_equipment_change, announce_particle_color_change},
+		bonuses::{deliver_discoveries, record_completions, refresh_bonuses},
+		websocket::{
+			announce_equipment_change, announce_particle_color_change, commit_look,
+			commit_particle_color, under_slot_rules,
+			colors::{self, ParticleChange},
+		},
 	},
 };
 
@@ -220,6 +226,7 @@ async fn seed_starter_outfits(
 
 	let player = lock_player(&txn, player).await?;
 	let (equipped, particle_color) = current_look(state, &txn, &player).await?;
+	let equipped = wearable_look(&txn, equipped).await?;
 
 	let starters = STARTER_OUTFITS.min(state.settings.get().outfits.max_outfits);
 	let mut first = None;
@@ -335,6 +342,54 @@ async fn current_look<C: ConnectionTrait>(
 	Ok((stored_equipment(db, player.id).await?, player.particle_color))
 }
 
+async fn hold_slot_rules<C: ConnectionTrait>(
+	db: &C,
+	look: &HashMap<BodySlot, i32>,
+) -> Result<HashSet<(i32, BodySlot)>, sea_orm::DbErr> {
+	if look.is_empty() {
+		return Ok(HashSet::new());
+	}
+
+	holding_slot_rules(look.values().copied()).all(db).await?;
+	Ok(CosmeticAllowedSlot::find()
+		.filter(cosmetic_allowed_slot::Column::CosmeticId.is_in(look.values().copied()))
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|row| (row.cosmetic_id, row.slot))
+		.collect())
+}
+
+fn outside_slot_rules(
+	look: &HashMap<BodySlot, i32>,
+	allowed: &HashSet<(i32, BodySlot)>,
+) -> Vec<BodySlot> {
+	look.iter()
+		.filter(|(slot, cosmetic_id)| !allowed.contains(&(**cosmetic_id, (*slot).clone())))
+		.map(|(slot, _)| slot.clone())
+		.collect()
+}
+
+async fn wearable_look<C: ConnectionTrait>(
+	db: &C,
+	mut look: HashMap<BodySlot, i32>,
+) -> Result<HashMap<BodySlot, i32>, sea_orm::DbErr> {
+	let allowed = hold_slot_rules(db, &look).await?;
+	for slot in outside_slot_rules(&look, &allowed) {
+		look.remove(&slot);
+	}
+	Ok(look)
+}
+
+fn outfit_slots_dropped(
+	outfit_id: i32,
+	slots: Vec<BodySlot>,
+) -> sea_orm::DeleteMany<PlayerOutfitCosmetic> {
+	PlayerOutfitCosmetic::delete_many()
+		.filter(player_outfit_cosmetic::Column::OutfitId.eq(outfit_id))
+		.filter(player_outfit_cosmetic::Column::Slot.is_in(slots))
+}
+
 async fn insert_outfit_cosmetics<C: ConnectionTrait>(
 	db: &C,
 	outfit_id: i32,
@@ -372,12 +427,68 @@ async fn find_outfit_skin<C: ConnectionTrait>(
 		.await
 }
 
-async fn override_particle_color(state: &ApiState, player: Uuid, color: Option<i32>) {
+async fn store_aura_palette(
+	db: &DatabaseTransaction,
+	player: &user::Model,
+	equipped: &HashMap<BodySlot, i32>,
+	color: Option<i32>,
+) -> Result<Option<ParticleChange>, sea_orm::DbErr> {
+	let Some(aura) = equipped.get(&BodySlot::Aura).copied() else {
+		return Ok(None);
+	};
+	let saved = colors::load_palette(db, player.id, aura).await?;
+	let planned = colors::plan_particle_color(aura, saved, color);
+	colors::store_colors(
+		db,
+		player.id,
+		planned.aura,
+		planned.stored.as_ref(),
+		true,
+		planned.active,
+	)
+	.await?;
+	Ok(Some(planned))
+}
+
+async fn override_particle_color(
+	state: &ApiState,
+	player: Uuid,
+	color: Option<i32>,
+	planned: Option<&ParticleChange>,
+) {
 	let mut player_runtime = state.realtime.player_runtime.write().await;
-	state.particle_color_persist.supersede(player);
 	if let Some(runtime) = player_runtime.get_mut(&player) {
-		runtime.particle_color = color;
+		colors::apply_particle_color(runtime, color, planned);
 	}
+}
+
+struct ColorOverride {
+	color: Option<i32>,
+	planned: Option<ParticleChange>,
+}
+
+async fn after_commit<T>(
+	committed: impl Future<Output = Result<(), sea_orm::DbErr>>,
+	apply: impl Future<Output = T>,
+) -> Result<T, sea_orm::DbErr> {
+	committed.await?;
+	Ok(apply.await)
+}
+
+async fn commit_color_override(
+	state: &ApiState,
+	player: Uuid,
+	txn: DatabaseTransaction,
+	change: Option<ColorOverride>,
+) -> Result<(), sea_orm::DbErr> {
+	let Some(change) = change else {
+		return txn.commit().await;
+	};
+	after_commit(
+		commit_particle_color(state, player, txn),
+		override_particle_color(state, player, change.color, change.planned.as_ref()),
+	)
+	.await
 }
 
 async fn activate_outfit<C: ConnectionTrait>(
@@ -460,6 +571,7 @@ async fn create(
 	let name = body.name.as_deref().map(validate_name).transpose()?;
 	let mojang_cape_id = normalize_cape_id(body.mojang_cape_id)?;
 
+	let _updates = state.realtime.player_updates.lock(player.minecraft_uuid).await;
 	let txn = state.database.begin().await?;
 	let player = lock_player(&txn, &player).await?;
 
@@ -477,6 +589,7 @@ async fn create(
 	}
 
 	let (equipped, current_color) = current_look(&state, &txn, &player).await?;
+	let equipped = wearable_look(&txn, equipped).await?;
 	let particle_color = body.particle_color.or(current_color);
 
 	let outfit = player_outfit::ActiveModel {
@@ -501,11 +614,17 @@ async fn create(
 	let color_changed = particle_color != current_color;
 	activate_outfit(&txn, &player, outfit.id, color_changed.then_some(particle_color))
 		.await?;
-	if color_changed {
-		override_particle_color(&state, player.minecraft_uuid, particle_color).await;
-	}
+	let color_override = if color_changed {
+		let planned = store_aura_palette(&txn, &player, &equipped, particle_color).await?;
+		Some(ColorOverride {
+			color: particle_color,
+			planned,
+		})
+	} else {
+		None
+	};
 
-	txn.commit().await?;
+	commit_color_override(&state, player.minecraft_uuid, txn, color_override).await?;
 
 	if color_changed {
 		announce_particle_color_change(&state, player.minecraft_uuid, particle_color, true)
@@ -526,6 +645,7 @@ async fn update(
 	let mojang_cape_id = body.mojang_cape_id.map(normalize_cape_id).transpose()?;
 	let clears_blank = clears_blank(body.blank, body.skin_id, mojang_cape_id.as_ref())?;
 
+	let _updates = state.realtime.player_updates.lock(player.minecraft_uuid).await;
 	let txn = state.database.begin().await?;
 	let player = lock_player(&txn, &player).await?;
 
@@ -559,16 +679,22 @@ async fn update(
 	let info = outfit_info(&txn, outfit).await?;
 
 	let applied_color = body.particle_color.filter(|_| is_active);
+	let mut color_override = None;
 	if let Some(particle_color) = applied_color {
 		User::update_many()
 			.col_expr(user::Column::ParticleColor, Expr::value(particle_color))
 			.filter(user::Column::Id.eq(player.id))
 			.exec(&txn)
 			.await?;
-		override_particle_color(&state, player.minecraft_uuid, particle_color).await;
+		let (equipped, _) = current_look(&state, &txn, &player).await?;
+		let planned = store_aura_palette(&txn, &player, &equipped, particle_color).await?;
+		color_override = Some(ColorOverride {
+			color: particle_color,
+			planned,
+		});
 	}
 
-	txn.commit().await?;
+	commit_color_override(&state, player.minecraft_uuid, txn, color_override).await?;
 
 	if let Some(particle_color) = applied_color {
 		announce_particle_color_change(&state, player.minecraft_uuid, particle_color, true)
@@ -607,42 +733,59 @@ async fn apply(
 	AuthenticatedPlayer(player): AuthenticatedPlayer,
 	Path(id): Path<i32>,
 ) -> Result<Json<ApplyOutfitResponse>, OutfitError> {
+	under_slot_rules(&state.realtime, apply_outfit(&state, player, id))
+		.await
+		.map(Json)
+}
+
+async fn apply_outfit(
+	state: &ApiState,
+	player: user::Model,
+	id: i32,
+) -> Result<ApplyOutfitResponse, OutfitError> {
+	let _updates = state.realtime.player_updates.lock(player.minecraft_uuid).await;
 	let txn = state.database.begin().await?;
 	let player = lock_player(&txn, &player).await?;
 
 	let outfit = find_outfit(&txn, player.id, id).await?;
 	if outfit.blank {
-		return adopt_current_look(&state, txn, &player, outfit).await.map(Json);
+		return adopt_current_look(state, txn, &player, outfit).await;
 	}
 
-	let outfit_cosmetics = load_outfit_cosmetics(&txn, [outfit.id])
+	let mut outfit_cosmetics = load_outfit_cosmetics(&txn, [outfit.id])
 		.await?
 		.remove(&outfit.id)
 		.unwrap_or_default();
 
-	let cosmetic_ids: Vec<i32> = outfit_cosmetics.values().copied().collect();
+	let allowed = hold_slot_rules(&txn, &outfit_cosmetics).await?;
+	let removed = outside_slot_rules(&outfit_cosmetics, &allowed);
+	let outfit = if removed.is_empty() {
+		outfit
+	} else {
+		for slot in &removed {
+			outfit_cosmetics.remove(slot);
+		}
+		outfit_slots_dropped(outfit.id, removed).exec(&txn).await?;
+		let mut active: player_outfit::ActiveModel = outfit.into();
+		active.updated_at = Set(chrono::Utc::now().fixed_offset());
+		active.update(&txn).await?
+	};
+
 	let owned: HashSet<i32> = PlayerOwnedCosmetic::find()
 		.filter(player_owned_cosmetic::Column::PlayerId.eq(player.id))
-		.filter(player_owned_cosmetic::Column::CosmeticId.is_in(cosmetic_ids.clone()))
+		.filter(
+			player_owned_cosmetic::Column::CosmeticId
+				.is_in(outfit_cosmetics.values().copied()),
+		)
 		.all(&txn)
 		.await?
 		.into_iter()
 		.map(|row| row.cosmetic_id)
 		.collect();
-	let allowed: HashSet<(i32, BodySlot)> = CosmeticAllowedSlot::find()
-		.filter(cosmetic_allowed_slot::Column::CosmeticId.is_in(cosmetic_ids))
-		.all(&txn)
-		.await?
-		.into_iter()
-		.map(|row| (row.cosmetic_id, row.slot))
-		.collect();
 
 	let equipped: HashMap<BodySlot, i32> = outfit_cosmetics
 		.iter()
-		.filter(|(slot, cosmetic_id)| {
-			owned.contains(cosmetic_id)
-				&& allowed.contains(&(**cosmetic_id, (*slot).clone()))
-		})
+		.filter(|(_, cosmetic_id)| owned.contains(cosmetic_id))
 		.map(|(slot, cosmetic_id)| (slot.clone(), *cosmetic_id))
 		.collect();
 
@@ -664,23 +807,22 @@ async fn apply(
 		.await?;
 	}
 
-	activate_outfit(&txn, &player, outfit.id, Some(outfit.particle_color)).await?;
+	let particle_color = outfit.particle_color;
+	activate_outfit(&txn, &player, outfit.id, Some(particle_color)).await?;
+	let planned = store_aura_palette(&txn, &player, &equipped, particle_color).await?;
 	let skin = find_outfit_skin(&txn, player.id, &outfit).await?;
+	let recorded = record_completions(&txn, &state.bonus_catalog, player.id).await?;
 
-	let previous = {
+	let previous = after_commit(commit_look(state, player.minecraft_uuid, txn), async {
 		let mut player_runtime = state.realtime.player_runtime.write().await;
-		for slot in BodySlot::iter() {
-			state.equipment_persist.supersede((player.minecraft_uuid, slot));
-		}
-		state.particle_color_persist.supersede(player.minecraft_uuid);
 		player_runtime.get_mut(&player.minecraft_uuid).map(|runtime| {
-			runtime.particle_color = outfit.particle_color;
-			std::mem::replace(&mut runtime.equipped, equipped.clone())
+			let previous = std::mem::replace(&mut runtime.equipped, equipped.clone());
+			colors::apply_particle_color(runtime, particle_color, planned.as_ref());
+			previous
 		})
-	}
+	})
+	.await?
 	.unwrap_or(stored);
-
-	txn.commit().await?;
 
 	let slots: HashSet<BodySlot> =
 		previous.keys().chain(equipped.keys()).cloned().collect();
@@ -688,7 +830,7 @@ async fn apply(
 		let cosmetic_id = equipped.get(&slot).copied();
 		if previous.get(&slot).copied() != cosmetic_id {
 			announce_equipment_change(
-				&state,
+				state,
 				player.minecraft_uuid,
 				slot,
 				cosmetic_id,
@@ -697,19 +839,18 @@ async fn apply(
 			.await;
 		}
 	}
-	announce_particle_color_change(
-		&state,
-		player.minecraft_uuid,
-		outfit.particle_color,
-		true,
-	)
-	.await;
+	refresh_bonuses(state, [player.minecraft_uuid]).await;
+	if recorded {
+		deliver_discoveries(state, player.minecraft_uuid, player.id).await;
+	}
+	announce_particle_color_change(state, player.minecraft_uuid, particle_color, true)
+		.await;
 
-	Ok(Json(ApplyOutfitResponse {
+	Ok(ApplyOutfitResponse {
 		outfit: OutfitInfo::from_model(outfit, outfit_cosmetics),
 		skin: skin.map(SkinInfo::from_model),
 		adopted: false,
-	}))
+	})
 }
 
 async fn adopt_current_look(
@@ -719,6 +860,7 @@ async fn adopt_current_look(
 	outfit: player_outfit::Model,
 ) -> Result<ApplyOutfitResponse, OutfitError> {
 	let (equipped, current_color) = current_look(state, &txn, player).await?;
+	let equipped = wearable_look(&txn, equipped).await?;
 	let particle_color = outfit.particle_color.or(current_color);
 
 	PlayerOutfitCosmetic::delete_many()
@@ -736,11 +878,17 @@ async fn adopt_current_look(
 	activate_outfit(&txn, player, outfit.id, color_changed.then_some(particle_color))
 		.await?;
 	let skin = find_outfit_skin(&txn, player.id, &outfit).await?;
-	if color_changed {
-		override_particle_color(state, player.minecraft_uuid, particle_color).await;
-	}
+	let color_override = if color_changed {
+		let planned = store_aura_palette(&txn, player, &equipped, particle_color).await?;
+		Some(ColorOverride {
+			color: particle_color,
+			planned,
+		})
+	} else {
+		None
+	};
 
-	txn.commit().await?;
+	commit_color_override(state, player.minecraft_uuid, txn, color_override).await?;
 
 	if color_changed {
 		announce_particle_color_change(state, player.minecraft_uuid, particle_color, true)
@@ -756,7 +904,62 @@ async fn adopt_current_look(
 
 #[cfg(test)]
 mod tests {
-	use super::super::next_numbered_name;
+	use std::{
+		cell::Cell,
+		collections::{HashMap, HashSet},
+	};
+
+	use entities::{player_outfit, sea_orm_active_enums::BodySlot};
+	use sea_orm::{DbBackend, DbErr, QueryTrait};
+
+	use super::{
+		super::{OutfitInfo, next_numbered_name},
+		after_commit, outfit_slots_dropped, outside_slot_rules,
+	};
+
+	#[test]
+	fn outfits_keep_only_allowed_slots_and_carry_effect_slots() {
+		let look = HashMap::from([(BodySlot::Hat, 5), (BodySlot::Backpack, 5), (BodySlot::Aura, 7)]);
+		let allowed = HashSet::from([(5, BodySlot::Hat), (7, BodySlot::Hat)]);
+		let mut outside = outside_slot_rules(&look, &allowed);
+		outside.sort_by_key(|slot| format!("{slot:?}"));
+		assert_eq!(outside, vec![BodySlot::Aura, BodySlot::Backpack]);
+
+		let sql = outfit_slots_dropped(4, vec![BodySlot::Backpack]).build(DbBackend::Postgres).to_string();
+		assert!(sql.starts_with(r#"DELETE FROM "player_outfit_cosmetic""#), "{sql}");
+		assert!(sql.contains(r#""player_outfit_cosmetic"."outfit_id" = 4"#), "{sql}");
+		assert!(sql.contains(r#""player_outfit_cosmetic"."slot" IN ("#), "{sql}");
+
+		let outfit = player_outfit::Model {
+			id: 1,
+			player_id: 2,
+			name: "Outfit #1".into(),
+			favorite: false,
+			skin_id: None,
+			mojang_cape_id: None,
+			particle_color: None,
+			blank: false,
+			created_at: Default::default(),
+			updated_at: Default::default(),
+		};
+		let equipped = HashMap::from([(BodySlot::EffectA, 7), (BodySlot::EffectB, 8)]);
+		let serialized = serde_json::to_value(OutfitInfo::from_model(outfit, equipped)).unwrap();
+		assert_eq!(serialized["equipped"], serde_json::json!({ "effect_a": 7, "effect_b": 8 }));
+	}
+
+	#[tokio::test]
+	async fn the_live_look_changes_only_once_the_commit_lands() {
+		let applied = Cell::new(false);
+		let failed = after_commit(async { Err(DbErr::Custom("down".to_owned())) }, async { applied.set(true) });
+		assert!(failed.await.is_err());
+		assert!(!applied.get());
+		let landed = after_commit(async { Ok(()) }, async {
+			applied.set(true);
+			7
+		});
+		assert_eq!(landed.await.ok(), Some(7));
+		assert!(applied.get());
+	}
 
 	fn next_outfit_name<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
 		next_numbered_name(super::OUTFIT_NAME_PREFIX, names)

@@ -1,5 +1,6 @@
 pub(super) mod account;
 mod assets;
+pub(super) mod bonuses;
 mod bundles;
 mod category;
 mod collections;
@@ -26,6 +27,7 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.nest("/account", account::setup_router().await)
 		.nest("/transactions", transactions::setup_router().await)
 		.merge(assets::setup_router().await)
+		.merge(bonuses::setup_router().await)
 		.merge(bundles::setup_router().await)
 		.merge(collections::setup_router().await)
 		.merge(links::setup_router().await)

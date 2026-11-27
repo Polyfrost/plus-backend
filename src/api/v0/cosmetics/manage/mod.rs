@@ -2,6 +2,8 @@ mod create;
 mod delete;
 mod render_cover;
 mod replace_asset;
+mod set_cover;
+mod sets;
 mod update;
 mod update_variant;
 
@@ -18,6 +20,8 @@ pub(super) fn router() -> ApiRouter<ApiState> {
 			.merge(update_variant::router())
 			.merge(replace_asset::router())
 			.merge(delete::router())
-			.merge(render_cover::router()),
+			.merge(render_cover::router())
+			.merge(set_cover::router())
+			.merge(sets::router()),
 	)
 }

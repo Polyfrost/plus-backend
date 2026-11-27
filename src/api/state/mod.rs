@@ -14,7 +14,7 @@ use pasetors::{
 	keys::{Generate, SymmetricKey},
 	version4::V4,
 };
-use reqwest::{Client, ClientBuilder};
+use reqwest::{Client, ClientBuilder, redirect::Policy};
 use s3::{Bucket, creds::Credentials};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection, EntityTrait};
 use tracing::{info, warn};
@@ -22,9 +22,12 @@ use tracing::{info, warn};
 pub(in crate::api) use self::{
 	analytics_rollup::{ANALYTICS_DAILY_JOB, SESSION_LENGTH_BUCKETS},
 	instrumentation::Instrumentation,
-	persistence::{EquipmentPersistence, ParticleColorPersistence, PersistQueue},
+	persistence::{
+		EquipmentPersistence, ParticleColorPersistence, PersistQueue, Supersession,
+		holding_slot_rules,
+	},
 	realtime::{
-		ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
+		ActiveEmote, ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
 		RealtimeConnection, RealtimeState, effective_status,
 	},
 };
@@ -39,7 +42,8 @@ use crate::{
 		settings::SharedSettings,
 		v0::{
 			account::links::{self, DiscordOAuth},
-			cosmetics::CachedAssetInfo,
+			bonuses::{self, BonusCatalog},
+			cosmetics::{CachedAssetInfo, spawn_catalog_notifier},
 			oidc::{self, AuthorizationCode, OidcSigningKey},
 		},
 		v1::SyncStorage,
@@ -47,6 +51,7 @@ use crate::{
 	},
 	commands::ServeArgs,
 	paynow::PayNowClient,
+	utils::debounce::Debouncer,
 };
 
 /// How long to wait for a free database connection before giving up.
@@ -87,10 +92,20 @@ const PLAY_RESPONSE_WINDOW: Duration = Duration::from_secs(60);
 const PLAY_RESPONSES_PER_WINDOW: u32 = 30;
 const HOSTED_JOIN_WINDOW: Duration = Duration::from_secs(60);
 const HOSTED_JOINS_PER_WINDOW: u32 = 10;
+const SHARED_EMOTE_WINDOW: Duration = Duration::from_secs(60);
+const SHARED_EMOTES_PER_WINDOW: u32 = 20;
 const PING_WINDOW: Duration = Duration::from_secs(4);
 const PINGS_PER_WINDOW: u32 = 6;
 const PING_CLEARS_PER_WINDOW: u32 = 10;
 const PING_REPLIES_PER_WINDOW: u32 = 8;
+const COLOR_WINDOW: Duration = Duration::from_secs(10);
+const COLOR_CHANGES_PER_WINDOW: u32 = 10;
+const PET_PREFERENCE_WINDOW: Duration = Duration::from_secs(10);
+const PET_PREFERENCE_CHANGES_PER_WINDOW: u32 = 10;
+const BONUS_PREVIEW_WINDOW: Duration = Duration::from_secs(60);
+const BONUS_PREVIEWS_PER_WINDOW: u32 = 30;
+const COLOR_SLOT_SCANS: u64 = 10_000;
+const ASSET_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 const USER_AGENT: &str = "PolyPlus Backend";
 
@@ -99,6 +114,7 @@ pub(super) struct ApiState {
 	pub(super) paynow: PayNowApiState,
 	pub(super) database: DatabaseConnection,
 	pub(super) client: Client,
+	pub(super) asset_client: Client,
 	pub(super) paseto_key: SymmetricKey<V4>,
 	pub(super) s3_bucket: Arc<Bucket>,
 	pub(super) s3_public_url: Arc<str>,
@@ -139,9 +155,16 @@ pub(super) struct ApiState {
 	pub(super) play_together_limit: RateLimiter<i32>,
 	pub(super) play_response_limit: RateLimiter<i32>,
 	pub(super) hosted_join_limit: RateLimiter<i32>,
+	pub(super) shared_emote_limit: RateLimiter<i32>,
 	pub(super) ping_limit: RateLimiter<i32>,
 	pub(super) ping_clear_limit: RateLimiter<i32>,
 	pub(super) ping_reply_limit: RateLimiter<i32>,
+	pub(super) catalog_updates: Debouncer,
+	pub(super) color_limit: RateLimiter<i32>,
+	pub(super) pet_preference_limit: RateLimiter<i32>,
+	pub(super) bonus_catalog: BonusCatalog,
+	pub(super) bonus_preview_limit: RateLimiter<i32>,
+	pub(super) color_slot_scans: Cache<i32, Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -169,6 +192,8 @@ impl ApiState {
 		reap_open_play_sessions(&database).await;
 
 		let realtime = RealtimeState::default();
+		let bonus_catalog = bonuses::new_catalog_cache();
+		let catalog_updates = spawn_catalog_notifier(realtime.clone());
 		persistence::spawn_playtime_flush(database.clone(), realtime.playtime.clone());
 		analytics_rollup::spawn_analytics_rollup(database.clone());
 
@@ -186,11 +211,15 @@ impl ApiState {
 		ApiState {
 			paynow: PayNowApiState::new(args),
 			client: build_http_client(),
+			asset_client: build_asset_client(),
 			paseto_key: SymmetricKey::generate()
 				.expect("Unable to generate paseto signing key"),
 			asset_cache,
 			realtime,
-			equipment_persist: persistence::spawn_equipment_queue(database.clone()),
+			equipment_persist: persistence::spawn_equipment_queue(
+				database.clone(),
+				bonus_catalog.clone(),
+			),
 			particle_color_persist: persistence::spawn_particle_color_queue(
 				database.clone(),
 			),
@@ -290,6 +319,11 @@ impl ApiState {
 				HOSTED_JOINS_PER_WINDOW,
 				HOSTED_JOIN_WINDOW,
 			),
+			shared_emote_limit: lockouts.limiter(
+				"shared_emotes",
+				SHARED_EMOTES_PER_WINDOW,
+				SHARED_EMOTE_WINDOW,
+			),
 			ping_limit: lockouts.limiter("pings", PINGS_PER_WINDOW, PING_WINDOW),
 			ping_clear_limit: lockouts.limiter(
 				"ping_clears",
@@ -301,9 +335,27 @@ impl ApiState {
 				PING_REPLIES_PER_WINDOW,
 				PING_WINDOW,
 			),
+			color_limit: lockouts.limiter(
+				"cosmetic_colors",
+				COLOR_CHANGES_PER_WINDOW,
+				COLOR_WINDOW,
+			),
+			pet_preference_limit: lockouts.limiter(
+				"pet_preferences",
+				PET_PREFERENCE_CHANGES_PER_WINDOW,
+				PET_PREFERENCE_WINDOW,
+			),
+			bonus_catalog,
+			bonus_preview_limit: lockouts.limiter(
+				"bonus_previews",
+				BONUS_PREVIEWS_PER_WINDOW,
+				BONUS_PREVIEW_WINDOW,
+			),
+			color_slot_scans: Cache::builder().max_capacity(COLOR_SLOT_SCANS).build(),
 			s3_public_url: args.s3_public_url.trim_end_matches('/').into(),
 			s3_bucket,
 			database,
+			catalog_updates,
 		}
 	}
 
@@ -420,6 +472,16 @@ fn connect_s3_bucket(args: &ServeArgs) -> Arc<Bucket> {
 fn build_http_client() -> Client {
 	ClientBuilder::new()
 		.https_only(true)
+		.user_agent(USER_AGENT)
+		.build()
+		.expect("Unable to build reqwest client")
+}
+
+fn build_asset_client() -> Client {
+	ClientBuilder::new()
+		.https_only(true)
+		.redirect(Policy::none())
+		.timeout(ASSET_FETCH_TIMEOUT)
 		.user_agent(USER_AGENT)
 		.build()
 		.expect("Unable to build reqwest client")

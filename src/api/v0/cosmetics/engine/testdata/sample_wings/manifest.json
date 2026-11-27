@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "kind": "item",
+  "id": "sample_wings",
+  "requires": ["controllers", "reactions", "palettes", "custom_colors"],
+  "geometry": "wings",
+  "textures": [{ "id": "wings", "palette": true }],
+  "palettes": true,
+  "animations": ["wings"],
+  "animationControllers": ["wings"],
+  "controllers": ["controller.animation.wings.mood"],
+  "attach": { "rig": "player", "bone": "body" },
+  "reactions": [
+    { "signal": "is_in_rain", "on": "while", "play": "droop", "blend": 0.25, "palette": "storm" },
+    { "signal": "is_hurt", "on": "start", "play": "flinch" }
+  ]
+}

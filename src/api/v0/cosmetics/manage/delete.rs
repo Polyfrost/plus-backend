@@ -96,5 +96,7 @@ async fn endpoint(
 		}
 	}
 
+	crate::api::v0::cosmetics::notify_catalog_updated(&state);
+
 	Ok(StatusCode::NO_CONTENT)
 }

@@ -1,0 +1,19 @@
+{
+  "kind": "body",
+  "padding": [
+    3,
+    2,
+    3,
+    2
+  ],
+  "minWidth": 30,
+  "radius": 2,
+  "fill": {
+    "blend": "fill"
+  },
+  "rings": [
+    {
+      "color": "border"
+    }
+  ]
+}

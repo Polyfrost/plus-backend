@@ -21,7 +21,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::api::{
 	ApiState,
 	v0::cosmetics::{
-		CosmeticInfo, group_cosmetics, in_enabled_group, is_redundant_variant,
+		BucketKey, CosmeticInfo, group_cosmetics, in_enabled_group, is_redundant_variant,
 		load_assets, load_groups,
 	},
 };
@@ -193,16 +193,12 @@ async fn endpoint(
 
 		let groups = load_groups(&state.database).await?;
 
-		let mut keys: HashMap<i32, SortKey> = HashMap::new();
+		let mut keys: HashMap<BucketKey, SortKey> = HashMap::new();
 		for (cosmetic, ..) in &rows {
-			if is_redundant_variant(cosmetic.variant_name.as_deref()) {
+			if is_redundant_variant(cosmetic) {
 				continue;
 			}
-			let bucket_id = cosmetic
-				.group_id
-				.filter(|id| groups.contains_key(id))
-				.unwrap_or(cosmetic.id);
-			keys.entry(bucket_id)
+			keys.entry(BucketKey::of(cosmetic, &groups))
 				.and_modify(|key| key.add(cosmetic))
 				.or_insert_with(|| SortKey::from_cosmetic(cosmetic));
 		}
@@ -226,7 +222,7 @@ async fn endpoint(
 				);
 			}
 
-			let (Some(a), Some(b)) = (keys.get(&a.id), keys.get(&b.id)) else {
+			let (Some(a), Some(b)) = (keys.get(&a.key()), keys.get(&b.key())) else {
 				return Ordering::Equal;
 			};
 

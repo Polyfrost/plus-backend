@@ -3,7 +3,10 @@ mod friends;
 mod relationship;
 mod requests;
 
-use std::time::Duration;
+use std::{
+	collections::{HashMap, HashSet},
+	time::Duration,
+};
 
 use aide::{OperationIo, axum::ApiRouter};
 use axum::{
@@ -11,7 +14,7 @@ use axum::{
 	response::{IntoResponse, Response},
 };
 use entities::{blocks, prelude::*, relationships, user};
-use sea_orm::{ColumnTrait, DbErr, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QuerySelect};
 use uuid::Uuid;
 
 use crate::api::{ApiState, error_response};
@@ -97,6 +100,95 @@ pub(crate) async fn are_friends(state: &ApiState, a: i32, b: i32) -> Result<bool
 		.one(&state.database)
 		.await?
 		.is_some())
+}
+
+async fn user_ids(
+	db: &impl ConnectionTrait,
+	players: impl IntoIterator<Item = Uuid>,
+) -> Result<HashMap<i32, Uuid>, DbErr> {
+	let players = players.into_iter().collect::<HashSet<_>>();
+	if players.is_empty() {
+		return Ok(HashMap::new());
+	}
+	Ok(User::find()
+		.select_only()
+		.column(user::Column::Id)
+		.column(user::Column::MinecraftUuid)
+		.filter(user::Column::MinecraftUuid.is_in(players))
+		.into_tuple::<(i32, Uuid)>()
+		.all(db)
+		.await?
+		.into_iter()
+		.collect())
+}
+
+pub(crate) async fn friend_pairs_among(
+	db: &impl ConnectionTrait,
+	focus: &[Uuid],
+	others: &[Uuid],
+) -> Result<Vec<(Uuid, Uuid)>, DbErr> {
+	let focus_set = focus.iter().copied().collect::<HashSet<_>>();
+	let ids = user_ids(db, focus.iter().chain(others).copied()).await?;
+	let focus_ids = ids
+		.iter()
+		.filter(|(_, uuid)| focus_set.contains(uuid))
+		.map(|(id, _)| *id)
+		.collect::<Vec<_>>();
+	if focus_ids.is_empty() || ids.len() < 2 {
+		return Ok(Vec::new());
+	}
+	let all_ids = ids.keys().copied().collect::<Vec<_>>();
+	Ok(Relationships::find()
+		.filter(relationships::Column::UserAId.is_in(all_ids.clone()))
+		.filter(relationships::Column::UserBId.is_in(all_ids))
+		.filter(
+			relationships::Column::UserAId
+				.is_in(focus_ids.clone())
+				.or(relationships::Column::UserBId.is_in(focus_ids)),
+		)
+		.all(db)
+		.await?
+		.into_iter()
+		.filter_map(|row| Some((*ids.get(&row.user_a_id)?, *ids.get(&row.user_b_id)?)))
+		.collect())
+}
+
+pub(crate) async fn friends_of(
+	db: &impl ConnectionTrait,
+	player: Uuid,
+) -> Result<HashSet<Uuid>, DbErr> {
+	let Some(player_id) = user_ids(db, [player]).await?.into_keys().next() else {
+		return Ok(HashSet::new());
+	};
+	let others = Relationships::find()
+		.filter(
+			relationships::Column::UserAId
+				.eq(player_id)
+				.or(relationships::Column::UserBId.eq(player_id)),
+		)
+		.all(db)
+		.await?
+		.into_iter()
+		.map(|row| {
+			if row.user_a_id == player_id {
+				row.user_b_id
+			} else {
+				row.user_a_id
+			}
+		})
+		.collect::<HashSet<_>>();
+	if others.is_empty() {
+		return Ok(HashSet::new());
+	}
+	Ok(User::find()
+		.select_only()
+		.column(user::Column::MinecraftUuid)
+		.filter(user::Column::Id.is_in(others))
+		.into_tuple::<Uuid>()
+		.all(db)
+		.await?
+		.into_iter()
+		.collect())
 }
 
 pub(crate) async fn is_blocked_either_way(

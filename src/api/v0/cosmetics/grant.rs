@@ -32,7 +32,7 @@ use crate::{
 	api::{
 		ApiState, error_response,
 		permissions::{Require, perm},
-		v0::websocket::{send_to_owner, structs::ClientBoundPacket, unequip_revoked},
+		v0::websocket::{send_to_owner_connections, structs::ClientBoundPacket, unequip_revoked},
 	},
 	database::{DatabaseUserExt, record_ownership_events},
 	ownership::{self, Settled},
@@ -323,11 +323,13 @@ pub(in crate::api) async fn notify(
 	emote_ids: &[i32],
 	revoked: bool,
 ) {
-	send_to_owner(state, player, || ClientBoundPacket::OwnershipUpdated {
-		player,
-		cosmetic_ids: cosmetic_ids.to_vec(),
-		emote_ids: emote_ids.to_vec(),
-		revoked,
+	send_to_owner_connections(&state.realtime, player, || {
+		ClientBoundPacket::OwnershipUpdated {
+			player,
+			cosmetic_ids: cosmetic_ids.to_vec(),
+			emote_ids: emote_ids.to_vec(),
+			revoked,
+		}
 	})
 	.await;
 }
