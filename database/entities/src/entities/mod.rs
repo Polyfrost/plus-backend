@@ -51,6 +51,7 @@ pub mod party_members;
 pub mod paynow_webhook_event;
 pub mod perf_daily;
 pub mod perf_pack;
+pub mod perf_profile;
 pub mod perf_regression;
 pub mod perf_report;
 pub mod play_session;

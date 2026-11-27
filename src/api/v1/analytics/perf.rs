@@ -1,16 +1,20 @@
 use aide::transform::TransformOperation;
 use axum::{
 	Json,
-	extract::{Query, State},
+	body::Body,
+	extract::{Path, Query, State},
+	http::header,
+	response::{IntoResponse as _, Response},
 };
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use entities::{perf_daily, perf_regression, prelude::*};
+use entities::{perf_daily, perf_profile, perf_regression, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{
 	ColumnTrait as _, DbBackend, EntityTrait, FromQueryResult, QueryFilter as _,
-	QueryOrder as _, Statement,
+	QueryOrder as _, QuerySelect as _, Statement,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{
 	AnalyticsError, AnalyticsPeriod, PrivateAnalyticsAuth, resolve_series_bounds,
@@ -191,4 +195,103 @@ pub(super) async fn perf_daily_endpoint(
 		releases,
 		days,
 	}))
+}
+
+const DEFAULT_PROFILES: u64 = 50;
+const MAX_PROFILES: u64 = 200;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ProfilesQuery {
+	limit: Option<u64>,
+	minecraft_version: Option<String>,
+	pack_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub(super) struct Profile {
+	id: Uuid,
+	created_at: DateTime<FixedOffset>,
+	client_version: String,
+	minecraft_version: String,
+	loader: String,
+	pack_hash: String,
+	seconds: i32,
+	size_bytes: i64,
+}
+
+pub(super) fn profiles_doc(op: TransformOperation) -> TransformOperation {
+	op.id("getAnalyticsPerfProfiles")
+		.summary("List uploaded spark profiles")
+		.description(
+			"Spark profiles uploaded by idle players over the last 30 days, newest first. \
+			 `limit` defaults to 50 and is capped at 200.",
+		)
+		.tag("analytics")
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+pub(super) async fn profiles_endpoint(
+	State(state): State<ApiState>,
+	_auth: PrivateAnalyticsAuth,
+	Query(query): Query<ProfilesQuery>,
+) -> Result<Json<Vec<Profile>>, AnalyticsError> {
+	let mut select = PerfProfile::find();
+	if let Some(version) = query.minecraft_version {
+		select = select.filter(perf_profile::Column::MinecraftVersion.eq(version));
+	}
+	if let Some(hash) = query.pack_hash {
+		select = select.filter(perf_profile::Column::PackHash.eq(hash));
+	}
+	let profiles = select
+		.order_by_desc(perf_profile::Column::CreatedAt)
+		.limit(query.limit.unwrap_or(DEFAULT_PROFILES).min(MAX_PROFILES))
+		.all(&state.database)
+		.await?
+		.into_iter()
+		.map(|p| Profile {
+			id: p.id,
+			created_at: p.created_at,
+			client_version: p.client_version,
+			minecraft_version: p.minecraft_version,
+			loader: p.loader,
+			pack_hash: p.pack_hash,
+			seconds: p.seconds,
+			size_bytes: p.size_bytes,
+		})
+		.collect();
+	Ok(Json(profiles))
+}
+
+pub(super) fn profile_doc(op: TransformOperation) -> TransformOperation {
+	op.id("getAnalyticsPerfProfile")
+		.summary("Download a spark profile")
+		.description(
+			"The raw `.sparkprofile`, which opens in spark's viewer or `/spark viewer`.",
+		)
+		.tag("analytics")
+}
+
+#[tracing::instrument(level = "debug", skip(state))]
+pub(super) async fn profile_endpoint(
+	State(state): State<ApiState>,
+	_auth: PrivateAnalyticsAuth,
+	Path(id): Path<Uuid>,
+) -> Result<Response, AnalyticsError> {
+	let profile = PerfProfile::find_by_id(id)
+		.one(&state.database)
+		.await?
+		.ok_or(AnalyticsError::NotFound)?;
+	let storage = state.oneclient_sync.as_ref().ok_or(AnalyticsError::NotFound)?;
+	let object = storage.bucket().get_object_stream(&profile.s3_key).await?;
+	Ok((
+		[
+			(header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+			(
+				header::CONTENT_DISPOSITION,
+				format!("attachment; filename=\"{id}.sparkprofile\""),
+			),
+		],
+		Body::from_stream(object.bytes),
+	)
+		.into_response())
 }

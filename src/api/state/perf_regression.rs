@@ -5,7 +5,7 @@ use std::{
 };
 
 use chrono::Utc;
-use entities::{perf_pack, perf_regression, perf_report, prelude::*};
+use entities::{perf_pack, perf_profile, perf_regression, perf_report, prelude::*};
 use sea_orm::{
 	ColumnTrait as _, ConnectionTrait as _, DatabaseConnection, DbBackend, DbErr, EntityTrait, FromQueryResult,
 	QueryFilter as _, Set, Statement,
@@ -14,9 +14,12 @@ use sea_orm::{
 };
 use tracing::{info, warn};
 
+use crate::api::v1::SyncStorage;
+
 const RUN_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const WINDOW_DAYS: i32 = 30;
 pub(in crate::api) const RETENTION_DAYS: i32 = 90;
+const PROFILE_RETENTION_DAYS: i64 = 30;
 const MIN_PAIRS: usize = 20;
 const PACK_CHUNK: usize = 10_000;
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,6 +38,41 @@ pub(super) fn spawn_perf_regression(database: DatabaseConnection, webhook: Optio
 			tokio::time::sleep(RUN_INTERVAL).await;
 		}
 	});
+}
+
+pub(super) fn spawn_profile_prune(database: DatabaseConnection, storage: SyncStorage) {
+	tokio::spawn(async move {
+		loop {
+			if let Err(error) = prune_profiles(&database, &storage).await {
+				warn!("Unable to prune spark profiles: {error}");
+			}
+			tokio::time::sleep(RUN_INTERVAL).await;
+		}
+	});
+}
+
+async fn prune_profiles(database: &DatabaseConnection, storage: &SyncStorage) -> Result<(), DbErr> {
+	let expired = PerfProfile::find()
+		.filter(
+			perf_profile::Column::CreatedAt
+				.lt(Utc::now() - chrono::Duration::days(PROFILE_RETENTION_DAYS)),
+		)
+		.all(database)
+		.await?;
+	let mut removed = Vec::with_capacity(expired.len());
+	for profile in expired {
+		match storage.remove(&profile.s3_key).await {
+			Ok(()) => removed.push(profile.id),
+			Err(error) => warn!(key = profile.s3_key, "Unable to delete spark profile: {error}"),
+		}
+	}
+	for ids in removed.chunks(PACK_CHUNK) {
+		PerfProfile::delete_many()
+			.filter(perf_profile::Column::Id.is_in(ids.iter().copied()))
+			.exec(database)
+			.await?;
+	}
+	Ok(())
 }
 
 #[derive(Debug, FromQueryResult)]

@@ -49,6 +49,7 @@ pub use super::party_members::Entity as PartyMembers;
 pub use super::paynow_webhook_event::Entity as PaynowWebhookEvent;
 pub use super::perf_daily::Entity as PerfDaily;
 pub use super::perf_pack::Entity as PerfPack;
+pub use super::perf_profile::Entity as PerfProfile;
 pub use super::perf_regression::Entity as PerfRegression;
 pub use super::perf_report::Entity as PerfReport;
 pub use super::play_session::Entity as PlaySession;

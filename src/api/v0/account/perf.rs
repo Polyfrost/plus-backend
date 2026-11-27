@@ -5,20 +5,22 @@ use aide::{
 };
 use axum::{
 	Json,
-	extract::State,
+	body::Bytes,
+	extract::{DefaultBodyLimit, Query, State},
 	http::StatusCode,
 	response::{IntoResponse, NoContent},
 };
 use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
-use entities::{perf_pack, perf_report, prelude::*};
+use entities::{perf_pack, perf_profile, perf_report, prelude::*};
 use schemars::JsonSchema;
 use sea_orm::{
-	ColumnTrait as _, EntityTrait, PaginatorTrait as _, QueryFilter as _, Set,
-	sea_query::OnConflict,
+	ColumnTrait as _, ConnectionTrait as _, EntityTrait, PaginatorTrait as _, QueryFilter as _,
+	Set, Statement, TransactionTrait as _, sea_query::OnConflict,
 };
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::api::{
 	ApiState,
@@ -34,6 +36,8 @@ const MAX_FPS: f64 = 10_000.0;
 const MIN_SECONDS: f64 = 30.0;
 const MAX_SECONDS: f64 = 3600.0;
 const MIN_REPORT_INTERVAL: Duration = Duration::minutes(4);
+const MAX_PROFILE_BYTES: usize = 8 * 1024 * 1024;
+const MIN_PROFILE_INTERVAL: Duration = Duration::hours(24);
 
 #[derive(thiserror::Error, Debug, OperationIo)]
 pub enum PerfError {
@@ -41,13 +45,21 @@ pub enum PerfError {
 	Database(#[from] sea_orm::error::DbErr),
 	#[error("Invalid performance report: {0}")]
 	Invalid(&'static str),
+	#[error("Unable to store profile: {0}")]
+	Storage(#[from] s3::error::S3Error),
+	#[error("A profile was already uploaded in the last 24 hours")]
+	TooSoon,
+	#[error("Profile storage is not configured")]
+	Unavailable,
 }
 
 impl IntoResponse for PerfError {
 	fn into_response(self) -> axum::response::Response {
 		let status = match self {
-			Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+			Self::Database(_) | Self::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
 			Self::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+			Self::TooSoon => StatusCode::TOO_MANY_REQUESTS,
+			Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
 		};
 		crate::api::error_response(status, self)
 	}
@@ -92,8 +104,38 @@ fn endpoint_doc(op: TransformOperation) -> TransformOperation {
 		.tag("account")
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ProfileQuery {
+	pack_hash: String,
+	client_version: String,
+	minecraft_version: String,
+	loader: String,
+	seconds: i32,
+}
+
+fn profile_doc(op: TransformOperation) -> TransformOperation {
+	op.id("postPlayerPerfProfile")
+		.summary("Upload a spark profile")
+		.description(
+			"Stores a raw `.sparkprofile` (spark sampler protobuf, at most 8 MiB) taken while \
+			 the authorized player was idle. Only one profile per player is kept per 24 \
+			 hours; later uploads get 429.",
+		)
+		.tag("account")
+}
+
 pub(super) fn router() -> ApiRouter<ApiState> {
-	ApiRouter::new().api_route("/perf", post_with(self::endpoint, self::endpoint_doc))
+	ApiRouter::new()
+		.api_route("/perf", post_with(self::endpoint, self::endpoint_doc))
+		.merge(
+			ApiRouter::new()
+				.api_route("/perf/profile", post_with(self::profile_endpoint, self::profile_doc))
+				.layer(DefaultBodyLimit::max(MAX_PROFILE_BYTES)),
+		)
+}
+
+fn valid_pack_hash(hash: &str) -> bool {
+	hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn text(value: String) -> Option<String> {
@@ -128,7 +170,7 @@ fn validate(
 	mut body: RequestBody,
 	player_id: i32,
 ) -> Result<(perf_report::ActiveModel, Option<perf_pack::ActiveModel>), PerfError> {
-	if body.pack_hash.len() != 64 || !body.pack_hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+	if !valid_pack_hash(&body.pack_hash) {
 		return Err(PerfError::Invalid("pack_hash"));
 	}
 	let pack = match body.mods.take() {
@@ -227,11 +269,108 @@ async fn endpoint(
 	Ok(NoContent)
 }
 
+fn validate_profile(
+	query: ProfileQuery,
+	player_id: i32,
+	id: Uuid,
+	size: usize,
+) -> Result<perf_profile::ActiveModel, PerfError> {
+	if size == 0 {
+		return Err(PerfError::Invalid("empty profile"));
+	}
+	if !valid_pack_hash(&query.pack_hash) {
+		return Err(PerfError::Invalid("pack_hash"));
+	}
+	if !valid_version(&query.client_version)
+		|| !valid_version(&query.minecraft_version)
+		|| query.minecraft_version == ALL_VERSIONS
+	{
+		return Err(PerfError::Invalid("version"));
+	}
+	if !(1..=MAX_SECONDS as i32).contains(&query.seconds) {
+		return Err(PerfError::Invalid("seconds"));
+	}
+	Ok(perf_profile::ActiveModel {
+		id: Set(id),
+		player_id: Set(Some(player_id)),
+		pack_hash: Set(query.pack_hash),
+		client_version: Set(query.client_version),
+		minecraft_version: Set(query.minecraft_version),
+		loader: Set(text(query.loader).ok_or(PerfError::Invalid("loader"))?),
+		seconds: Set(query.seconds),
+		size_bytes: Set(size as i64),
+		s3_key: Set(format!("perf-profiles/{id}.sparkprofile")),
+		..Default::default()
+	})
+}
+
+#[tracing::instrument(level = "debug", skip(state, body))]
+async fn profile_endpoint(
+	State(state): State<ApiState>,
+	AuthenticatedPlayer(player): AuthenticatedPlayer,
+	client: ClientKind,
+	Query(query): Query<ProfileQuery>,
+	body: Bytes,
+) -> Result<NoContent, PerfError> {
+	if client != ClientKind::Game {
+		return Ok(NoContent);
+	}
+	let storage = state.oneclient_sync.as_ref().ok_or(PerfError::Unavailable)?;
+	let profile = validate_profile(query, player.id, Uuid::now_v7(), body.len())?;
+
+	// Held until commit so concurrent uploads can't both pass the 24-hour check.
+	let txn = state.database.begin().await?;
+	txn.execute(Statement::from_sql_and_values(
+		txn.get_database_backend(),
+		"SELECT pg_advisory_xact_lock(hashtext('perf_profile'), $1)",
+		[player.id.into()],
+	))
+	.await?;
+
+	let recent = PerfProfile::find()
+		.filter(perf_profile::Column::PlayerId.eq(player.id))
+		.filter(perf_profile::Column::CreatedAt.gt(Utc::now() - MIN_PROFILE_INTERVAL))
+		.count(&txn)
+		.await?;
+	if recent > 0 {
+		return Err(PerfError::TooSoon);
+	}
+
+	storage
+		.bucket()
+		.put_object_with_content_type(profile.s3_key.as_ref(), &body, "application/octet-stream")
+		.await?;
+	PerfProfile::insert(profile).exec_without_returning(&txn).await?;
+	txn.commit().await?;
+
+	Ok(NoContent)
+}
+
 #[cfg(test)]
 mod tests {
 	use std::collections::BTreeMap;
 
-	use super::pack_hash;
+	use uuid::Uuid;
+
+	use super::{PerfError, ProfileQuery, pack_hash, validate_profile};
+
+	#[test]
+	fn profile_validation() {
+		let query = |hash: &str, seconds| ProfileQuery {
+			pack_hash: hash.to_owned(),
+			client_version: "2.4.1".to_owned(),
+			minecraft_version: "1.21.11".to_owned(),
+			loader: "fabric".to_owned(),
+			seconds,
+		};
+		let hash = "a".repeat(64);
+		let id = Uuid::now_v7();
+		let profile = validate_profile(query(&hash, 60), 1, id, 10).expect("valid profile");
+		assert_eq!(*profile.s3_key.as_ref(), format!("perf-profiles/{id}.sparkprofile"));
+		assert!(matches!(validate_profile(query(&hash, 60), 1, id, 0), Err(PerfError::Invalid(_))));
+		assert!(validate_profile(query("A".repeat(64).as_str(), 60), 1, id, 10).is_err());
+		assert!(validate_profile(query(&hash, 0), 1, id, 10).is_err());
+	}
 
 	#[test]
 	fn pack_hash_matches_client_format() {

@@ -52,13 +52,18 @@ pub enum AnalyticsError {
 	PeriodTooLong { days: i64 },
 	#[error("Period covers {points} hourly points, the maximum is {MAX_SERIES_POINTS}")]
 	TooManyPoints { points: i64 },
+	#[error("Unable to read object storage: {0}")]
+	Storage(#[from] s3::error::S3Error),
+	#[error("Not found")]
+	NotFound,
 }
 
 impl IntoResponse for AnalyticsError {
 	fn into_response(self) -> axum::response::Response {
 		crate::api::error_response(
 			match self {
-				Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				Self::Database(_) | Self::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+				Self::NotFound => StatusCode::NOT_FOUND,
 				Self::InvalidPeriod { .. }
 				| Self::PeriodTooLong { .. }
 				| Self::TooManyPoints { .. } => StatusCode::BAD_REQUEST,
@@ -181,6 +186,14 @@ pub(super) async fn setup_router() -> ApiRouter<ApiState> {
 		.api_route(
 			"/analytics/perf/daily",
 			get_with(perf::perf_daily_endpoint, perf::perf_daily_doc),
+		)
+		.api_route(
+			"/analytics/perf/profiles",
+			get_with(perf::profiles_endpoint, perf::profiles_doc),
+		)
+		.api_route(
+			"/analytics/perf/profiles/{id}",
+			get_with(perf::profile_endpoint, perf::profile_doc),
 		)
 		.api_route(
 			"/analytics/linked-accounts",

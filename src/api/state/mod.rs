@@ -190,6 +190,11 @@ impl ApiState {
 		let lockouts = LockoutLog::spawn(database.clone());
 		let settings = SharedSettings::load(&args.settings_path)
 			.expect("Unable to load the settings file");
+		let oneclient_sync =
+			SyncStorage::connect(args, &lockouts, &settings.get().cluster_sharing);
+		if let Some(storage) = &oneclient_sync {
+			perf_regression::spawn_profile_prune(database.clone(), storage.clone());
+		}
 
 		ApiState {
 			paynow: PayNowApiState::new(args),
@@ -244,11 +249,7 @@ impl ApiState {
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			discord: DiscordOAuth::from_args(args),
 			link_states: links::new_link_state_cache(),
-			oneclient_sync: SyncStorage::connect(
-				args,
-				&lockouts,
-				&settings.get().cluster_sharing,
-			),
+			oneclient_sync,
 			settings,
 			instrumentation,
 			eos: EosClient::from_args(args),
