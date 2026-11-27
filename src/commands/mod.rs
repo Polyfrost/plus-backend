@@ -190,6 +190,13 @@ pub(crate) struct ServeArgs {
 		optional
 	)]
 	pub(crate) oneclient_sync_bucket: Option<String>,
+	#[bpaf(
+		long("perf-regression-webhook"),
+		env("PERF_REGRESSION_WEBHOOK_URL"),
+		argument::<String>("URL"),
+		optional
+	)]
+	pub(crate) perf_regression_webhook: Option<String>,
 	/// The settings staff change from the dashboard, created when first changed
 	#[bpaf(
 		long("settings-path"),

@@ -245,7 +245,11 @@ impl SyncStorage {
 		Ok(())
 	}
 
-	pub(super) async fn remove(&self, key: &str) -> Result<(), S3Error> {
+	pub(in crate::api) fn bucket(&self) -> &Bucket {
+		&self.bucket
+	}
+
+	pub(in crate::api) async fn remove(&self, key: &str) -> Result<(), S3Error> {
 		match self.bucket.delete_object(key).await {
 			Ok(_) | Err(S3Error::HttpFailWithBody(404, _)) => Ok(()),
 			Err(error) => Err(error),

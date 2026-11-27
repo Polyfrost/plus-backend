@@ -2,6 +2,8 @@
 
 mod analytics_rollup;
 mod instrumentation;
+mod perf_daily;
+mod perf_regression;
 mod persistence;
 mod realtime;
 
@@ -22,6 +24,8 @@ use tracing::{info, warn};
 pub(in crate::api) use self::{
 	analytics_rollup::{ANALYTICS_DAILY_JOB, SESSION_LENGTH_BUCKETS},
 	instrumentation::Instrumentation,
+	perf_daily::ALL_VERSIONS,
+	perf_regression::RETENTION_DAYS,
 	persistence::{EquipmentPersistence, ParticleColorPersistence, PersistQueue},
 	realtime::{
 		ConnectionCounts, ConnectionId, PlayerRuntimeState, PlaytimeSession,
@@ -171,6 +175,10 @@ impl ApiState {
 		let realtime = RealtimeState::default();
 		persistence::spawn_playtime_flush(database.clone(), realtime.playtime.clone());
 		analytics_rollup::spawn_analytics_rollup(database.clone());
+		perf_regression::spawn_perf_regression(
+			database.clone(),
+			args.perf_regression_webhook.clone(),
+		);
 
 		let instrumentation = Instrumentation::default();
 		instrumentation::spawn_instrumentation_flush(
@@ -182,6 +190,11 @@ impl ApiState {
 		let lockouts = LockoutLog::spawn(database.clone());
 		let settings = SharedSettings::load(&args.settings_path)
 			.expect("Unable to load the settings file");
+		let oneclient_sync =
+			SyncStorage::connect(args, &lockouts, &settings.get().cluster_sharing);
+		if let Some(storage) = &oneclient_sync {
+			perf_regression::spawn_profile_prune(database.clone(), storage.clone());
+		}
 
 		ApiState {
 			paynow: PayNowApiState::new(args),
@@ -236,11 +249,7 @@ impl ApiState {
 			special_chat_auto_reply: args.special_chat_auto_reply.clone(),
 			discord: DiscordOAuth::from_args(args),
 			link_states: links::new_link_state_cache(),
-			oneclient_sync: SyncStorage::connect(
-				args,
-				&lockouts,
-				&settings.get().cluster_sharing,
-			),
+			oneclient_sync,
 			settings,
 			instrumentation,
 			eos: EosClient::from_args(args),
