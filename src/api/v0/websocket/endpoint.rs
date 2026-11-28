@@ -26,7 +26,8 @@ use crate::api::{
 	ApiState,
 	state::{
 		ConnectionId, EquipmentPersistence, ParticleColorPersistence, PlayerRuntimeState,
-		PlaytimeSession, RealtimeConnection, effective_status, shows_badge,
+		PlaytimeSession, RealtimeConnection, effective_status, holds_game_connection,
+		shows_badge,
 	},
 	v0::{
 		account::{AuthenticatedPlayer, ClientKind, TokenAccess},
@@ -348,12 +349,17 @@ async fn register_connection(
 			kind,
 		},
 	);
-	let is_first_connection = {
+	let (is_first_connection, is_first_game_connection) = {
 		let mut connections_by_owner = state.realtime.connections_by_owner.write().await;
 		let owner_connections = connections_by_owner.entry(owner).or_default();
 		let was_empty = owner_connections.is_empty();
+		let first_game = kind == ClientKind::Game
+			&& !holds_game_connection(
+				&*state.realtime.connections.read().await,
+				Some(owner_connections),
+			);
 		owner_connections.insert(connection_id);
-		was_empty
+		(was_empty, first_game)
 	};
 
 	// Playtime is in-game time only. The lock is held across the insert so a
@@ -412,9 +418,11 @@ async fn register_connection(
 
 	// Notify anyone already watching this player that they came online,
 	// unless they chose to stay offline.
-	let status = effective_status(true, status_override);
-	if is_first_connection && status != PlayerStatus::Offline {
-		announce_presence(state, owner, true, status_override).await;
+	let status_changed =
+		is_first_connection && effective_status(true, status_override) != PlayerStatus::Offline;
+	let badge_changed = is_first_game_connection && !shows_badge(false, status_override);
+	if status_changed || badge_changed {
+		announce_presence(state, owner, true, kind == ClientKind::Game, status_override).await;
 	}
 
 	if is_first_connection {
@@ -482,6 +490,7 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		return;
 	};
 
+	let mut was_last_game_connection = false;
 	if connection.kind == ClientKind::Game {
 		let session = {
 			let mut playtime = state.realtime.playtime.write().await;
@@ -492,6 +501,7 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 				.await
 				.values()
 				.any(|other| other.owner == connection.owner && other.kind == ClientKind::Game);
+			was_last_game_connection = !game_still_connected;
 			if game_still_connected {
 				None
 			} else {
@@ -552,7 +562,18 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		// Notify anyone watching this player that they are now offline, unless
 		// they already appeared offline.
 		if effective_status(true, status_override) != PlayerStatus::Offline {
-			announce_presence(state, connection.owner, false, status_override).await;
+			announce_presence(state, connection.owner, false, false, status_override).await;
+		}
+	} else if was_last_game_connection {
+		let status_override = state
+			.realtime
+			.player_runtime
+			.read()
+			.await
+			.get(&connection.owner)
+			.and_then(|runtime| runtime.status_override);
+		if !shows_badge(false, status_override) {
+			announce_presence(state, connection.owner, true, false, status_override).await;
 		}
 	}
 
@@ -675,16 +696,19 @@ async fn subscribe(
 	let mut badges = Vec::new();
 	{
 		let connections_by_owner = state.realtime.connections_by_owner.read().await;
+		let connections = state.realtime.connections.read().await;
 		let player_runtime = state.realtime.player_runtime.read().await;
 		for &player in &newly_subscribed {
-			let connected = connections_by_owner.contains_key(&player);
+			let owner_connections = connections_by_owner.get(&player);
+			let connected = owner_connections.is_some();
+			let in_game = holds_game_connection(&connections, owner_connections);
 			let status_override = player_runtime
 				.get(&player)
 				.and_then(|runtime| runtime.status_override);
 			if effective_status(connected, status_override) != PlayerStatus::Offline {
 				users.push(player);
 			}
-			if shows_badge(connected, status_override) {
+			if shows_badge(in_game, status_override) {
 				badges.push(player);
 			}
 		}
@@ -904,6 +928,7 @@ pub(crate) async fn announce_presence(
 	state: &ApiState,
 	player: Uuid,
 	connected: bool,
+	in_game: bool,
 	status_override: Option<PlayerStatus>,
 ) {
 	let status = effective_status(connected, status_override);
@@ -911,7 +936,7 @@ pub(crate) async fn announce_presence(
 		player,
 		online: status != PlayerStatus::Offline,
 		status,
-		badge: shows_badge(connected, status_override),
+		badge: shows_badge(in_game, status_override),
 	})
 	.await;
 }
