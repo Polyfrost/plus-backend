@@ -422,7 +422,7 @@ async fn register_connection(
 		is_first_connection && effective_status(true, status_override) != PlayerStatus::Offline;
 	let badge_changed = is_first_game_connection && !shows_badge(false, status_override);
 	if status_changed || badge_changed {
-		announce_presence(state, owner, true, kind == ClientKind::Game, status_override).await;
+		announce_presence(state, owner, true, status_override).await;
 	}
 
 	if is_first_connection {
@@ -562,9 +562,9 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 		// Notify anyone watching this player that they are now offline, unless
 		// they already appeared offline.
 		if effective_status(true, status_override) != PlayerStatus::Offline {
-			announce_presence(state, connection.owner, false, false, status_override).await;
+			announce_presence(state, connection.owner, false, status_override).await;
 		}
-	} else if was_last_game_connection {
+	} else if was_last_game_connection && !state.realtime.in_game(&connection.owner).await {
 		let status_override = state
 			.realtime
 			.player_runtime
@@ -573,7 +573,13 @@ async fn unregister_connection(state: &ApiState, connection_id: ConnectionId) {
 			.get(&connection.owner)
 			.and_then(|runtime| runtime.status_override);
 		if !shows_badge(false, status_override) {
-			announce_presence(state, connection.owner, true, false, status_override).await;
+			let connected = state
+				.realtime
+				.connections_by_owner
+				.read()
+				.await
+				.contains_key(&connection.owner);
+			announce_presence(state, connection.owner, connected, status_override).await;
 		}
 	}
 
@@ -928,9 +934,9 @@ pub(crate) async fn announce_presence(
 	state: &ApiState,
 	player: Uuid,
 	connected: bool,
-	in_game: bool,
 	status_override: Option<PlayerStatus>,
 ) {
+	let in_game = state.realtime.in_game(&player).await;
 	let status = effective_status(connected, status_override);
 	broadcast_to_watchers(state, player, || ClientBoundPacket::PlayerPresence {
 		player,

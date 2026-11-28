@@ -135,7 +135,7 @@ async fn endpoint(
 		.unwrap_or_default();
 
 	if status_changed || badge_changed {
-		announce_presence(&state, owner, connected, in_game, status_override).await;
+		announce_presence(&state, owner, connected, status_override).await;
 	}
 	if status_changed {
 		crate::api::v1::party::refresh_party(&state, owner).await;
