@@ -44,6 +44,25 @@ impl RealtimeState {
 			other: total - game,
 		}
 	}
+
+	pub async fn in_game(&self, owner: &Uuid) -> bool {
+		let connections_by_owner = self.connections_by_owner.read().await;
+		let connections = self.connections.read().await;
+		holds_game_connection(&connections, connections_by_owner.get(owner))
+	}
+}
+
+pub fn holds_game_connection(
+	connections: &HashMap<ConnectionId, RealtimeConnection>,
+	owner_connections: Option<&HashSet<ConnectionId>>,
+) -> bool {
+	owner_connections.is_some_and(|ids| {
+		ids.iter().any(|id| {
+			connections
+				.get(id)
+				.is_some_and(|connection| connection.kind == ClientKind::Game)
+		})
+	})
 }
 
 /// Live websocket connections, split by what kind of client holds them.
@@ -85,8 +104,8 @@ pub fn effective_status(
 	status_override.unwrap_or(PlayerStatus::Online)
 }
 
-pub fn shows_badge(connected: bool, status_override: Option<PlayerStatus>) -> bool {
-	connected || status_override == Some(PlayerStatus::Offline)
+pub fn shows_badge(in_game: bool, status_override: Option<PlayerStatus>) -> bool {
+	in_game || status_override == Some(PlayerStatus::Offline)
 }
 
 #[cfg(test)]
@@ -110,6 +129,38 @@ mod status_tests {
 		assert!(shows_badge(false, Some(Offline)));
 		assert!(shows_badge(true, None));
 		assert!(!shows_badge(false, None));
+	}
+
+	#[test]
+	fn launcher_only_connection_shows_no_badge() {
+		let (tx, _rx) = mpsc::unbounded_channel();
+		let owner = Uuid::new_v4();
+		let launcher = Uuid::new_v4();
+		let game = Uuid::new_v4();
+		let mut connections = HashMap::from([(
+			launcher,
+			RealtimeConnection {
+				owner,
+				tx: tx.clone(),
+				subscriptions: HashSet::new(),
+				kind: ClientKind::Other,
+			},
+		)]);
+		let mut owner_connections = HashSet::from([launcher]);
+		assert!(!holds_game_connection(&connections, Some(&owner_connections)));
+		assert!(!holds_game_connection(&connections, None));
+
+		connections.insert(
+			game,
+			RealtimeConnection {
+				owner,
+				tx,
+				subscriptions: HashSet::new(),
+				kind: ClientKind::Game,
+			},
+		);
+		owner_connections.insert(game);
+		assert!(holds_game_connection(&connections, Some(&owner_connections)));
 	}
 }
 

@@ -247,7 +247,7 @@ pub enum ClientBoundPacket {
 		particle_colors: HashMap<Uuid, i32>,
 		users: Vec<Uuid>,
 		/// The subset of subscribed players to render a "uses PolyPlus" indicator for:
-		/// those with a live session, plus those appearing offline whether connected or not.
+		/// those running PolyPlus in game, plus those appearing offline whether connected or not.
 		badges: Vec<Uuid>,
 		rejected: Vec<Uuid>,
 		request_id: Option<u64>,

@@ -118,6 +118,7 @@ async fn endpoint(
 
 	let owner = player.minecraft_uuid;
 	let connected = state.realtime.connections_by_owner.read().await.contains_key(&owner);
+	let in_game = state.realtime.in_game(&owner).await;
 	let (status_changed, badge_changed) = state
 		.realtime
 		.player_runtime
@@ -128,7 +129,7 @@ async fn endpoint(
 			let before = std::mem::replace(&mut runtime.status_override, status_override);
 			(
 				effective_status(connected, before) != effective_status(connected, status_override),
-				shows_badge(connected, before) != shows_badge(connected, status_override),
+				shows_badge(in_game, before) != shows_badge(in_game, status_override),
 			)
 		})
 		.unwrap_or_default();
